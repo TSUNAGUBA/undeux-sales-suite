@@ -39,12 +39,13 @@ services:
     expose:
       - "8080"
     restart: unless-stopped
+    # readiness（DB接続込み）で判定し、API が実際に応答可能になってから healthy とする。
     healthcheck:
-      test: ["CMD", "curl", "-fsS", "http://localhost:8080/api/health"]
+      test: ["CMD", "curl", "-fsS", "http://localhost:8080/api/health/ready"]
       interval: 15s
       timeout: 5s
       retries: 5
-      start_period: 20s
+      start_period: 30s
     deploy:
       resources:
         limits:
