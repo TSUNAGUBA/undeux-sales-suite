@@ -1,0 +1,41 @@
+# ---- .NET ----
+bin/
+obj/
+*.user
+*.suo
+[Dd]ebug/
+[Rr]elease/
+artifacts/
+
+# ---- Node / Nuxt ----
+node_modules/
+.nuxt/
+.output/
+.nitro/
+.cache/
+dist/
+
+# ---- Environment / secrets ----
+.env
+.env.*
+!.env.example
+**/serviceAccountKey.json
+**/firebase-adminsdk*.json
+.firebaserc
+
+# ---- Editor / OS ----
+.vscode/
+.idea/
+.DS_Store
+Thumbs.db
+
+# ---- Logs / runtime ----
+*.log
+logs/
+TestResults/
+
+# ---- Data (never commit converted bulk data) ----
+db/data/
+tools/_work/
+*.csv.gz
+!refference/*

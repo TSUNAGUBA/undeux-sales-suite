@@ -1,0 +1,123 @@
+using Dapper;
+using Microsoft.Extensions.Logging.Abstractions;
+using Npgsql;
+using UndeuxSales.Core.Models;
+using UndeuxSales.Infrastructure.Database;
+using UndeuxSales.Infrastructure.Import;
+
+namespace UndeuxSales.Tests.Integration;
+
+/// <summary>
+/// 統合テスト用のデータベースフィクスチャ。テストDB（undeux_test）を作成・初期化し、
+/// 既知のシードデータを投入したうえで WebApplicationFactory を提供する。
+/// </summary>
+public sealed class DatabaseFixture : IAsyncLifetime
+{
+    private const string TestDatabaseName = "undeux_test";
+
+    private readonly string _adminConnectionString;
+
+    public string ConnectionString { get; }
+
+    public CustomWebApplicationFactory Factory { get; private set; } = null!;
+
+    public DatabaseFixture()
+    {
+        var host = EnvOrDefault("UNDEUX_TEST_PGHOST", "localhost");
+        var port = EnvOrDefault("UNDEUX_TEST_PGPORT", "5432");
+        var user = EnvOrDefault("UNDEUX_TEST_PGUSER", "undeux");
+        var password = EnvOrDefault("UNDEUX_TEST_PGPASSWORD", "undeux");
+        var adminDatabase = EnvOrDefault("UNDEUX_TEST_PGADMINDB", "undeux");
+
+        _adminConnectionString =
+            $"Host={host};Port={port};Database={adminDatabase};Username={user};Password={password}";
+        ConnectionString =
+            $"Host={host};Port={port};Database={TestDatabaseName};Username={user};Password={password}";
+    }
+
+    public async Task InitializeAsync()
+    {
+        await EnsureTestDatabaseAsync();
+        await ApplySchemaAsync();
+        await TruncateAsync();
+        await SeedAsync();
+        Factory = new CustomWebApplicationFactory(ConnectionString);
+    }
+
+    public async Task DisposeAsync()
+    {
+        if (Factory is not null)
+        {
+            await Factory.DisposeAsync();
+        }
+    }
+
+    private async Task EnsureTestDatabaseAsync()
+    {
+        await using var connection = new NpgsqlConnection(_adminConnectionString);
+        await connection.OpenAsync();
+
+        var exists = await connection.ExecuteScalarAsync<bool>(
+            "SELECT EXISTS(SELECT 1 FROM pg_database WHERE datname = @name);",
+            new { name = TestDatabaseName });
+
+        if (!exists)
+        {
+            await connection.ExecuteAsync($"CREATE DATABASE {TestDatabaseName};");
+        }
+    }
+
+    private async Task ApplySchemaAsync()
+    {
+        var schemaSql = await File.ReadAllTextAsync(ResolveSchemaPath());
+        await using var connection = new NpgsqlConnection(ConnectionString);
+        await connection.OpenAsync();
+        await SchemaInitializer.ApplyAsync(connection, schemaSql);
+    }
+
+    private async Task TruncateAsync()
+    {
+        await using var connection = new NpgsqlConnection(ConnectionString);
+        await connection.OpenAsync();
+        await connection.ExecuteAsync("""
+            TRUNCATE sales_weekly, import_batch, department, customer,
+                     business_type, season RESTART IDENTITY CASCADE;
+            """);
+    }
+
+    private async Task SeedAsync()
+    {
+        var connectionFactory = new NpgsqlConnectionFactory(ConnectionString);
+        await using (connectionFactory)
+        {
+            var importService = new SalesImportService(
+                connectionFactory, NullLogger<SalesImportService>.Instance);
+            await importService.ImportAsync(
+                SeedData.Records(), ImportSourceType.InitialDump, "seed.test");
+        }
+    }
+
+    private static string ResolveSchemaPath()
+    {
+        var probe = AppContext.BaseDirectory;
+        for (var depth = 0; depth < 10 && !string.IsNullOrEmpty(probe); depth++)
+        {
+            var candidate = Path.Combine(probe, "db", "schema.sql");
+            if (File.Exists(candidate))
+            {
+                return candidate;
+            }
+
+            probe = Path.GetDirectoryName(probe);
+        }
+
+        throw new FileNotFoundException("テスト用に db/schema.sql が見つかりません。");
+    }
+
+    private static string EnvOrDefault(string name, string fallback)
+        => Environment.GetEnvironmentVariable(name) is { Length: > 0 } value ? value : fallback;
+}
+
+/// <summary>統合テストのコレクション定義（DatabaseFixture を共有する）。</summary>
+[CollectionDefinition("Api")]
+public sealed class ApiTestCollection : ICollectionFixture<DatabaseFixture>;
