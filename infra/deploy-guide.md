@@ -370,7 +370,7 @@ GitHub の **Actions** タブの「Run workflow」ボタンからも実行でき
 | 取込が 403 になる | 取込する利用者に `role=admin` カスタムクレームが必要（`infra/README.md` 参照） |
 | EC2 上のログを見たい | `ssh -i "$HOME\.ssh\undeux-ec2" ubuntu@<EC2IP>` で接続し `cd undeux-sales-suite/infra/aws; docker compose -f docker-compose.ec2.yml --env-file .env logs api` |
 | `deploy-backend` の SSH 認証が失敗する | `EC2_SSH_KEY` シークレットを `Get-Content -Raw` で登録し直す（改行コード混入時の対処） |
-| `puttygen` で `unrecognised option '-O'` エラー | `puttygen` が古い。**付録A** の手順で最新の PuTTY を `--force` 付きで入れ直す |
+| `puttygen` で `unrecognised option '-O'` エラー | Windows の `puttygen.exe`（GUI 版）はコマンドライン変換に非対応。**付録A** の GUI 手順で `.ppk` を変換する |
 
 EC2 上での手動運用コマンドは `infra/aws/README.md` を参照してください。
 
@@ -383,47 +383,43 @@ EC2 用の秘密鍵が **PuTTY 形式（`.ppk`）** しか手元にない場合�
 **OpenSSH 形式へ変換**して使います。`ssh` コマンドや GitHub Actions のランナーは OpenSSH
 形式の鍵を前提とするため、`.ppk` のままでは利用できません。
 
-> **`puttygen` 実行時に `unrecognised option '-O'` のエラーダイアログが出る場合:**
-> `-O` を使うコマンドライン変換に対応していない **古い `puttygen`** が実行されています。
-> `winget install` は既にインストール済みのパッケージを更新しないため、`--force` を付けて
-> 最新版を入れ直します（下記の手順1）。
+> **Windows では GUI で変換します。** Windows 版 PuTTY の `puttygen.exe` は GUI 版で、
+> コマンドラインでの鍵変換（`-O` オプション等）に対応していません（`puttygen ... -O ...` を
+> 実行すると `unrecognised option '-O'` エラーになります）。`-O` でのコマンドライン変換は
+> Unix 版 `puttygen`（`putty-tools`）の機能です。
 
-PowerShell で次を実行します（`$Ppk` は実際の `.ppk` のパスに変更）。
+事前に、保存先の `.ssh` フォルダを作成しておきます。
 
 ```powershell
-# 1. 最新の PuTTY を入れ直す（--force で既存のインストールも上書きする）
-winget install --id PuTTY.PuTTY -e --force
-
-# 2. puttygen のパスとバージョンを確認する（最近のバージョンが表示されること）
-$PuttyGen = "C:\Program Files\PuTTY\puttygen.exe"
-(Get-Item $PuttyGen).VersionInfo.ProductVersion
-
-# 3. .ppk を OpenSSH 形式（パスフレーズなし）へ変換する
 New-Item "$HOME\.ssh" -ItemType Directory -Force | Out-Null
-$Ppk = "C:\path\to\your-key.ppk"          # ← 実際の .ppk のパスに変更
-$Out = "$HOME\.ssh\undeux-ec2"
-$Pf  = (New-TemporaryFile).FullName        # 空ファイル = パスフレーズなしで書き出す
-$ArgLine = '"{0}" -O private-openssh-new -o "{1}" --new-passphrase "{2}"' -f $Ppk, $Out, $Pf
-Start-Process -FilePath $PuttyGen -ArgumentList $ArgLine -Wait
-Remove-Item $Pf
-
-# 4. 変換結果を確認する（先頭行が表示される）
-Get-Content $Out -TotalCount 1
 ```
 
-手順4で `-----BEGIN OPENSSH PRIVATE KEY-----` と表示されれば成功です。以降は
-`$HOME\.ssh\undeux-ec2` を、ステップ3-1 で生成する鍵と同じものとして扱えます
-（ステップ6 の `EC2_SSH_KEY` 登録もこのファイルを使います）。
+続いて PuTTYgen の GUI で変換します。
+
+1. **PuTTYgen を起動** — スタートメニューで「PuTTYgen」を検索して開く。
+2. **「Load」** ボタンをクリックし、変換元の `.ppk` ファイルを選択して開く。
+   `.ppk` にパスフレーズが設定されている場合は入力を求められるので入力する。
+3. **「Key passphrase」「Confirm passphrase」欄は空のまま**にする（空欄 = パスフレーズ
+   なしで書き出す。GitHub Actions のデプロイ鍵には必須）。
+4. メニューバーの **「Conversions」→「Export OpenSSH key」** をクリックする。
+5. パスフレーズなしで保存してよいか確認が出たら **「はい」** を選ぶ。
+6. 保存ダイアログで `.ssh` フォルダ（`C:\Users\<ユーザー名>\.ssh\`）へ移動し、「保存の種類」
+   は All Files のまま、ファイル名 **`undeux-ec2`**（拡張子なし）で保存する。
+
+変換後、先頭行を確認します。
+
+```powershell
+Get-Content "$HOME\.ssh\undeux-ec2" -TotalCount 1
+```
+
+`-----BEGIN OPENSSH PRIVATE KEY-----`（鍵の種類によっては `-----BEGIN RSA PRIVATE KEY-----`）
+と表示されれば成功です。いずれも OpenSSH 形式の秘密鍵で、以降は `$HOME\.ssh\undeux-ec2` を
+ステップ3-1 で生成する鍵と同じものとして扱えます（ステップ6 の `EC2_SSH_KEY` 登録もこの
+ファイルを使います）。
 
 補足:
 
-- 手順2・3 はフルパスで `puttygen` を呼ぶため、PATH 上に古い `puttygen` があっても確実に
-  最新版が使われます。
-- `puttygen` は GUI アプリのため、`Start-Process -Wait` で変換完了を待ってから一時ファイルを
-  削除します（待たずに削除するとパスフレーズファイルが先に消え、変換に失敗します）。
-- `.ppk` 自体にパスフレーズが設定されている場合、変換中に **元のパスフレーズ** の入力
-  ダイアログが表示されます。入力すれば変換が進みます。
-- 手順2 で `puttygen.exe` が見つからない場合は、次で実体を探して `$PuttyGen` に指定します:
-  `Get-ChildItem 'C:\Program Files','C:\Program Files (x86)' -Filter puttygen.exe -Recurse -ErrorAction SilentlyContinue | ForEach-Object FullName`
+- コマンドラインで変換したい場合は、Unix 版 `puttygen` を使います（`-O` 対応）。WSL で
+  `sudo apt install -y putty-tools` を実行後、`puttygen <.ppk のパス> -O private-openssh-new -o <出力先>`。
 - この `.ppk` に対応する AWS キーペアで EC2 を作成済みの場合は、ステップ3-1 の鍵生成・
   `import-key-pair` とステップ3-3 の `--key-name` を、その既存キーペア名に読み替えます。
