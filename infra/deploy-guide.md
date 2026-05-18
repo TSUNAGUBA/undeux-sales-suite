@@ -285,8 +285,9 @@ gh secret set EC2_HOST             --repo $Repo --body $Ec2Ip
 gh secret set EC2_USER             --repo $Repo --body "ubuntu"
 
 # ファイルから登録するもの（サービスアカウントJSON・SSH秘密鍵）
-Get-Content $FirebaseServiceAccountPath -Raw | gh secret set FIREBASE_SERVICE_ACCOUNT --repo $Repo
-Get-Content "$HOME\.ssh\undeux-ec2" -Raw    | gh secret set EC2_SSH_KEY --repo $Repo
+# 注: パイプ(|)は PowerShell が改行を CRLF に変換し鍵が壊れるため使わず、--body で渡す。
+gh secret set FIREBASE_SERVICE_ACCOUNT --repo $Repo --body (Get-Content $FirebaseServiceAccountPath -Raw)
+gh secret set EC2_SSH_KEY              --repo $Repo --body (Get-Content "$HOME\.ssh\undeux-ec2" -Raw)
 
 # 登録結果を確認（10件表示されればOK）
 gh secret list --repo $Repo
@@ -376,6 +377,6 @@ GitHub の **Actions** タブの「Run workflow」ボタンからも実行でき
 | ログインできない | Firebase の Authentication でメール/パスワードが有効か、利用者が登録済みか確認 |
 | 取込が 403 になる | 取込する利用者に `role=admin` カスタムクレームが必要（`infra/README.md` 参照） |
 | EC2 上のログを見たい | `ssh -i "$HOME\.ssh\undeux-ec2" ubuntu@<EC2IP>` で接続し `cd undeux-sales-suite/infra/aws; docker compose -f docker-compose.ec2.yml --env-file .env logs api` |
-| `deploy-backend` の SSH 認証が失敗する | `EC2_SSH_KEY` シークレットを `Get-Content -Raw` で登録し直す（改行コード混入時の対処） |
+| `deploy-backend` が `Permission denied (publickey)` で失敗 | `EC2_SSH_KEY` を `--body` 方式で登録し直す（`gh secret set EC2_SSH_KEY --repo <repo> --body (Get-Content "$HOME\.ssh\undeux-ec2" -Raw)`）。あわせて `EC2_USER` が `ubuntu` か確認 |
 
 EC2 上での手動運用コマンドは `infra/aws/README.md` を参照してください。
