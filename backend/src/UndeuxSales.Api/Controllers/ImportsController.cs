@@ -47,8 +47,12 @@ public sealed class ImportsController : ControllerBase
             limit <= 0 ? DefaultHistoryLimit : Math.Min(limit, MaxHistoryLimit),
             cancellationToken);
 
-    /// <summary>週次売上参照CSVを取り込む（全件検証後に一括取込。エラー行があれば取込中止）。</summary>
+    /// <summary>
+    /// 週次売上参照CSVを取り込む（全件検証後に一括取込。エラー行があれば取込中止）。
+    /// データ更新操作のため Importer ポリシー（role=admin クレーム）を要求する。
+    /// </summary>
     [HttpPost]
+    [Authorize(Policy = AuthorizationPolicies.Importer)]
     [RequestSizeLimit(HardSizeLimitBytes)]
     [RequestFormLimits(MultipartBodyLengthLimit = HardSizeLimitBytes)]
     public async Task<IActionResult> Upload(CancellationToken cancellationToken)

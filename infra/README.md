@@ -44,6 +44,10 @@ firebase deploy --only hosting
 - Firebase コンソールで Authentication を有効化し、「メール/パスワード」プロバイダを有効にする。
 - 利用者アカウントを登録する。
 - API 側の環境変数 `Firebase__ProjectId` に同じプロジェクトIDを設定する（IDトークン検証に使用）。
+- **取込権限:** 週次CSV取込（`POST /api/imports`、データ更新操作）は、カスタムクレーム
+  `role=admin` を持つ利用者に限定される。管理者アカウントには Firebase Admin SDK で
+  クレームを付与する（例: `admin.auth().setCustomUserClaims(uid, { role: 'admin' })`）。
+  クレーム未付与の利用者は参照のみ可能（取込は 403 となる）。
 
 ### 3. API・データベース（AWS）
 

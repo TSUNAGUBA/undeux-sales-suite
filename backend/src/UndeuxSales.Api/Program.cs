@@ -65,6 +65,10 @@ builder.Services
         var issuer = $"https://securetoken.google.com/{firebaseOptions.ProjectId}";
         options.Authority = issuer;
         options.IncludeErrorDetails = builder.Environment.IsDevelopment();
+
+        // Firebase カスタムクレーム（role 等）をそのままのクレーム名で扱う。
+        options.MapInboundClaims = false;
+
         options.TokenValidationParameters = new TokenValidationParameters
         {
             ValidateIssuer = true,
@@ -76,7 +80,13 @@ builder.Services
             ClockSkew = TimeSpan.FromMinutes(2),
         };
     });
-builder.Services.AddAuthorization();
+
+builder.Services.AddAuthorization(options =>
+{
+    // 取込（データ更新操作）は role=admin のカスタムクレームを持つ利用者に限定する。
+    options.AddPolicy(AuthorizationPolicies.Importer, policy =>
+        policy.RequireClaim(AuthorizationPolicies.RoleClaim, AuthorizationPolicies.AdminRole));
+});
 
 const string corsPolicyName = "frontend";
 builder.Services.AddCors(options =>
@@ -96,6 +106,12 @@ if (string.IsNullOrWhiteSpace(firebaseOptions.ProjectId))
 {
     app.Logger.LogWarning(
         "Firebase:ProjectId が未設定です。/api/health 以外の保護エンドポイントは認証に失敗します。");
+}
+
+if (corsSettings.AllowedOrigins.Length == 0)
+{
+    app.Logger.LogWarning(
+        "Cors:AllowedOrigins が未設定です。ブラウザからのAPI呼び出しは CORS により拒否されます。");
 }
 
 // 例外ハンドリングは最外層に配置し、後続すべての例外を捕捉する。

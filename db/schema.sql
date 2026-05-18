@@ -141,6 +141,10 @@ CREATE INDEX IF NOT EXISTS ix_sales_weekly_kisetsu       ON sales_weekly (kisets
 CREATE INDEX IF NOT EXISTS ix_sales_weekly_gyotai_code   ON sales_weekly (gyotai_code);
 CREATE INDEX IF NOT EXISTS ix_sales_weekly_batch         ON sales_weekly (import_batch_id);
 
+-- 商品（品番・単品）単位の集計・件数算出を高速化する。
+CREATE INDEX IF NOT EXISTS ix_sales_weekly_product
+    ON sales_weekly (hinban_code, tanpin_code);
+
 -- ------------------------------------------------------------
 -- コードマスタ（取込時に自動導出される派生参照データ）
 -- ------------------------------------------------------------
@@ -180,46 +184,9 @@ CREATE TABLE IF NOT EXISTS season (
 );
 COMMENT ON TABLE season IS '季節区分マスタ（取込時に自動導出）';
 
--- ------------------------------------------------------------
--- 日次売上ビュー — 週次ファクトの日次列を縦持ちに展開
--- ------------------------------------------------------------
---  toshu_uriage_count1..7 を (sales_date, quantity) に展開する。
---  sales_date = import_date - 8 + day_index
---    day_index 1 → import_date-7（月） / day_index 7 → import_date-1（日）
--- ------------------------------------------------------------
-CREATE OR REPLACE VIEW v_sales_daily AS
-SELECT
-    sw.id                                              AS sales_weekly_id,
-    sw.import_batch_id,
-    sw.import_date,
-    (sw.import_date - 8 + d.day_index)::date           AS sales_date,
-    d.day_index,
-    sw.customer_code,
-    sw.gyotai_code,
-    sw.department,
-    sw.hinban_code,
-    sw.tanpin_code,
-    sw.hinmei,
-    sw.shohin_kigou,
-    sw.color,
-    sw.size,
-    sw.kisetsu,
-    d.quantity,
-    sw.genka,
-    sw.baika,
-    (d.quantity * sw.baika)                            AS amount,
-    (d.quantity * (sw.baika - sw.genka))               AS gross_profit
-FROM sales_weekly sw
-CROSS JOIN LATERAL (VALUES
-    (1, sw.toshu_uriage_count1),
-    (2, sw.toshu_uriage_count2),
-    (3, sw.toshu_uriage_count3),
-    (4, sw.toshu_uriage_count4),
-    (5, sw.toshu_uriage_count5),
-    (6, sw.toshu_uriage_count6),
-    (7, sw.toshu_uriage_count7)
-) AS d(day_index, quantity);
-
-COMMENT ON VIEW v_sales_daily IS '日次売上ビュー。週次ファクトの日次7列を (sales_date, quantity) に縦展開';
+-- 日次粒度の集計は、週次ファクトを取込日で先に集計してから日次7列を展開する
+-- 方式（アプリ側クエリ）で行う。160万行を縦展開する前に集約するため高速。
+-- 日付対応ロジック: sales_date = import_date - 8 + day_index
+--   day_index 1 → import_date-7（月） / day_index 7 → import_date-1（日）
 
 COMMIT;

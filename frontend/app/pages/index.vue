@@ -8,8 +8,7 @@ import {
   Boxes,
   Gauge,
 } from 'lucide-vue-next'
-import type { Component } from 'vue'
-import type { SummaryResponse } from '~/types/api'
+import type { KpiCardItem, SummaryResponse } from '~/types/api'
 
 useHead({ title: '全社サマリー | UndeuxSales' })
 
@@ -20,14 +19,7 @@ const summary = ref<SummaryResponse | null>(null)
 const loading = ref(true)
 const errorMessage = ref<string | null>(null)
 
-interface KpiItem {
-  label: string
-  value: string
-  icon: Component
-  accentClass: string
-}
-
-const kpiItems = computed<KpiItem[]>(() => {
+const kpiItems = computed<KpiCardItem[]>(() => {
   const kpi = summary.value?.kpi
   if (!kpi) {
     return []

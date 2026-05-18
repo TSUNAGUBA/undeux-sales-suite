@@ -25,6 +25,11 @@ services:
       interval: 5s
       timeout: 5s
       retries: 12
+    deploy:
+      resources:
+        limits:
+          cpus: "1.0"
+          memory: 1g
 
   dataloader:
     build:
@@ -41,6 +46,11 @@ services:
       db:
         condition: service_healthy
     restart: "no"
+    deploy:
+      resources:
+        limits:
+          cpus: "1.0"
+          memory: 768m
 
   api:
     build:
@@ -58,6 +68,11 @@ services:
         condition: service_healthy
       dataloader:
         condition: service_completed_successfully
+    deploy:
+      resources:
+        limits:
+          cpus: "1.0"
+          memory: 512m
 
   frontend:
     build:
@@ -71,6 +86,11 @@ services:
       - "3000:80"
     depends_on:
       - api
+    deploy:
+      resources:
+        limits:
+          cpus: "0.5"
+          memory: 128m
 
 volumes:
   db-data:

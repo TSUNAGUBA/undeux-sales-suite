@@ -55,9 +55,12 @@ docker run --rm \
 
 ### API の起動
 
+`--memory` / `--cpus` でリソース上限を設定し、同居プロセスの巻き添え OOM を防ぐ。
+
 ```bash
 docker run -d --name undeux-api --restart unless-stopped \
   -p 8080:8080 \
+  --memory 512m --cpus 1.0 \
   -e ASPNETCORE_ENVIRONMENT=Production \
   -e ConnectionStrings__Default="Host=<RDSエンドポイント>;Port=5432;Database=undeux;Username=undeux;Password=<パスワード>" \
   -e Firebase__ProjectId="<Firebaseプロジェクト ID>" \
@@ -86,5 +89,14 @@ docker run -d --name undeux-api --restart unless-stopped \
 
 ## 監視
 
-- ヘルスチェック: `GET /api/health`（稼働確認）、`GET /api/health/ready`（DB接続込み）。
+- **ヘルスチェック:** `GET /api/health`（稼働確認）、`GET /api/health/ready`（DB接続込み）。
   ALB のターゲットグループのヘルスチェックパスに `/api/health/ready` を設定する。
+- **メトリクス:** CloudWatch で以下を収集し、しきい値アラート（SNS 通知）を設定することを推奨する。
+  - EC2: CPU 使用率・メモリ・ステータスチェック
+  - RDS: CPU・接続数・空きストレージ・レプリケーション遅延
+  - ALB: ターゲット 5xx 率・レイテンシ・異常ターゲット数
+- **ログ:** API は標準出力に構造化ログを出力する。CloudWatch Logs エージェントで
+  集約し、エラーコード（`UNDX-xxx-nnn`）や `fail` レベルで検索・アラートする。
+- **リソース上限:** コンテナには `--memory` / `--cpus`（または ECS タスク定義のリソース
+  指定）を必ず設定し、初期DBダンプ取込などの最重処理が API を巻き添えにしないようにする。
+- 取込障害は `import_batch` テーブルの `status='failed'` 行で追跡できる。

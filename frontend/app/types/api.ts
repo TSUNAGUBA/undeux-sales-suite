@@ -1,8 +1,17 @@
 // バックエンドAPI（C#）のレスポンス型定義。JSON は camelCase。
+import type { Component } from 'vue'
 
 export interface AuthUser {
   uid: string
   email: string | null
+}
+
+/** KPIカード1件の表示データ。 */
+export interface KpiCardItem {
+  label: string
+  value: string
+  icon: Component
+  accentClass: string
 }
 
 export interface CodeName {

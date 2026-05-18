@@ -23,6 +23,9 @@ public sealed class SalesImportService
     // 初期DBダンプ（約160万行）の UPSERT は長時間を要するため十分な上限を設定する。
     private const int ImportCommandTimeoutSeconds = 600;
 
+    // 取込トランザクションを直列化する advisory lock のキー（固定値）。
+    private const long ImportAdvisoryLockKey = 0x554E_4458_494D_5054;
+
     private readonly IDbConnectionFactory _connectionFactory;
     private readonly ILogger<SalesImportService> _logger;
 
@@ -84,6 +87,15 @@ public sealed class SalesImportService
         NpgsqlConnection connection, long batchId, IEnumerable<SalesRecord> records, CancellationToken ct)
     {
         await using var transaction = await connection.BeginTransactionAsync(ct);
+
+        // 取込の同時実行を直列化する（同一週の並行取込による取込履歴の不整合を防ぐ）。
+        // トランザクション終了時に自動解放される。
+        await connection.ExecuteAsync(new CommandDefinition(
+            "SELECT pg_advisory_xact_lock(@lockKey);",
+            new { lockKey = ImportAdvisoryLockKey },
+            transaction: transaction,
+            commandTimeout: ImportCommandTimeoutSeconds,
+            cancellationToken: ct));
 
         await connection.ExecuteAsync(new CommandDefinition(
             SalesWeeklySchema.StagingTableDdl(),

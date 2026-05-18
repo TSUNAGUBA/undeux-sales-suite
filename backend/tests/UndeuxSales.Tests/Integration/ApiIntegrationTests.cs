@@ -25,7 +25,15 @@ public sealed class ApiIntegrationTests
     {
         var client = _factory.CreateClient();
         client.DefaultRequestHeaders.Authorization =
-            new AuthenticationHeaderValue("Bearer", "test-token");
+            new AuthenticationHeaderValue("Bearer", TestAuthHandler.AdminToken);
+        return client;
+    }
+
+    private HttpClient CreateMemberClient()
+    {
+        var client = _factory.CreateClient();
+        client.DefaultRequestHeaders.Authorization =
+            new AuthenticationHeaderValue("Bearer", "member-token");
         return client;
     }
 
@@ -213,6 +221,17 @@ public sealed class ApiIntegrationTests
         Assert.Equal(HttpStatusCode.UnprocessableEntity, response.StatusCode);
         var error = await response.Content.ReadFromJsonAsync<ApiError>();
         Assert.Equal(ErrorCodes.ImportRowInvalid.Code, error!.ErrorCode);
+    }
+
+    [Fact]
+    public async Task Import_AsNonAdmin_ReturnsForbidden()
+    {
+        var client = CreateMemberClient();
+        using var content = BuildCsvUpload(BuildCsv(ValidCsvRow("2026-06-15")));
+
+        var response = await client.PostAsync("/api/imports", content);
+
+        Assert.Equal(HttpStatusCode.Forbidden, response.StatusCode);
     }
 
     [Fact]

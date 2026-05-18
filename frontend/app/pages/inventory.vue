@@ -1,7 +1,6 @@
 <script setup lang="ts">
 import { Boxes, PackagePlus, Hourglass, Truck, Gauge, CalendarClock } from 'lucide-vue-next'
-import type { Component } from 'vue'
-import type { InventoryBreakdownRow, InventoryResponse } from '~/types/api'
+import type { InventoryBreakdownRow, InventoryResponse, KpiCardItem } from '~/types/api'
 
 useHead({ title: '在庫・発注分析 | UndeuxSales' })
 
@@ -12,14 +11,7 @@ const inventory = ref<InventoryResponse | null>(null)
 const loading = ref(true)
 const errorMessage = ref<string | null>(null)
 
-interface KpiItem {
-  label: string
-  value: string
-  icon: Component
-  accentClass: string
-}
-
-const kpiItems = computed<KpiItem[]>(() => {
+const kpiItems = computed<KpiCardItem[]>(() => {
   const kpi = inventory.value?.kpi
   if (!kpi) {
     return []

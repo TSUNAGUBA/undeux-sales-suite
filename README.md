@@ -93,6 +93,8 @@ npm run typecheck  # 型チェック
   zainiti, genka, baika, kisetsu, sakizuke_count`（任意列: `tanawari1, tanawari2`）。
 - アプリの「週次取込」画面からテンプレートCSVをダウンロードできる。
 - エラー行が1件でもある場合、取込は実行されない（修正して再アップロード）。
+- 取込は **取込権限ロール**（Firebase カスタムクレーム `role=admin`）を持つ利用者のみ実行可能。
+  権限のない利用者は参照のみ（詳細は `infra/README.md`）。
 
 ## デプロイ
 
