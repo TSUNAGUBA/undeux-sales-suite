@@ -164,6 +164,12 @@ $RdsConnectionString = "Host=$RdsEndpoint;Port=5432;Database=undeux;Username=und
 
 ## ステップ3: AWS EC2（Ubuntu）の作成
 
+> **API の公開方式:** 本プロジェクトの API は、EC2 上で稼働する `nginx-proxy` +
+> `acme-companion` のバックエンドとして公開されます（`api` コンテナに `VIRTUAL_HOST`
+> を付与し、共有 Docker ネットワーク `tsunaguba-dev-001` に接続）。複数 API を相乗り
+> させる共用 EC2 を前提とした構成です。専用 EC2 を新規に用意する場合は、先に
+> `nginx-proxy` / `acme-companion` をセットアップしておく必要があります。
+
 ### 3-1. SSH鍵ペアの生成
 
 デプロイ用のSSH鍵を作成します。**パスフレーズは空のまま Enter を2回**押してください。
@@ -257,7 +263,7 @@ API を HTTPS 公開するため、用意したドメインのサブドメイン
 $ApiDomain = "api.example.com"   # 実際に設定したサブドメインに変更
 ```
 
-> DNS の反映には数分〜数十分かかることがあります。反映後、Caddy が自動でHTTPS証明書を取得します。
+> DNS の反映には数分〜数十分かかることがあります。反映後、EC2 上の nginx-proxy（acme-companion）が自動でHTTPS証明書を取得します。
 
 ---
 
@@ -364,7 +370,7 @@ GitHub の **Actions** タブの「Run workflow」ボタンからも実行でき
 | 症状 | 対処 |
 |------|------|
 | `deploy-backend` がビルドで失敗 | EC2 のメモリ不足の可能性。インスタンスタイプを `t3.medium` 以上にする |
-| API に HTTPS で繋がらない | DNS の A レコードが EC2 の固定IPを指しているか、反映済みか確認。Caddy の証明書取得には 80/443 の開放とDNS反映が必要 |
+| API に HTTPS で繋がらない | DNS の A レコードが EC2 の固定IPを指しているか、反映済みか確認。nginx-proxy（acme-companion）の証明書取得には 80/443 の開放とDNS反映が必要 |
 | フロントから API 呼び出しが CORS エラー | `FRONTEND_ORIGIN` シークレットが実際のフロントURLと一致しているか確認し、`deploy-backend` を再実行 |
 | ログインできない | Firebase の Authentication でメール/パスワードが有効か、利用者が登録済みか確認 |
 | 取込が 403 になる | 取込する利用者に `role=admin` カスタムクレームが必要（`infra/README.md` 参照） |

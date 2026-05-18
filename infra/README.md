@@ -8,7 +8,7 @@ UndeuxSales 売上参照スイートのデプロイ構成。
 graph LR
     User[利用者ブラウザ] -->|HTTPS| FH[Firebase Hosting<br/>Nuxt SPA]
     User -->|認証| FA[Firebase Authentication]
-    FH -->|API リクエスト<br/>+ IDトークン| EC2[AWS EC2<br/>Caddy + C# Web API]
+    FH -->|API リクエスト<br/>+ IDトークン| EC2[AWS EC2<br/>nginx-proxy + C# Web API]
     EC2 -->|SQL| RDS[(AWS RDS<br/>PostgreSQL)]
 ```
 
@@ -16,7 +16,7 @@ graph LR
 |----|--------|------|
 | フロントエンド | Firebase Hosting | Nuxt SPA（静的ファイル） |
 | 認証 | Firebase Authentication | メール/パスワード認証・IDトークン発行 |
-| API | AWS EC2 | Caddy（自動HTTPS）+ C# (ASP.NET Core) Web API |
+| API | AWS EC2 | C# (ASP.NET Core) Web API（EC2 上の既存 nginx-proxy 経由で自動HTTPS公開） |
 | データベース | AWS RDS for PostgreSQL | 売上参照データ |
 
 ## デプロイ
