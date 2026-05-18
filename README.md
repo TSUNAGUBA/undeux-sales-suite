@@ -98,7 +98,9 @@ npm run typecheck  # 型チェック
 
 ## デプロイ
 
-`infra/README.md`（Firebase Hosting）および `infra/aws/README.md`（EC2 + RDS）を参照。
+GitHub Actions による自動デプロイ（フロント→Firebase Hosting、API→AWS EC2）を構成済み。
+初回セットアップとデプロイの全手順（PowerShell コマンドベース）は
+`infra/deploy-guide.md` を参照。構成の概要は `infra/README.md`。
 
 ## 設計ドキュメント
 

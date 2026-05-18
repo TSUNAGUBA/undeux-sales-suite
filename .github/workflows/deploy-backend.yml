@@ -1,0 +1,61 @@
+name: deploy-backend
+
+# バックエンドAPIを AWS EC2 (Ubuntu) へデプロイする。
+# 実行方法: GitHub の Actions タブ → "deploy-backend" → "Run workflow"
+# 必要なシークレット・EC2 の事前準備は infra/deploy-guide.md を参照。
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    steps:
+      - name: チェックアウト
+        uses: actions/checkout@v4
+
+      - name: SSH 鍵の準備
+        env:
+          EC2_SSH_KEY: ${{ secrets.EC2_SSH_KEY }}
+          EC2_HOST: ${{ secrets.EC2_HOST }}
+        run: |
+          mkdir -p ~/.ssh
+          printf '%s\n' "$EC2_SSH_KEY" > ~/.ssh/deploy_key
+          chmod 600 ~/.ssh/deploy_key
+          ssh-keyscan -H "$EC2_HOST" >> ~/.ssh/known_hosts
+
+      - name: 環境設定ファイル (.env) の生成
+        env:
+          DB_CONNECTION: ${{ secrets.RDS_CONNECTION_STRING }}
+          FIREBASE_PROJECT_ID: ${{ secrets.FIREBASE_PROJECT_ID }}
+          FRONTEND_ORIGIN: ${{ secrets.FRONTEND_ORIGIN }}
+          API_DOMAIN: ${{ secrets.API_DOMAIN }}
+        run: |
+          {
+            echo "UNDEUX_DB_CONNECTION=$DB_CONNECTION"
+            echo "UNDEUX_FIREBASE_PROJECT_ID=$FIREBASE_PROJECT_ID"
+            echo "UNDEUX_FRONTEND_ORIGIN=$FRONTEND_ORIGIN"
+            echo "UNDEUX_API_DOMAIN=$API_DOMAIN"
+          } > deploy.env
+
+      - name: プロジェクトファイルを EC2 へ同期
+        env:
+          EC2_USER: ${{ secrets.EC2_USER }}
+          EC2_HOST: ${{ secrets.EC2_HOST }}
+        run: |
+          rsync -az --delete \
+            -e "ssh -i ~/.ssh/deploy_key" \
+            backend db refference infra \
+            "$EC2_USER@$EC2_HOST:~/undeux-sales-suite/"
+          scp -i ~/.ssh/deploy_key deploy.env \
+            "$EC2_USER@$EC2_HOST:~/undeux-sales-suite/infra/aws/.env"
+
+      - name: EC2 上でデプロイを実行
+        env:
+          EC2_USER: ${{ secrets.EC2_USER }}
+          EC2_HOST: ${{ secrets.EC2_HOST }}
+        run: |
+          ssh -i ~/.ssh/deploy_key "$EC2_USER@$EC2_HOST" \
+            "bash ~/undeux-sales-suite/infra/aws/deploy-ec2.sh"
