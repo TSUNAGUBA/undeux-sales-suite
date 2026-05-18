@@ -25,8 +25,8 @@ internal static class SalesMetricSql
         => $"sw.toshu_uriage_count{dayIndex}";
 
     /// <summary>当週の売上金額式。</summary>
-    public static readonly string WeekAmount = Amount(WeekQuantity);
+    public static string WeekAmount => Amount(WeekQuantity);
 
     /// <summary>当週の粗利式。</summary>
-    public static readonly string WeekGrossProfit = GrossProfit(WeekQuantity);
+    public static string WeekGrossProfit => GrossProfit(WeekQuantity);
 }
