@@ -1,0 +1,6 @@
+@UndeuxSales.Api_HostAddress = http://localhost:5167
+
+GET {{UndeuxSales.Api_HostAddress}}/weatherforecast/
+Accept: application/json
+
+###

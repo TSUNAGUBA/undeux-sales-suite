@@ -1,0 +1,96 @@
+# ============================================================
+#  UndeuxSales 売上参照スイート — ローカル実行環境
+#  起動: docker compose up --build
+#    db        : PostgreSQL 16（schema.sql を初期適用）
+#    dataloader: 初期DBダンプ(refference)を投入し終了する
+#    api       : C# Web API（http://localhost:8080）
+#    frontend  : Nuxt SPA（http://localhost:3000）
+# ============================================================
+name: undeux-sales-suite
+
+services:
+  db:
+    image: postgres:16
+    environment:
+      POSTGRES_USER: undeux
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-undeux}
+      POSTGRES_DB: undeux
+    ports:
+      - "5432:5432"
+    volumes:
+      - db-data:/var/lib/postgresql/data
+      - ./db/schema.sql:/docker-entrypoint-initdb.d/01-schema.sql:ro
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U undeux -d undeux"]
+      interval: 5s
+      timeout: 5s
+      retries: 12
+    deploy:
+      resources:
+        limits:
+          cpus: "1.0"
+          memory: 1g
+
+  dataloader:
+    build:
+      context: ./backend
+      target: dataloader
+    environment:
+      ConnectionStrings__Default: "Host=db;Port=5432;Database=undeux;Username=undeux;Password=${POSTGRES_PASSWORD:-undeux};Command Timeout=600"
+      UNDEUX_DUMP_PATH: /refference
+      UNDEUX_SCHEMA_PATH: /app/db/schema.sql
+    volumes:
+      - ./refference:/refference:ro
+      - ./db:/app/db:ro
+    depends_on:
+      db:
+        condition: service_healthy
+    restart: "no"
+    deploy:
+      resources:
+        limits:
+          cpus: "1.0"
+          memory: 768m
+
+  api:
+    build:
+      context: ./backend
+      target: api
+    environment:
+      ASPNETCORE_ENVIRONMENT: Development
+      ConnectionStrings__Default: "Host=db;Port=5432;Database=undeux;Username=undeux;Password=${POSTGRES_PASSWORD:-undeux}"
+      Firebase__ProjectId: "${FIREBASE_PROJECT_ID:-}"
+      Cors__AllowedOrigins__0: "${FRONTEND_ORIGIN:-http://localhost:3000}"
+    ports:
+      - "8080:8080"
+    depends_on:
+      db:
+        condition: service_healthy
+      dataloader:
+        condition: service_completed_successfully
+    deploy:
+      resources:
+        limits:
+          cpus: "1.0"
+          memory: 512m
+
+  frontend:
+    build:
+      context: ./frontend
+      args:
+        NUXT_PUBLIC_API_BASE_URL: "${API_BASE_URL:-http://localhost:8080}"
+        NUXT_PUBLIC_FIREBASE_API_KEY: "${FIREBASE_API_KEY:-}"
+        NUXT_PUBLIC_FIREBASE_AUTH_DOMAIN: "${FIREBASE_AUTH_DOMAIN:-}"
+        NUXT_PUBLIC_FIREBASE_PROJECT_ID: "${FIREBASE_PROJECT_ID:-}"
+    ports:
+      - "3000:80"
+    depends_on:
+      - api
+    deploy:
+      resources:
+        limits:
+          cpus: "0.5"
+          memory: 128m
+
+volumes:
+  db-data:
