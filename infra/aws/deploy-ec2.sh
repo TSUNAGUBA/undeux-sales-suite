@@ -24,8 +24,8 @@ echo "==> イメージをビルド"
 echo "==> 初期データ投入（冪等: 投入済みならスキップ）"
 "${compose[@]}" run --rm dataloader
 
-echo "==> API・リバースプロキシを起動（API が正常になるまで待機）"
-"${compose[@]}" up -d --wait --wait-timeout 180 api caddy
+echo "==> API を起動（EC2 上の nginx-proxy 経由で公開。API が正常になるまで待機）"
+"${compose[@]}" up -d --wait --wait-timeout 180 --remove-orphans api
 
 echo "==> 不要になったイメージを削除"
 docker image prune -f

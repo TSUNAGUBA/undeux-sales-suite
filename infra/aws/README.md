@@ -11,11 +11,16 @@ EC2 上の構成:
 
 | 要素 | 内容 |
 |------|------|
-| `caddy` | 自動HTTPS リバースプロキシ（Let's Encrypt）。80/443 を公開し `api:8080` へ転送 |
-| `api` | C# Web API コンテナ |
+| `api` | C# Web API コンテナ。EC2 上の既存 `nginx-proxy` + `acme-companion` 経由で公開（`VIRTUAL_HOST` で自動検出・自動HTTPS） |
 | `dataloader` | 初期DBダンプを RDS へ投入（冪等。初回のみ実投入） |
-| 定義 | `docker-compose.ec2.yml` / `Caddyfile` / `deploy-ec2.sh` |
+| 定義 | `docker-compose.ec2.yml` / `deploy-ec2.sh` |
 | 設定 | `infra/aws/.env`（GitHub Actions が `deploy-backend` 実行時に生成） |
+
+`api` の公開と HTTPS 化は、EC2 上で既に稼働している `nginx-proxy` と
+`acme-companion` に委譲する。`docker-compose.ec2.yml` は `api` を共有ネットワーク
+`tsunaguba-dev-001` に接続し、`VIRTUAL_HOST` / `VIRTUAL_PORT` / `LETSENCRYPT_HOST`
+を付与する。これにより nginx-proxy が自動でリバースプロキシし、acme-companion が
+Let's Encrypt 証明書を取得する（ホストの 80/443 は nginx-proxy が保持）。
 
 データベースは AWS RDS（PostgreSQL 16）。スキーマDDL（`db/schema.sql`）は
 DataLoader 実行時に自動適用される。
@@ -46,7 +51,7 @@ cd ~/undeux-sales-suite/infra/aws
 | `UNDEUX_DB_CONNECTION` | RDS への接続文字列 |
 | `UNDEUX_FIREBASE_PROJECT_ID` | Firebase プロジェクトID（IDトークン検証） |
 | `UNDEUX_FRONTEND_ORIGIN` | 許可するフロントエンドのオリジン（CORS） |
-| `UNDEUX_API_DOMAIN` | API のドメイン名（Caddy の証明書取得に使用） |
+| `UNDEUX_API_DOMAIN` | API のドメイン名（nginx-proxy の `VIRTUAL_HOST` / `LETSENCRYPT_HOST` に使用） |
 
 ## 監視
 

@@ -1,8 +1,10 @@
 # ============================================================
 #  UndeuxSales — AWS EC2 デプロイ用 Compose 定義
-#  - api        : C# Web API（Caddy 経由で公開）
+#  - api        : C# Web API
 #  - dataloader : 初期DBダンプを RDS へ投入（冪等。初回のみ実投入）
-#  - caddy      : 自動HTTPS リバースプロキシ（Let's Encrypt）
+#  公開（80/443・自動HTTPS）は EC2 上の既存 nginx-proxy + acme-companion に
+#  委譲する。api を VIRTUAL_HOST 付きで proxy ネットワークに参加させると、
+#  nginx-proxy が自動検出してリバースプロキシし、証明書も自動取得される。
 #  データベースは AWS RDS（本ファイルには含めない）。
 #  設定値は同ディレクトリの .env から読み込む（GitHub Actions が生成）。
 # ============================================================
@@ -36,9 +38,18 @@ services:
       ConnectionStrings__Default: "${UNDEUX_DB_CONNECTION}"
       Firebase__ProjectId: "${UNDEUX_FIREBASE_PROJECT_ID}"
       Cors__AllowedOrigins__0: "${UNDEUX_FRONTEND_ORIGIN}"
+      # EC2 上の nginx-proxy / acme-companion による自動公開・HTTPS化。
+      # VIRTUAL_HOST のドメインで公開され、acme-companion が証明書を取得する
+      # （acme-companion 側に DEFAULT_EMAIL 設定済みのため EMAIL 指定は不要）。
+      VIRTUAL_HOST: "${UNDEUX_API_DOMAIN}"
+      VIRTUAL_PORT: "8080"
+      VIRTUAL_PROTO: http
+      LETSENCRYPT_HOST: "${UNDEUX_API_DOMAIN}"
     expose:
       - "8080"
     restart: unless-stopped
+    networks:
+      - proxy
     # readiness（DB接続込み）で判定し、API が実際に応答可能になってから healthy とする。
     healthcheck:
       test: ["CMD", "curl", "-fsS", "http://localhost:8080/api/health/ready"]
@@ -52,27 +63,9 @@ services:
           cpus: "1.0"
           memory: 512m
 
-  caddy:
-    image: caddy:2
-    environment:
-      UNDEUX_API_DOMAIN: "${UNDEUX_API_DOMAIN}"
-    ports:
-      - "80:80"
-      - "443:443"
-    volumes:
-      - ./Caddyfile:/etc/caddy/Caddyfile:ro
-      - caddy-data:/data
-      - caddy-config:/config
-    restart: unless-stopped
-    depends_on:
-      api:
-        condition: service_healthy
-    deploy:
-      resources:
-        limits:
-          cpus: "0.5"
-          memory: 128m
-
-volumes:
-  caddy-data:
-  caddy-config:
+networks:
+  # EC2 上の既存 nginx-proxy が参加しているネットワーク（外部管理）。
+  # 本 compose では作成せず、既存のものに接続する。
+  proxy:
+    external: true
+    name: tsunaguba-dev-001
