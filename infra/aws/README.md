@@ -99,4 +99,7 @@ docker run -d --name undeux-api --restart unless-stopped \
   集約し、エラーコード（`UNDX-xxx-nnn`）や `fail` レベルで検索・アラートする。
 - **リソース上限:** コンテナには `--memory` / `--cpus`（または ECS タスク定義のリソース
   指定）を必ず設定し、初期DBダンプ取込などの最重処理が API を巻き添えにしないようにする。
+- **接続プール:** API は1リクエストにつきDB接続1本を使用する。接続文字列に
+  `Maximum Pool Size`（既定100）を明示し、RDS の `max_connections` を超えないよう
+  インスタンスクラスから逆算して設計値を固定する。
 - 取込障害は `import_batch` テーブルの `status='failed'` 行で追跡できる。

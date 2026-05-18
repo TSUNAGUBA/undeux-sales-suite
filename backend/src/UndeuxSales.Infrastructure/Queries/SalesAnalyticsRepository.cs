@@ -26,15 +26,13 @@ public sealed class SalesAnalyticsRepository
     {
         filter.EnsureValid();
 
-        // 相互に依存しない3クエリを並行実行する（各クエリは個別の接続を使用）。
-        var trendTask = QueryWeeklyTrendAsync(filter, cancellationToken);
-        var productCountTask = QueryProductCountAsync(filter, cancellationToken);
-        var snapshotTask = QuerySnapshotAsync(filter, cancellationToken);
-        await Task.WhenAll(trendTask, productCountTask, snapshotTask);
+        // 単一接続で逐次実行する。各クエリは索引で最適化済みのため合計でも実用速度に収まり、
+        // 1リクエストあたりの接続消費を1本に抑える（接続プール枯渇を回避）。
+        await using var connection = await _connectionFactory.OpenConnectionAsync(cancellationToken);
 
-        var weeklyTrend = await trendTask;
-        var productCount = await productCountTask;
-        var snapshot = await snapshotTask;
+        var weeklyTrend = await QueryWeeklyTrendAsync(connection, filter, cancellationToken);
+        var productCount = await QueryProductCountAsync(connection, filter, cancellationToken);
+        var snapshot = await QuerySnapshotAsync(connection, filter, cancellationToken);
 
         // フローKPI（数量・金額・粗利）は週次トレンドの合算で算出する（専用クエリ不要）。
         var quantity = weeklyTrend.Sum(point => point.Quantity);
@@ -61,10 +59,11 @@ public sealed class SalesAnalyticsRepository
         CancellationToken cancellationToken = default)
     {
         filter.EnsureValid();
+        await using var connection = await _connectionFactory.OpenConnectionAsync(cancellationToken);
 
         var points = granularity == TrendGranularity.Daily
-            ? await QueryDailyTrendAsync(filter, cancellationToken)
-            : await QueryWeeklyTrendAsync(filter, cancellationToken);
+            ? await QueryDailyTrendAsync(connection, filter, cancellationToken)
+            : await QueryWeeklyTrendAsync(connection, filter, cancellationToken);
 
         return new TrendResponse(granularity.ToString().ToLowerInvariant(), points);
     }
@@ -300,14 +299,12 @@ public sealed class SalesAnalyticsRepository
     }
 
     // ------------------------------------------------------------
-    // 内部クエリ（サマリー用は各々が個別の接続を開き並行実行可能）
+    // 内部クエリ（呼び出し側が開いた接続を共有して逐次実行する）
     // ------------------------------------------------------------
 
-    private async Task<IReadOnlyList<TrendPoint>> QueryWeeklyTrendAsync(
-        SalesQueryFilter filter, CancellationToken cancellationToken)
+    private static async Task<IReadOnlyList<TrendPoint>> QueryWeeklyTrendAsync(
+        NpgsqlConnection connection, SalesQueryFilter filter, CancellationToken cancellationToken)
     {
-        await using var connection = await _connectionFactory.OpenConnectionAsync(cancellationToken);
-
         var parameters = new DynamicParameters();
         SalesFilterSql.AddParameters(filter, parameters);
 
@@ -327,11 +324,9 @@ public sealed class SalesAnalyticsRepository
         return rows.ToList();
     }
 
-    private async Task<IReadOnlyList<TrendPoint>> QueryDailyTrendAsync(
-        SalesQueryFilter filter, CancellationToken cancellationToken)
+    private static async Task<IReadOnlyList<TrendPoint>> QueryDailyTrendAsync(
+        NpgsqlConnection connection, SalesQueryFilter filter, CancellationToken cancellationToken)
     {
-        await using var connection = await _connectionFactory.OpenConnectionAsync(cancellationToken);
-
         var parameters = new DynamicParameters();
         SalesFilterSql.AddParameters(filter, parameters);
 
@@ -340,11 +335,10 @@ public sealed class SalesAnalyticsRepository
         var dailyValues = new List<string>();
         for (var day = 1; day <= WeekCalendar.DaysInWeek; day++)
         {
-            weeklySums.Add($"SUM(sw.toshu_uriage_count{day})::bigint AS q{day}");
-            weeklySums.Add(
-                $"SUM(sw.toshu_uriage_count{day}::bigint * sw.baika)::bigint AS a{day}");
-            weeklySums.Add(
-                $"SUM(sw.toshu_uriage_count{day}::bigint * (sw.baika - sw.genka))::bigint AS g{day}");
+            var quantity = SalesMetricSql.DailyQuantity(day);
+            weeklySums.Add($"SUM({quantity})::bigint AS q{day}");
+            weeklySums.Add($"SUM({SalesMetricSql.Amount(quantity)})::bigint AS a{day}");
+            weeklySums.Add($"SUM({SalesMetricSql.GrossProfit(quantity)})::bigint AS g{day}");
             dailyValues.Add($"({day}, q{day}, a{day}, g{day})");
         }
 
@@ -370,11 +364,9 @@ public sealed class SalesAnalyticsRepository
         return rows.ToList();
     }
 
-    private async Task<int> QueryProductCountAsync(
-        SalesQueryFilter filter, CancellationToken cancellationToken)
+    private static async Task<int> QueryProductCountAsync(
+        NpgsqlConnection connection, SalesQueryFilter filter, CancellationToken cancellationToken)
     {
-        await using var connection = await _connectionFactory.OpenConnectionAsync(cancellationToken);
-
         var parameters = new DynamicParameters();
         SalesFilterSql.AddParameters(filter, parameters);
 
@@ -392,11 +384,9 @@ public sealed class SalesAnalyticsRepository
             new CommandDefinition(sql, parameters, cancellationToken: cancellationToken));
     }
 
-    private async Task<SnapshotResult> QuerySnapshotAsync(
-        SalesQueryFilter filter, CancellationToken cancellationToken)
+    private static async Task<SnapshotResult> QuerySnapshotAsync(
+        NpgsqlConnection connection, SalesQueryFilter filter, CancellationToken cancellationToken)
     {
-        await using var connection = await _connectionFactory.OpenConnectionAsync(cancellationToken);
-
         var parameters = new DynamicParameters();
         SalesFilterSql.AddParameters(filter, parameters);
 
