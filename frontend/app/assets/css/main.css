@@ -1,0 +1,24 @@
+@import "tailwindcss";
+
+/* アプリ共通のベーススタイル */
+html,
+body,
+#__nuxt {
+  height: 100%;
+}
+
+body {
+  @apply bg-slate-100 text-slate-800 antialiased;
+  font-family: system-ui, -apple-system, "Segoe UI", "Hiragino Sans", "Noto Sans JP",
+    Meiryo, sans-serif;
+}
+
+/* スクロールバーの軽量化（Webkit系） */
+::-webkit-scrollbar {
+  width: 10px;
+  height: 10px;
+}
+
+::-webkit-scrollbar-thumb {
+  @apply rounded-full bg-slate-300;
+}
