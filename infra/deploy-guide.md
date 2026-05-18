@@ -55,7 +55,12 @@ firebase login       # Google アカウントでログイン
 
 AWS の認証情報を設定します。AWS マネジメントコンソールの
 **IAM → ユーザー → 対象ユーザー → セキュリティ認証情報 → アクセスキーを作成**
-で取得したキーを入力してください（管理者権限を持つユーザーを推奨）。
+で取得したキーを入力してください。
+
+> このアクセスキーは本手順（RDS・EC2 の作成）でのみ使用します。GitHub Actions の
+> デプロイワークフローは AWS 認証情報を使用しません。**セットアップ完了後、この
+> アクセスキーは無効化・削除してください。** 権限は EC2・RDS 操作に絞るのが望ましく
+> （最小権限の原則）、簡便にはセットアップ時のみ広い権限を付与し、完了後にキーを削除します。
 
 ```powershell
 aws configure
@@ -123,8 +128,8 @@ $VpcId   # 確認（vpc-xxxx と表示される）
 # RDS 用セキュリティグループを作成
 $RdsSgId = aws ec2 create-security-group --group-name undeux-rds-sg --description "UndeuxSales RDS" --vpc-id $VpcId --query "GroupId" --output text
 
-# DBパスワードを決める（英数字8文字以上。記号は @ / " : を避ける）
-$DbPassword = "ChangeThisStrongPassword123"
+# DBパスワードを自動生成する（英数字24文字。記号を含まず接続文字列で安全）
+$DbPassword = -join ((65..90) + (97..122) + (48..57) | Get-Random -Count 24 | ForEach-Object { [char]$_ })
 
 # RDS インスタンスを作成
 aws rds create-db-instance `
@@ -181,6 +186,10 @@ aws ec2 authorize-security-group-ingress --group-id $Ec2SgId --protocol tcp --po
 aws ec2 authorize-security-group-ingress --group-id $Ec2SgId --protocol tcp --port 80  --cidr 0.0.0.0/0
 aws ec2 authorize-security-group-ingress --group-id $Ec2SgId --protocol tcp --port 443 --cidr 0.0.0.0/0
 ```
+
+> SSH(22) は鍵認証のみ（パスワード認証は無効）で全世界公開とします（GitHub Actions の
+> ランナーIPが変動するため）。本番でアクセス元を限定したい場合は、22番を管理元IPに絞るか、
+> AWS Systems Manager Session Manager 経由の運用を検討してください。
 
 ### 3-3. EC2 インスタンスの起動
 
@@ -271,6 +280,9 @@ Get-Content "$HOME\.ssh\undeux-ec2" -Raw    | gh secret set EC2_SSH_KEY --repo $
 
 # 登録結果を確認（10件表示されればOK）
 gh secret list --repo $Repo
+
+# 機密値を含む PowerShell 変数を消去する（コンソール履歴対策）
+Remove-Variable DbPassword, RdsConnectionString -ErrorAction SilentlyContinue
 ```
 
 ---
@@ -354,5 +366,6 @@ GitHub の **Actions** タブの「Run workflow」ボタンからも実行でき
 | ログインできない | Firebase の Authentication でメール/パスワードが有効か、利用者が登録済みか確認 |
 | 取込が 403 になる | 取込する利用者に `role=admin` カスタムクレームが必要（`infra/README.md` 参照） |
 | EC2 上のログを見たい | `ssh -i "$HOME\.ssh\undeux-ec2" ubuntu@<EC2IP>` で接続し `cd undeux-sales-suite/infra/aws; docker compose -f docker-compose.ec2.yml --env-file .env logs api` |
+| `deploy-backend` の SSH 認証が失敗する | `EC2_SSH_KEY` シークレットを `Get-Content -Raw` で登録し直す（改行コード混入時の対処） |
 
 EC2 上での手動運用コマンドは `infra/aws/README.md` を参照してください。

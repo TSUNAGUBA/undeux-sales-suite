@@ -2,5 +2,8 @@
 # ドメイン名は環境変数 UNDEUX_API_DOMAIN から取得する。
 # Caddy が Let's Encrypt 証明書を自動取得・更新し、api コンテナへ転送する。
 {$UNDEUX_API_DOMAIN} {
-	reverse_proxy api:8080
+	# デプロイ中の api 再起動時もリクエストを切らないよう、一定時間リトライする。
+	reverse_proxy api:8080 {
+		lb_try_duration 30s
+	}
 }

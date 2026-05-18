@@ -45,7 +45,7 @@ jobs:
           EC2_USER: ${{ secrets.EC2_USER }}
           EC2_HOST: ${{ secrets.EC2_HOST }}
         run: |
-          rsync -az --delete \
+          rsync -az --delete --exclude='.env' \
             -e "ssh -i ~/.ssh/deploy_key" \
             backend db refference infra \
             "$EC2_USER@$EC2_HOST:~/undeux-sales-suite/"

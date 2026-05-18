@@ -13,6 +13,9 @@ if [ ! -f .env ]; then
   exit 1
 fi
 
+# 接続文字列等の機密値を含むため、所有者のみ読み取り可能にする。
+chmod 600 .env
+
 compose=(docker compose -f docker-compose.ec2.yml --env-file .env)
 
 echo "==> イメージをビルド"

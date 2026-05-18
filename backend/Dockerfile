@@ -18,6 +18,10 @@ RUN dotnet publish src/UndeuxSales.DataLoader/UndeuxSales.DataLoader.csproj \
 
 # ---- API ランタイム ----
 FROM mcr.microsoft.com/dotnet/aspnet:8.0 AS api
+# ヘルスチェック（docker compose）で使用する curl を導入する。
+RUN apt-get update \
+ && apt-get install -y --no-install-recommends curl \
+ && rm -rf /var/lib/apt/lists/*
 WORKDIR /app
 COPY --from=build /app/api ./
 ENV ASPNETCORE_URLS=http://+:8080
