@@ -87,15 +87,25 @@ firebase projects:create $FirebaseProjectId --display-name "UndeuxSales"
 
 ```powershell
 firebase apps:create WEB "undeux-web" --project $FirebaseProjectId
-firebase apps:sdkconfig WEB --project $FirebaseProjectId
+
+# Webアプリ設定を取得し、必要な値を変数へ自動で格納する
+$cfg = firebase apps:sdkconfig WEB --project $FirebaseProjectId | Out-String | ConvertFrom-Json
+$FirebaseApiKey     = $cfg.apiKey
+$FirebaseAuthDomain = $cfg.authDomain
+
+# 値が表示されることを確認（2行とも値が出ればOK）
+$FirebaseApiKey
+$FirebaseAuthDomain
 ```
 
-出力された設定のうち、次の2つを控えて変数に設定します。
-
-```powershell
-$FirebaseApiKey    = "（出力の apiKey の値）"
-$FirebaseAuthDomain = "$FirebaseProjectId.firebaseapp.com"
-```
+> 上記で値が表示されない場合は、`firebase apps:sdkconfig WEB --project $FirebaseProjectId`
+> の出力JSONから **`apiKey` と `authDomain` の値（`"` の中身）だけ** を手動で設定します。
+> **JSON全体を貼り付けないでください。** 例:
+>
+> ```powershell
+> $FirebaseApiKey     = "AIzaSy..."                       # 出力の apiKey の値
+> $FirebaseAuthDomain = "your-project.firebaseapp.com"    # 出力の authDomain の値
+> ```
 
 ### 1-3. Authentication（メール/パスワード）の有効化
 
