@@ -386,12 +386,13 @@ onMounted(async () => {
             </p>
           </div>
 
-          <div ref="tableContainer" class="flex min-h-0 flex-1 flex-col overflow-y-auto">
+          <div ref="tableContainer" class="flex min-h-0 flex-1 flex-col">
             <DataTable
               :columns="tableColumns"
               :rows="visibleRows"
               :row-key="(row: CrosstabRow) => row.key"
               :clickable="canDrill"
+              fill-height
               @row-click="handleRowDrill"
             />
           </div>

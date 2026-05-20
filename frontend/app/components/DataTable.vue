@@ -12,6 +12,8 @@ const props = defineProps<{
   rowKey: (row: T) => string | number
   /** 行クリック可否。true のとき @row-click を発火し、カーソル等の見た目を変える。 */
   clickable?: boolean
+  /** 親の高さに合わせて表領域を伸縮させ、内部スクロール時にヘッダーを上部固定する。 */
+  fillHeight?: boolean
 }>()
 
 const emit = defineEmits<{ rowClick: [row: T] }>()
@@ -34,16 +36,20 @@ function handleRowClick(row: T): void {
 <template>
   <!-- デスクトップ: テーブル表示 -->
   <div
-    class="hidden overflow-x-auto rounded-xl border border-slate-200 bg-white md:block"
+    class="hidden rounded-xl border border-slate-200 bg-white md:block"
+    :class="fillHeight ? 'h-full overflow-auto' : 'overflow-x-auto'"
   >
     <table class="w-full text-sm">
-      <thead class="bg-slate-50 text-slate-500">
+      <thead class="text-slate-500">
         <tr>
           <th
             v-for="column in columns"
             :key="column.key"
-            class="whitespace-nowrap px-4 py-2.5 font-medium"
-            :class="column.align === 'right' ? 'text-right' : 'text-left'"
+            class="whitespace-nowrap bg-slate-50 px-4 py-2.5 font-medium"
+            :class="[
+              column.align === 'right' ? 'text-right' : 'text-left',
+              fillHeight ? 'sticky top-0 z-10 border-b border-slate-200' : '',
+            ]"
           >
             {{ column.label }}
           </th>
@@ -75,7 +81,10 @@ function handleRowClick(row: T): void {
   </div>
 
   <!-- モバイル: カード表示 -->
-  <div class="space-y-2 md:hidden">
+  <div
+    class="space-y-2 md:hidden"
+    :class="fillHeight ? 'h-full overflow-auto' : ''"
+  >
     <div
       v-for="row in rows"
       :key="props.rowKey(row)"
