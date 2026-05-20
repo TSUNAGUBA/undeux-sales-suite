@@ -176,6 +176,23 @@ public sealed class ApiIntegrationTests
     }
 
     [Fact]
+    public async Task Crosstab_WithHinbanFilter_LimitsToMatchingProducts()
+    {
+        var client = CreateAuthedClient();
+
+        var response = await client.GetFromJsonAsync<CrosstabResponse>(
+            "/api/crosstab?dimension=product&from=2026-05-04&to=2026-05-11&hinbans=100");
+
+        Assert.NotNull(response);
+        Assert.NotEmpty(response!.Rows);
+        Assert.All(response.Rows, row =>
+        {
+            Assert.NotNull(row.BasicItems);
+            Assert.Equal("100", row.BasicItems!.Hinban);
+        });
+    }
+
+    [Fact]
     public async Task Crosstab_InvalidDimension_ReturnsBadRequest()
     {
         var client = CreateAuthedClient();

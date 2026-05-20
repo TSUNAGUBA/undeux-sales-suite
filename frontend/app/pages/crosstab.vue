@@ -1,12 +1,17 @@
 <script setup lang="ts">
+import { Search, RotateCcw } from 'lucide-vue-next'
 import type { CrosstabResponse, CrosstabRow } from '~/types/api'
 
 useHead({ title: 'クロス集計 | UndeuxSales' })
 
-const { toQuery } = useFilters()
+const route = useRoute()
+const router = useRouter()
+const { filter, toQuery, reset, addToFilter } = useFilters()
 const { get } = useApi()
 
-const dimension = ref<string>('hinban')
+const dimension = ref<string>(
+  typeof route.query.dimension === 'string' ? route.query.dimension : 'hinban',
+)
 const selectedMetrics = ref<string[]>([
   'amount',
   'quantity',
@@ -54,6 +59,21 @@ const keyLabel = computed(
   () =>
     dimensionOptions.find((o) => o.value === dimension.value)?.label ?? '区分',
 )
+
+const drillableDimensions = new Set([
+  'department',
+  'customer',
+  'businessType',
+  'season',
+  'hinban',
+])
+
+const canDrill = computed(() => drillableDimensions.has(dimension.value))
+
+const nextDimLabel = computed(() => {
+  if (dimension.value === 'hinban') return '単品'
+  return '品番3桁'
+})
 
 interface CrosstabColumn {
   key: string
@@ -175,6 +195,43 @@ async function load(): Promise<void> {
   }
 }
 
+async function applyAndLoad(): Promise<void> {
+  await router.replace({ query: { ...route.query, dimension: dimension.value } })
+  await load()
+}
+
+function resetAndLoad(): void {
+  reset()
+  void applyAndLoad()
+}
+
+function handleRowDrill(row: CrosstabRow): void {
+  const dim = dimension.value
+  let nextDim: string | null = null
+
+  if (dim === 'department') {
+    addToFilter('departments', row.key)
+    nextDim = 'hinban'
+  } else if (dim === 'customer') {
+    addToFilter('customers', row.key)
+    nextDim = 'hinban'
+  } else if (dim === 'businessType') {
+    addToFilter('businessTypes', row.key)
+    nextDim = 'hinban'
+  } else if (dim === 'season') {
+    addToFilter('seasons', row.key)
+    nextDim = 'hinban'
+  } else if (dim === 'hinban') {
+    addToFilter('hinbans', row.key)
+    nextDim = 'product'
+  } else {
+    return
+  }
+
+  dimension.value = nextDim
+  void applyAndLoad()
+}
+
 onMounted(load)
 </script>
 
@@ -183,36 +240,55 @@ onMounted(load)
     <div>
       <h1 class="text-xl font-bold text-slate-800">クロス集計</h1>
       <p class="text-sm text-slate-500">
-        集計単位ごとに複数のメトリクスを横並び表示
+        集計単位ごとに複数のメトリクスを横並び表示。行クリックでドリルダウン可能。
       </p>
     </div>
 
-    <FilterBar @apply="load" />
+    <CollapsiblePanel title="条件設定">
+      <FilterControls />
 
-    <CollapsiblePanel title="集計単位">
-      <select
-        v-model="dimension"
-        class="w-full max-w-xs rounded-lg border border-slate-300 bg-white px-3 py-2 text-sm"
-        @change="load"
-      >
-        <option v-for="opt in dimensionOptions" :key="opt.value" :value="opt.value">
-          {{ opt.label }}
-        </option>
-      </select>
+      <div class="mt-4 grid grid-cols-1 gap-3 sm:grid-cols-2">
+        <div>
+          <label class="mb-1 block text-xs font-medium text-slate-500">集計単位</label>
+          <select
+            v-model="dimension"
+            class="w-full rounded-lg border border-slate-300 bg-white px-3 py-2 text-sm"
+          >
+            <option v-for="opt in dimensionOptions" :key="opt.value" :value="opt.value">
+              {{ opt.label }}
+            </option>
+          </select>
+        </div>
+        <MultiSelect
+          v-model="selectedMetrics"
+          label="表示集計値"
+          :options="metricSelectOptions"
+        />
+      </div>
+
       <p class="mt-2 text-xs text-slate-400">
         単品を選ぶと、基本項目（商品記号・カラー・サイズ・季節）も表示されます。
+        在庫数・消化率は最新取込週スナップショット基準。
       </p>
-    </CollapsiblePanel>
 
-    <CollapsiblePanel title="表示集計値">
-      <MultiSelect
-        v-model="selectedMetrics"
-        label="メトリクス"
-        :options="metricSelectOptions"
-      />
-      <p class="mt-2 text-xs text-slate-400">
-        構成比率と消化率は売上金額・累計値の比率です。在庫数・消化率は最新取込週スナップショット基準。
-      </p>
+      <div class="mt-4 flex flex-wrap gap-2">
+        <button
+          type="button"
+          class="flex items-center gap-1.5 rounded-lg bg-indigo-600 px-4 py-2 text-sm font-medium text-white hover:bg-indigo-700"
+          @click="applyAndLoad"
+        >
+          <Search class="h-4 w-4" />
+          適用
+        </button>
+        <button
+          type="button"
+          class="flex items-center gap-1.5 rounded-lg border border-slate-300 px-4 py-2 text-sm font-medium text-slate-600 hover:bg-slate-50"
+          @click="resetAndLoad"
+        >
+          <RotateCcw class="h-4 w-4" />
+          リセット
+        </button>
+      </div>
     </CollapsiblePanel>
 
     <StatusBlock
@@ -225,10 +301,15 @@ onMounted(load)
         <p v-if="result?.latestWeek" class="text-xs text-slate-400">
           最新取込週: {{ result.latestWeek }}（在庫・消化率のスナップショット基準）
         </p>
+        <p v-if="canDrill" class="text-xs text-indigo-600">
+          行をクリックすると、その{{ keyLabel }}でさらに絞り込んで「{{ nextDimLabel }}」へドリルダウンします。
+        </p>
         <DataTable
           :columns="tableColumns"
           :rows="result?.rows ?? []"
           :row-key="(row: CrosstabRow) => row.key"
+          :clickable="canDrill"
+          @row-click="handleRowDrill"
         />
         <p class="text-xs text-slate-400">
           上位 {{ formatNumber(result?.rows.length ?? 0) }} 件（売上金額の降順、最大1000件）

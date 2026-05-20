@@ -4,7 +4,7 @@ import type { ProductPage, ProductRow } from '~/types/api'
 
 useHead({ title: '商品別分析 | UndeuxSales' })
 
-const { toQuery } = useFilters()
+const { toQuery, addToFilter } = useFilters()
 const { get } = useApi()
 
 const sort = ref('salesAmount')
@@ -107,6 +107,11 @@ function changePage(delta: number): void {
   }
 }
 
+function handleProductDrill(row: ProductRow): void {
+  addToFilter('hinbans', row.hinbanCode)
+  navigateTo({ path: '/crosstab', query: { dimension: 'product' } })
+}
+
 onMounted(load)
 </script>
 
@@ -156,6 +161,8 @@ onMounted(load)
           :columns="columns"
           :rows="productPage?.items ?? []"
           :row-key="(row: ProductRow) => `${row.hinbanCode}-${row.tanpinCode}`"
+          clickable
+          @row-click="handleProductDrill"
         />
 
         <div class="flex items-center justify-between text-sm text-slate-600">

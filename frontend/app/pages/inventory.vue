@@ -4,7 +4,7 @@ import type { InventoryBreakdownRow, InventoryResponse, KpiCardItem } from '~/ty
 
 useHead({ title: '在庫・発注分析 | UndeuxSales' })
 
-const { toQuery } = useFilters()
+const { toQuery, addToFilter } = useFilters()
 const { get } = useApi()
 
 const inventory = ref<InventoryResponse | null>(null)
@@ -103,6 +103,15 @@ async function load(): Promise<void> {
   }
 }
 
+function handleKpiDrill(): void {
+  navigateTo({ path: '/crosstab', query: { dimension: 'department' } })
+}
+
+function handleDepartmentDrill(row: InventoryBreakdownRow): void {
+  addToFilter('departments', row.key)
+  navigateTo({ path: '/crosstab', query: { dimension: 'hinban' } })
+}
+
 onMounted(load)
 </script>
 
@@ -122,7 +131,7 @@ onMounted(load)
       empty-message="該当する在庫データがありません。"
     >
       <div class="space-y-4">
-        <div class="grid grid-cols-2 gap-3 md:grid-cols-3 lg:grid-cols-6">
+        <div class="grid grid-cols-1 gap-3 sm:grid-cols-2 lg:grid-cols-3">
           <KpiCard
             v-for="item in kpiItems"
             :key="item.label"
@@ -130,6 +139,8 @@ onMounted(load)
             :value="item.value"
             :icon="item.icon"
             :accent-class="item.accentClass"
+            clickable
+            @click="handleKpiDrill"
           />
         </div>
 
@@ -150,6 +161,8 @@ onMounted(load)
           :columns="columns"
           :rows="inventory?.byDepartment ?? []"
           :row-key="(row: InventoryBreakdownRow) => row.key"
+          clickable
+          @row-click="handleDepartmentDrill"
         />
       </div>
     </StatusBlock>

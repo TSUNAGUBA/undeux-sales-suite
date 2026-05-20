@@ -24,6 +24,9 @@ public sealed class SalesQueryFilter
     /// <summary>季節区分（いずれかに一致）。</summary>
     public string[]? Seasons { get; set; }
 
+    /// <summary>品番コード（いずれかに一致）。ドリルダウン時に設定される。</summary>
+    public string[]? Hinbans { get; set; }
+
     /// <summary>フィルタの妥当性を検証する。不正な場合は <see cref="AppException"/> を送出する。</summary>
     public void EnsureValid()
     {
@@ -72,6 +75,11 @@ internal static class SalesFilterSql
         {
             parameters.Add("seasons", filter.Seasons);
         }
+
+        if (filter.Hinbans is { Length: > 0 })
+        {
+            parameters.Add("hinbans", filter.Hinbans);
+        }
     }
 
     /// <summary>条件式を <c>AND</c> 連結で返す（条件がなければ空文字）。</summary>
@@ -107,6 +115,11 @@ internal static class SalesFilterSql
         if (filter.Seasons is { Length: > 0 })
         {
             conditions.Add($"{alias}.kisetsu = ANY(@seasons)");
+        }
+
+        if (filter.Hinbans is { Length: > 0 })
+        {
+            conditions.Add($"{alias}.hinban_code = ANY(@hinbans)");
         }
 
         return string.Join(" AND ", conditions);

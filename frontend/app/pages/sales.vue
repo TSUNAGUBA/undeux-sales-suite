@@ -3,7 +3,7 @@ import type { BreakdownResponse, BreakdownRow, TrendResponse } from '~/types/api
 
 useHead({ title: '売上分析 | UndeuxSales' })
 
-const { toQuery } = useFilters()
+const { toQuery, addToFilter } = useFilters()
 const { get } = useApi()
 
 const granularity = ref<'weekly' | 'daily'>('weekly')
@@ -104,6 +104,35 @@ async function load(): Promise<void> {
   }
 }
 
+function handleBreakdownDrill(row: BreakdownRow): void {
+  const currentDim = dimension.value
+  let targetDim = 'hinban'
+
+  if (currentDim === 'department') {
+    addToFilter('departments', row.key)
+  } else if (currentDim === 'customer') {
+    addToFilter('customers', row.key)
+  } else if (currentDim === 'businessType') {
+    addToFilter('businessTypes', row.key)
+  } else if (currentDim === 'season') {
+    addToFilter('seasons', row.key)
+  } else if (currentDim === 'product') {
+    const hinban = row.key.split('-')[0]
+    if (hinban) {
+      addToFilter('hinbans', hinban)
+    }
+    targetDim = 'product'
+  }
+  // color / size はフィルター追加対象がないため、対応する集計単位のまま遷移
+  if (currentDim === 'color') {
+    targetDim = 'color'
+  } else if (currentDim === 'size') {
+    targetDim = 'size'
+  }
+
+  navigateTo({ path: '/crosstab', query: { dimension: targetDim } })
+}
+
 onMounted(load)
 </script>
 
@@ -196,6 +225,8 @@ onMounted(load)
           :columns="tableColumns"
           :rows="breakdown?.rows ?? []"
           :row-key="(row: BreakdownRow) => row.key"
+          clickable
+          @row-click="handleBreakdownDrill"
         />
 
         <p
