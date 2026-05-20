@@ -4,6 +4,7 @@ import {
   TrendingUp,
   Package,
   Boxes,
+  LayoutGrid,
   Upload,
   LogOut,
 } from 'lucide-vue-next'
@@ -19,6 +20,7 @@ const navItems = [
   { to: '/sales', label: '売上分析', icon: TrendingUp },
   { to: '/products', label: '商品別分析', icon: Package },
   { to: '/inventory', label: '在庫・発注分析', icon: Boxes },
+  { to: '/crosstab', label: 'クロス集計', icon: LayoutGrid },
   { to: '/imports', label: '週次取込', icon: Upload },
 ]
 

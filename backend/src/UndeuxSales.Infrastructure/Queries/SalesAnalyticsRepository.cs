@@ -298,6 +298,110 @@ public sealed class SalesAnalyticsRepository
         return new ProductPage(items, totalCount, page, pageSize);
     }
 
+    /// <summary>クロス集計（指定の集計単位での複数メトリクス集計）を取得する。</summary>
+    /// <remarks>
+    /// フロー指標（数量・金額・粗利）は期間内合算、在日は平均、在庫・累計は最新取込週スナップショット基準。
+    /// 単品 (Product) のみ基本項目（品番・単品・商品記号・カラー・サイズ・季節）を返す。
+    /// </remarks>
+    public async Task<CrosstabResponse> GetCrosstabAsync(
+        SalesQueryFilter filter,
+        BreakdownDimension dimension,
+        CancellationToken cancellationToken = default)
+    {
+        filter.EnsureValid();
+        await using var connection = await _connectionFactory.OpenConnectionAsync(cancellationToken);
+
+        var parameters = new DynamicParameters();
+        SalesFilterSql.AddParameters(filter, parameters);
+
+        var latestWeek = await QueryLatestWeekAsync(connection, filter, parameters, cancellationToken);
+        if (!latestWeek.HasValue)
+        {
+            return new CrosstabResponse(dimension.ToString(), Array.Empty<CrosstabRow>(), null);
+        }
+
+        parameters.Add("latestWeek", latestWeek.Value);
+        parameters.Add("limit", MaxBreakdownLimit);
+
+        var (groupBy, keyExpr, labelExpr) = ResolveDimension(dimension);
+        var isProduct = dimension == BreakdownDimension.Product;
+
+        // 単品 (Product) のみ、グループキーがそのまま基本項目を一意特定するため値を返す。
+        // 他のディメンションではグループ内で値が一意にならないため NULL を返す。
+        var basicItemsSelect = isProduct
+            ? "sw.hinban_code AS hinban, sw.tanpin_code AS tanpin, "
+              + "MAX(sw.shohin_kigou) AS shohin_kigou, MAX(sw.color) AS color, "
+              + "MAX(sw.size) AS size, MAX(sw.kisetsu) AS kisetsu,"
+            : "NULL::text AS hinban, NULL::text AS tanpin, NULL::text AS shohin_kigou, "
+              + "NULL::text AS color, NULL::text AS size, NULL::text AS kisetsu,";
+
+        var whereClause = SalesFilterSql.WhereClause(filter, "sw");
+        var andClause = SalesFilterSql.AndClause(filter, "sw");
+
+        var sql = $"""
+            WITH flow AS (
+                SELECT {keyExpr} AS key,
+                       {labelExpr} AS label,
+                       {basicItemsSelect}
+                       COALESCE(SUM({SalesMetricSql.WeekQuantity}), 0)::bigint    AS quantity,
+                       COALESCE(SUM({SalesMetricSql.WeekAmount}), 0)::bigint      AS amount,
+                       COALESCE(SUM({SalesMetricSql.WeekGrossProfit}), 0)::bigint AS gross_profit,
+                       COALESCE(AVG(sw.zainiti), 0)::float8                       AS stock_days
+                FROM sales_weekly sw
+                {whereClause}
+                GROUP BY {groupBy}
+            ),
+            snapshot AS (
+                SELECT {keyExpr} AS key,
+                       COALESCE(SUM(sw.zaikosu), 0)::bigint             AS stock,
+                       COALESCE(SUM(sw.ruikei_uriage_count), 0)::bigint AS cumulative_sales,
+                       COALESCE(SUM(sw.ruikei_nohin_count), 0)::bigint  AS cumulative_delivery
+                FROM sales_weekly sw
+                WHERE sw.import_date = @latestWeek{andClause}
+                GROUP BY {groupBy}
+            )
+            SELECT f.key,
+                   f.label,
+                   f.hinban, f.tanpin, f.shohin_kigou, f.color, f.size, f.kisetsu,
+                   f.quantity, f.amount, f.gross_profit, f.stock_days,
+                   COALESCE(s.stock, 0)::bigint               AS stock,
+                   COALESCE(s.cumulative_sales, 0)::bigint    AS cumulative_sales,
+                   COALESCE(s.cumulative_delivery, 0)::bigint AS cumulative_delivery,
+                   (SUM(f.amount) OVER ())::bigint            AS total_amount
+            FROM flow f
+            LEFT JOIN snapshot s ON s.key = f.key
+            ORDER BY f.amount DESC, f.key
+            LIMIT @limit;
+            """;
+
+        var rawRows = (await connection.QueryAsync<CrosstabRawRow>(
+            new CommandDefinition(sql, parameters, cancellationToken: cancellationToken))).ToList();
+
+        var rows = rawRows.Select(r => new CrosstabRow(
+            r.Key,
+            r.Label,
+            isProduct
+                ? new CrosstabBasicItems(
+                    r.Hinban ?? string.Empty,
+                    r.Tanpin ?? string.Empty,
+                    r.Label,
+                    r.ShohinKigou ?? string.Empty,
+                    r.Color ?? string.Empty,
+                    r.Size ?? string.Empty,
+                    r.Kisetsu ?? string.Empty)
+                : null,
+            r.Quantity,
+            r.Amount,
+            r.GrossProfit,
+            SharePercentByAmount(r.Amount, r.TotalAmount),
+            r.Stock,
+            r.StockDays,
+            Ratio(r.CumulativeSales, r.CumulativeDelivery) * 100.0))
+            .ToList();
+
+        return new CrosstabResponse(dimension.ToString(), rows, latestWeek);
+    }
+
     // ------------------------------------------------------------
     // 内部クエリ（呼び出し側が開いた接続を共有して逐次実行する）
     // ------------------------------------------------------------
@@ -445,6 +549,20 @@ public sealed class SalesAnalyticsRepository
             ("sw.hinban_code, sw.tanpin_code",
              "sw.hinban_code || '-' || sw.tanpin_code",
              "MAX(sw.hinmei)"),
+        BreakdownDimension.Hinban =>
+            ("sw.hinban_code", "sw.hinban_code", "sw.hinban_code"),
+        BreakdownDimension.ChohyoKubun =>
+            ("sw.chohyo_kubun_name", "sw.chohyo_kubun_name", "sw.chohyo_kubun_name"),
+        BreakdownDimension.Tanawari1 =>
+            ("COALESCE(sw.tanawari1, '')",
+             "COALESCE(sw.tanawari1, '')",
+             "COALESCE(sw.tanawari1, '')"),
+        BreakdownDimension.Tanawari2 =>
+            ("COALESCE(sw.tanawari2, '')",
+             "COALESCE(sw.tanawari2, '')",
+             "COALESCE(sw.tanawari2, '')"),
+        BreakdownDimension.ShohinKigo =>
+            ("sw.shohin_kigou", "sw.shohin_kigou", "sw.shohin_kigou"),
         _ => throw new AppException(ErrorCodes.UnknownDimension, 400),
     };
 
@@ -479,6 +597,10 @@ public sealed class SalesAnalyticsRepository
     // 分母0は0を返す（ゼロ除算の防止）。
     private static double Ratio(long numerator, long denominator)
         => denominator == 0 ? 0.0 : (double)numerator / denominator;
+
+    // 売上金額ベースの構成比率（%）。分母0は0を返す。
+    private static double SharePercentByAmount(long amount, long totalAmount)
+        => totalAmount == 0 ? 0.0 : (double)amount / totalAmount * 100.0;
 
     private sealed record SnapshotRow(long Stock, long CumulativeSales, long CumulativeDelivery);
 
@@ -526,4 +648,22 @@ public sealed class SalesAnalyticsRepository
         long CumulativeDelivery,
         double AverageStockDays,
         int TotalCount);
+
+    private sealed record CrosstabRawRow(
+        string Key,
+        string Label,
+        string? Hinban,
+        string? Tanpin,
+        string? ShohinKigou,
+        string? Color,
+        string? Size,
+        string? Kisetsu,
+        long Quantity,
+        long Amount,
+        long GrossProfit,
+        double StockDays,
+        long Stock,
+        long CumulativeSales,
+        long CumulativeDelivery,
+        long TotalAmount);
 }
