@@ -146,12 +146,44 @@ export interface ApiError {
   details?: string[]
 }
 
-/** 売上分析クエリの共通フィルタ状態。 */
+/** 売上分析クエリの共通フィルタ状態（年度 = 1月〜12月のカレンダー年）。 */
 export interface SalesFilterState {
-  from: string | null
-  to: string | null
+  /** 西暦年。null=全期間。 */
+  year: number | null
   departments: string[]
   customers: string[]
   businessTypes: string[]
   seasons: string[]
+}
+
+/** クロス集計の基本項目（単品レベル時のみ非null）。 */
+export interface CrosstabBasicItems {
+  hinban: string
+  tanpin: string
+  hinmei: string
+  shohinKigo: string
+  color: string
+  size: string
+  kisetsu: string
+}
+
+/** クロス集計の1行。 */
+export interface CrosstabRow {
+  key: string
+  label: string
+  basicItems: CrosstabBasicItems | null
+  quantity: number
+  amount: number
+  grossProfit: number
+  sharePercent: number
+  stock: number
+  stockDays: number
+  sellThroughRate: number
+}
+
+/** クロス集計のレスポンス（売上金額の降順）。 */
+export interface CrosstabResponse {
+  dimension: string
+  rows: CrosstabRow[]
+  latestWeek: string | null
 }

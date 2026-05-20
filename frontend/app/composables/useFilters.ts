@@ -2,8 +2,7 @@ import type { FilterOptions, SalesFilterState } from '~/types/api'
 
 function emptyFilter(): SalesFilterState {
   return {
-    from: null,
-    to: null,
+    year: null,
     departments: [],
     customers: [],
     businessTypes: [],
@@ -30,15 +29,26 @@ export function useFilters() {
     }
   }
 
-  /** 現在のフィルタをAPIクエリパラメータへ変換する（空項目は除外）。 */
+  /** 取込日（週）から西暦年の昇順リストを導出する。 */
+  const years = computed<number[]>(() => {
+    const weeks = options.value?.weeks ?? []
+    const set = new Set<number>()
+    for (const week of weeks) {
+      const year = Number.parseInt(week.slice(0, 4), 10)
+      if (Number.isFinite(year)) {
+        set.add(year)
+      }
+    }
+    return [...set].sort((a, b) => a - b)
+  })
+
+  /** 現在のフィルタをAPIクエリパラメータへ変換する（年 → from/to に展開、空項目は除外）。 */
   function toQuery(): Record<string, unknown> {
     const query: Record<string, unknown> = {}
     const current = filter.value
-    if (current.from) {
-      query.from = current.from
-    }
-    if (current.to) {
-      query.to = current.to
+    if (current.year !== null) {
+      query.from = `${current.year}-01-01`
+      query.to = `${current.year}-12-31`
     }
     if (current.departments.length > 0) {
       query.departments = current.departments
@@ -60,5 +70,5 @@ export function useFilters() {
     filter.value = emptyFilter()
   }
 
-  return { filter, options, optionsError, loadOptions, toQuery, reset }
+  return { filter, options, optionsError, loadOptions, toQuery, reset, years }
 }

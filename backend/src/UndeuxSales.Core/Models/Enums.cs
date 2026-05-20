@@ -41,6 +41,21 @@ public enum BreakdownDimension
 
     /// <summary>サイズ。</summary>
     Size,
+
+    /// <summary>品番3桁（hinban_code 単独）。</summary>
+    Hinban,
+
+    /// <summary>帳票区分名。</summary>
+    ChohyoKubun,
+
+    /// <summary>棚割1。</summary>
+    Tanawari1,
+
+    /// <summary>棚割2。</summary>
+    Tanawari2,
+
+    /// <summary>商品記号。</summary>
+    ShohinKigo,
 }
 
 /// <summary>時系列トレンドの粒度。</summary>

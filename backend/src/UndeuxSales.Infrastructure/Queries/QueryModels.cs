@@ -91,3 +91,32 @@ public sealed record ProductPage(
     int TotalCount,
     int Page,
     int PageSize);
+
+/// <summary>クロス集計の基本項目（単品レベル時のみ設定される）。</summary>
+public sealed record CrosstabBasicItems(
+    string Hinban,
+    string Tanpin,
+    string Hinmei,
+    string ShohinKigo,
+    string Color,
+    string Size,
+    string Kisetsu);
+
+/// <summary>クロス集計の1行。基本項目は単品レベル時のみ非nullになる。</summary>
+public sealed record CrosstabRow(
+    string Key,
+    string Label,
+    CrosstabBasicItems? BasicItems,
+    long Quantity,
+    long Amount,
+    long GrossProfit,
+    double SharePercent,
+    long Stock,
+    double StockDays,
+    double SellThroughRate);
+
+/// <summary>クロス集計のレスポンス（売上金額の降順）。</summary>
+public sealed record CrosstabResponse(
+    string Dimension,
+    IReadOnlyList<CrosstabRow> Rows,
+    DateOnly? LatestWeek);

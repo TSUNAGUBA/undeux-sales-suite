@@ -136,6 +136,56 @@ public sealed class ApiIntegrationTests
     }
 
     [Fact]
+    public async Task Crosstab_ByDepartment_ReturnsTwoRows()
+    {
+        var client = CreateAuthedClient();
+
+        var response = await client.GetFromJsonAsync<CrosstabResponse>(
+            "/api/crosstab?dimension=department&from=2026-05-04&to=2026-05-11");
+
+        Assert.NotNull(response);
+        Assert.Equal(2, response!.Rows.Count);
+        Assert.NotNull(response.LatestWeek);
+        Assert.All(response.Rows, row => Assert.Null(row.BasicItems));
+    }
+
+    [Fact]
+    public async Task Crosstab_ByProduct_IncludesBasicItems()
+    {
+        var client = CreateAuthedClient();
+
+        var response = await client.GetFromJsonAsync<CrosstabResponse>(
+            "/api/crosstab?dimension=product&from=2026-05-04&to=2026-05-11");
+
+        Assert.NotNull(response);
+        Assert.NotEmpty(response!.Rows);
+        Assert.All(response.Rows, row => Assert.NotNull(row.BasicItems));
+    }
+
+    [Fact]
+    public async Task Crosstab_ByHinban_GroupsByHinbanCode()
+    {
+        var client = CreateAuthedClient();
+
+        var response = await client.GetFromJsonAsync<CrosstabResponse>(
+            "/api/crosstab?dimension=hinban&from=2026-05-04&to=2026-05-11");
+
+        Assert.NotNull(response);
+        Assert.NotEmpty(response!.Rows);
+        Assert.All(response.Rows, row => Assert.Null(row.BasicItems));
+    }
+
+    [Fact]
+    public async Task Crosstab_InvalidDimension_ReturnsBadRequest()
+    {
+        var client = CreateAuthedClient();
+
+        var response = await client.GetAsync("/api/crosstab?dimension=unknown");
+
+        Assert.Equal(HttpStatusCode.BadRequest, response.StatusCode);
+    }
+
+    [Fact]
     public async Task Trend_Weekly_ReturnsTwoPoints()
     {
         var client = CreateAuthedClient();

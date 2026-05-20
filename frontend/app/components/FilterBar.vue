@@ -4,7 +4,7 @@ import type { CodeName } from '~/types/api'
 
 const emit = defineEmits<{ apply: [] }>()
 
-const { filter, options, optionsError, loadOptions, reset } = useFilters()
+const { filter, options, optionsError, loadOptions, reset, years } = useFilters()
 
 onMounted(loadOptions)
 
@@ -19,7 +19,6 @@ const departmentOptions = computed(() => toSelectOptions(options.value?.departme
 const customerOptions = computed(() => toSelectOptions(options.value?.customers ?? []))
 const businessTypeOptions = computed(() => toSelectOptions(options.value?.businessTypes ?? []))
 const seasonOptions = computed(() => toSelectOptions(options.value?.seasons ?? []))
-const weeks = computed(() => options.value?.weeks ?? [])
 
 function applyFilter(): void {
   emit('apply')
@@ -32,7 +31,7 @@ function resetFilter(): void {
 </script>
 
 <template>
-  <div class="rounded-xl border border-slate-200 bg-white p-4 shadow-sm">
+  <CollapsiblePanel title="フィルター">
     <p
       v-if="optionsError"
       class="mb-3 rounded-lg bg-amber-50 px-3 py-2 text-xs text-amber-700"
@@ -43,27 +42,14 @@ function resetFilter(): void {
     <div class="grid grid-cols-1 gap-3 sm:grid-cols-2 lg:grid-cols-3">
       <div>
         <label class="mb-1 block text-xs font-medium text-slate-500">
-          開始週（取込日）
+          年度（1月〜12月）
         </label>
         <select
-          v-model="filter.from"
+          v-model="filter.year"
           class="w-full rounded-lg border border-slate-300 bg-white px-3 py-2 text-sm text-slate-700"
         >
-          <option :value="null">最古から</option>
-          <option v-for="week in weeks" :key="week" :value="week">{{ week }}</option>
-        </select>
-      </div>
-
-      <div>
-        <label class="mb-1 block text-xs font-medium text-slate-500">
-          終了週（取込日）
-        </label>
-        <select
-          v-model="filter.to"
-          class="w-full rounded-lg border border-slate-300 bg-white px-3 py-2 text-sm text-slate-700"
-        >
-          <option :value="null">最新まで</option>
-          <option v-for="week in weeks" :key="week" :value="week">{{ week }}</option>
+          <option :value="null">全期間</option>
+          <option v-for="y in years" :key="y" :value="y">{{ y }}年</option>
         </select>
       </div>
 
@@ -107,5 +93,5 @@ function resetFilter(): void {
         リセット
       </button>
     </div>
-  </div>
+  </CollapsiblePanel>
 </template>
