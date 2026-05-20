@@ -12,6 +12,8 @@ const props = defineProps<{
   rowKey: (row: T) => string | number
   /** 行クリック可否。true のとき @row-click を発火し、カーソル等の見た目を変える。 */
   clickable?: boolean
+  /** 親の高さに合わせて表領域を伸縮させ、内部スクロール時にヘッダーを上部固定する。 */
+  fillHeight?: boolean
 }>()
 
 const emit = defineEmits<{ rowClick: [row: T] }>()
@@ -34,10 +36,14 @@ function handleRowClick(row: T): void {
 <template>
   <!-- デスクトップ: テーブル表示 -->
   <div
-    class="hidden overflow-x-auto rounded-xl border border-slate-200 bg-white md:block"
+    class="hidden rounded-xl border border-slate-200 bg-white md:block"
+    :class="fillHeight ? 'h-full overflow-auto' : 'overflow-x-auto'"
   >
     <table class="w-full text-sm">
-      <thead class="bg-slate-50 text-slate-500">
+      <thead
+        class="bg-slate-50 text-slate-500"
+        :class="fillHeight ? 'sticky top-0 z-10 shadow-[0_1px_0_0_rgb(226,232,240)]' : ''"
+      >
         <tr>
           <th
             v-for="column in columns"
@@ -75,7 +81,10 @@ function handleRowClick(row: T): void {
   </div>
 
   <!-- モバイル: カード表示 -->
-  <div class="space-y-2 md:hidden">
+  <div
+    class="space-y-2 md:hidden"
+    :class="fillHeight ? 'h-full overflow-auto' : ''"
+  >
     <div
       v-for="row in rows"
       :key="props.rowKey(row)"
