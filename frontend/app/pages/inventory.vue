@@ -4,7 +4,7 @@ import type { InventoryBreakdownRow, InventoryResponse, KpiCardItem } from '~/ty
 
 useHead({ title: '在庫・発注分析 | UndeuxSales' })
 
-const { toQuery, addToFilter } = useFilters()
+const { toQuery, addToFilter, loadOptions } = useFilters()
 const { get } = useApi()
 
 const inventory = ref<InventoryResponse | null>(null)
@@ -112,7 +112,10 @@ function handleDepartmentDrill(row: InventoryBreakdownRow): void {
   navigateTo({ path: '/crosstab', query: { dimension: 'hinban' } })
 }
 
-onMounted(load)
+onMounted(async () => {
+  await loadOptions()
+  await load()
+})
 </script>
 
 <template>
