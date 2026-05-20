@@ -12,7 +12,7 @@ import type { KpiCardItem, SummaryResponse } from '~/types/api'
 
 useHead({ title: '全社サマリー | UndeuxSales' })
 
-const { toQuery } = useFilters()
+const { toQuery, loadOptions } = useFilters()
 const { get } = useApi()
 
 const summary = ref<SummaryResponse | null>(null)
@@ -98,7 +98,10 @@ function handleKpiDrill(): void {
   navigateTo({ path: '/crosstab', query: { dimension: 'department' } })
 }
 
-onMounted(load)
+onMounted(async () => {
+  await loadOptions()
+  await load()
+})
 </script>
 
 <template>

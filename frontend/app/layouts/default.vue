@@ -5,7 +5,7 @@ const sidebarOpen = ref(false)
 </script>
 
 <template>
-  <div class="flex min-h-screen">
+  <div class="flex h-screen">
     <!-- デスクトップ: 固定サイドバー -->
     <div class="hidden lg:block">
       <AppSidebar />
@@ -38,7 +38,7 @@ const sidebarOpen = ref(false)
         <span class="font-bold text-slate-800">UndeuxSales</span>
       </header>
 
-      <main class="flex-1 p-4 lg:p-6">
+      <main class="flex-1 overflow-y-auto p-4 lg:p-6">
         <slot />
       </main>
     </div>

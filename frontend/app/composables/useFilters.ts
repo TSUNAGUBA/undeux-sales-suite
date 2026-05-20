@@ -2,7 +2,7 @@ import type { FilterOptions, SalesFilterState } from '~/types/api'
 
 function emptyFilter(): SalesFilterState {
   return {
-    year: null,
+    year: new Date().getFullYear(),
     departments: [],
     customers: [],
     businessTypes: [],
@@ -17,19 +17,6 @@ export function useFilters() {
   const options = useState<FilterOptions | null>('filter-options', () => null)
   const optionsError = useState<string | null>('filter-options-error', () => null)
 
-  /** フィルタ選択肢を取得する（取得済みなら再取得しない）。 */
-  async function loadOptions(): Promise<void> {
-    if (options.value) {
-      return
-    }
-    try {
-      options.value = await useApi().get<FilterOptions>('/api/filters')
-      optionsError.value = null
-    } catch (error) {
-      optionsError.value = apiErrorMessage(error)
-    }
-  }
-
   /** 取込日（週）から西暦年の昇順リストを導出する。 */
   const years = computed<number[]>(() => {
     const weeks = options.value?.weeks ?? []
@@ -42,6 +29,34 @@ export function useFilters() {
     }
     return [...set].sort((a, b) => a - b)
   })
+
+  // 規定年（今年度）が利用可能なデータに含まれない場合、最新の利用可能年に切替えるガード。
+  // 取込済みデータが過去年のみのデモ/テスト環境でも、初期表示で空にならないようにする。
+  function applyDefaultYearGuard(): void {
+    if (
+      filter.value.year !== null
+      && years.value.length > 0
+      && !years.value.includes(filter.value.year)
+    ) {
+      const latest = years.value[years.value.length - 1]
+      filter.value.year = latest ?? null
+    }
+  }
+
+  /** フィルタ選択肢を取得する（取得済みなら再取得しない）。完了後に年度ガードを適用する。 */
+  async function loadOptions(): Promise<void> {
+    if (options.value) {
+      applyDefaultYearGuard()
+      return
+    }
+    try {
+      options.value = await useApi().get<FilterOptions>('/api/filters')
+      optionsError.value = null
+      applyDefaultYearGuard()
+    } catch (error) {
+      optionsError.value = apiErrorMessage(error)
+    }
+  }
 
   /** 現在のフィルタをAPIクエリパラメータへ変換する（年 → from/to に展開、空項目は除外）。 */
   function toQuery(): Record<string, unknown> {
@@ -69,9 +84,10 @@ export function useFilters() {
     return query
   }
 
-  /** フィルタを初期状態へ戻す。 */
+  /** フィルタを初期状態へ戻す。規定年は今年度（必要に応じ最新年に補正）。 */
   function reset(): void {
     filter.value = emptyFilter()
+    applyDefaultYearGuard()
   }
 
   /** 配列フィルタへ重複なく値を追加する（ドリルダウン用）。 */

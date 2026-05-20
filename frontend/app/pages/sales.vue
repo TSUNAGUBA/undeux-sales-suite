@@ -3,7 +3,7 @@ import type { BreakdownResponse, BreakdownRow, TrendResponse } from '~/types/api
 
 useHead({ title: '売上分析 | UndeuxSales' })
 
-const { toQuery, addToFilter } = useFilters()
+const { toQuery, addToFilter, loadOptions } = useFilters()
 const { get } = useApi()
 
 const granularity = ref<'weekly' | 'daily'>('weekly')
@@ -133,7 +133,10 @@ function handleBreakdownDrill(row: BreakdownRow): void {
   navigateTo({ path: '/crosstab', query: { dimension: targetDim } })
 }
 
-onMounted(load)
+onMounted(async () => {
+  await loadOptions()
+  await load()
+})
 </script>
 
 <template>

@@ -1,12 +1,12 @@
 <script setup lang="ts">
-import { Search, RotateCcw } from 'lucide-vue-next'
+import { ChevronLeft, ChevronRight, Search, RotateCcw } from 'lucide-vue-next'
 import type { CrosstabResponse, CrosstabRow } from '~/types/api'
 
 useHead({ title: 'クロス集計 | UndeuxSales' })
 
 const route = useRoute()
 const router = useRouter()
-const { filter, toQuery, reset, addToFilter } = useFilters()
+const { filter, toQuery, reset, addToFilter, loadOptions } = useFilters()
 const { get } = useApi()
 
 const dimension = ref<string>(
@@ -180,6 +180,79 @@ const tableColumns = computed<CrosstabColumn[]>(() => {
   return columns
 })
 
+// テーブル表示領域の高さに合わせてページサイズを動的算出する。
+// 41px ≈ DataTable の 1 行高（py-2.5 + text-sm + border）。
+const ROW_HEIGHT_PX = 41
+const HEADER_HEIGHT_PX = 41
+const PAGE_SIZE_FALLBACK = 25
+const MIN_PAGE_SIZE = 10
+
+const tableContainer = ref<HTMLElement | null>(null)
+const containerHeight = ref(0)
+let resizeObserver: ResizeObserver | null = null
+
+onMounted(() => {
+  if (tableContainer.value && typeof ResizeObserver !== 'undefined') {
+    resizeObserver = new ResizeObserver((entries) => {
+      const entry = entries[0]
+      if (entry) {
+        containerHeight.value = entry.contentRect.height
+      }
+    })
+    resizeObserver.observe(tableContainer.value)
+  }
+})
+
+onBeforeUnmount(() => {
+  resizeObserver?.disconnect()
+  resizeObserver = null
+})
+
+const pageSize = computed(() => {
+  if (containerHeight.value <= 0) return PAGE_SIZE_FALLBACK
+  const usable = Math.max(0, containerHeight.value - HEADER_HEIGHT_PX)
+  return Math.max(MIN_PAGE_SIZE, Math.floor(usable / ROW_HEIGHT_PX))
+})
+
+const currentPage = ref(1)
+
+const totalRows = computed(() => result.value?.rows.length ?? 0)
+
+const totalPages = computed(() => {
+  if (totalRows.value === 0) return 1
+  return Math.ceil(totalRows.value / pageSize.value)
+})
+
+watch(result, () => {
+  currentPage.value = 1
+})
+
+watch(totalPages, (newTotal) => {
+  if (currentPage.value > newTotal) {
+    currentPage.value = Math.max(1, newTotal)
+  }
+})
+
+const visibleRows = computed<CrosstabRow[]>(() => {
+  const rows = result.value?.rows ?? []
+  const start = (currentPage.value - 1) * pageSize.value
+  return rows.slice(start, start + pageSize.value)
+})
+
+const rangeStart = computed(() =>
+  totalRows.value === 0 ? 0 : (currentPage.value - 1) * pageSize.value + 1,
+)
+const rangeEnd = computed(() =>
+  Math.min(totalRows.value, currentPage.value * pageSize.value),
+)
+
+function changePage(delta: number): void {
+  const next = currentPage.value + delta
+  if (next >= 1 && next <= totalPages.value) {
+    currentPage.value = next
+  }
+}
+
 async function load(): Promise<void> {
   loading.value = true
   errorMessage.value = null
@@ -232,89 +305,127 @@ function handleRowDrill(row: CrosstabRow): void {
   void applyAndLoad()
 }
 
-onMounted(load)
+onMounted(async () => {
+  await loadOptions()
+  await load()
+})
 </script>
 
 <template>
-  <div class="space-y-4">
-    <div>
+  <div class="flex h-full flex-col gap-4">
+    <div class="shrink-0">
       <h1 class="text-xl font-bold text-slate-800">クロス集計</h1>
       <p class="text-sm text-slate-500">
         集計単位ごとに複数のメトリクスを横並び表示。行クリックでドリルダウン可能。
       </p>
     </div>
 
-    <CollapsiblePanel title="条件設定">
-      <FilterControls />
+    <div class="shrink-0">
+      <CollapsiblePanel title="条件設定">
+        <FilterControls />
 
-      <div class="mt-4 grid grid-cols-1 gap-3 sm:grid-cols-2">
-        <div>
-          <label class="mb-1 block text-xs font-medium text-slate-500">集計単位</label>
-          <select
-            v-model="dimension"
-            class="w-full rounded-lg border border-slate-300 bg-white px-3 py-2 text-sm"
-          >
-            <option v-for="opt in dimensionOptions" :key="opt.value" :value="opt.value">
-              {{ opt.label }}
-            </option>
-          </select>
+        <div class="mt-4 grid grid-cols-1 gap-3 sm:grid-cols-2">
+          <div>
+            <label class="mb-1 block text-xs font-medium text-slate-500">集計単位</label>
+            <select
+              v-model="dimension"
+              class="w-full rounded-lg border border-slate-300 bg-white px-3 py-2 text-sm"
+            >
+              <option v-for="opt in dimensionOptions" :key="opt.value" :value="opt.value">
+                {{ opt.label }}
+              </option>
+            </select>
+          </div>
+          <MultiSelect
+            v-model="selectedMetrics"
+            label="表示集計値"
+            :options="metricSelectOptions"
+          />
         </div>
-        <MultiSelect
-          v-model="selectedMetrics"
-          label="表示集計値"
-          :options="metricSelectOptions"
-        />
-      </div>
 
-      <p class="mt-2 text-xs text-slate-400">
-        単品を選ぶと、基本項目（商品記号・カラー・サイズ・季節）も表示されます。
-        在庫数・消化率は最新取込週スナップショット基準。
-      </p>
+        <p class="mt-2 text-xs text-slate-400">
+          単品を選ぶと、基本項目（商品記号・カラー・サイズ・季節）も表示されます。
+          在庫数・消化率は最新取込週スナップショット基準。
+        </p>
 
-      <div class="mt-4 flex flex-wrap gap-2">
-        <button
-          type="button"
-          class="flex items-center gap-1.5 rounded-lg bg-indigo-600 px-4 py-2 text-sm font-medium text-white hover:bg-indigo-700"
-          @click="applyAndLoad"
-        >
-          <Search class="h-4 w-4" />
-          適用
-        </button>
-        <button
-          type="button"
-          class="flex items-center gap-1.5 rounded-lg border border-slate-300 px-4 py-2 text-sm font-medium text-slate-600 hover:bg-slate-50"
-          @click="resetAndLoad"
-        >
-          <RotateCcw class="h-4 w-4" />
-          リセット
-        </button>
-      </div>
-    </CollapsiblePanel>
+        <div class="mt-4 flex flex-wrap gap-2">
+          <button
+            type="button"
+            class="flex items-center gap-1.5 rounded-lg bg-indigo-600 px-4 py-2 text-sm font-medium text-white hover:bg-indigo-700"
+            @click="applyAndLoad"
+          >
+            <Search class="h-4 w-4" />
+            適用
+          </button>
+          <button
+            type="button"
+            class="flex items-center gap-1.5 rounded-lg border border-slate-300 px-4 py-2 text-sm font-medium text-slate-600 hover:bg-slate-50"
+            @click="resetAndLoad"
+          >
+            <RotateCcw class="h-4 w-4" />
+            リセット
+          </button>
+        </div>
+      </CollapsiblePanel>
+    </div>
 
-    <StatusBlock
-      :loading="loading"
-      :error="errorMessage"
-      :empty="(result?.rows.length ?? 0) === 0"
-      empty-message="該当するデータがありません。"
-    >
-      <div class="space-y-3">
-        <p v-if="result?.latestWeek" class="text-xs text-slate-400">
-          最新取込週: {{ result.latestWeek }}（在庫・消化率のスナップショット基準）
-        </p>
-        <p v-if="canDrill" class="text-xs text-indigo-600">
-          行をクリックすると、その{{ keyLabel }}でさらに絞り込んで「{{ nextDimLabel }}」へドリルダウンします。
-        </p>
-        <DataTable
-          :columns="tableColumns"
-          :rows="result?.rows ?? []"
-          :row-key="(row: CrosstabRow) => row.key"
-          :clickable="canDrill"
-          @row-click="handleRowDrill"
-        />
-        <p class="text-xs text-slate-400">
-          上位 {{ formatNumber(result?.rows.length ?? 0) }} 件（売上金額の降順、最大1000件）
-        </p>
-      </div>
-    </StatusBlock>
+    <div class="flex min-h-0 flex-1 flex-col">
+      <StatusBlock
+        :loading="loading"
+        :error="errorMessage"
+        :empty="totalRows === 0"
+        empty-message="該当するデータがありません。"
+      >
+        <div class="flex h-full flex-col gap-2">
+          <div class="shrink-0 space-y-1">
+            <p v-if="result?.latestWeek" class="text-xs text-slate-400">
+              最新取込週: {{ result.latestWeek }}（在庫・消化率のスナップショット基準）
+            </p>
+            <p v-if="canDrill" class="text-xs text-indigo-600">
+              行をクリックすると、その{{ keyLabel }}でさらに絞り込んで「{{ nextDimLabel }}」へドリルダウンします。
+            </p>
+          </div>
+
+          <div ref="tableContainer" class="flex min-h-0 flex-1 flex-col overflow-y-auto">
+            <DataTable
+              :columns="tableColumns"
+              :rows="visibleRows"
+              :row-key="(row: CrosstabRow) => row.key"
+              :clickable="canDrill"
+              @row-click="handleRowDrill"
+            />
+          </div>
+
+          <div class="shrink-0 flex flex-wrap items-center justify-between gap-2 text-sm text-slate-600">
+            <span>
+              全 {{ formatNumber(totalRows) }} 件中
+              {{ formatNumber(rangeStart) }} - {{ formatNumber(rangeEnd) }} 件を表示
+              （売上金額の降順、最大1000件）
+            </span>
+            <div class="flex items-center gap-2">
+              <button
+                type="button"
+                class="flex items-center gap-1 rounded-lg border border-slate-300 px-2 py-1 disabled:opacity-40"
+                :disabled="currentPage <= 1"
+                @click="changePage(-1)"
+              >
+                <ChevronLeft class="h-4 w-4" />
+                前へ
+              </button>
+              <span>{{ currentPage }} / {{ totalPages }}</span>
+              <button
+                type="button"
+                class="flex items-center gap-1 rounded-lg border border-slate-300 px-2 py-1 disabled:opacity-40"
+                :disabled="currentPage >= totalPages"
+                @click="changePage(1)"
+              >
+                次へ
+                <ChevronRight class="h-4 w-4" />
+              </button>
+            </div>
+          </div>
+        </div>
+      </StatusBlock>
+    </div>
   </div>
 </template>

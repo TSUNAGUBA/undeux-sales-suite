@@ -4,7 +4,7 @@ import type { ProductPage, ProductRow } from '~/types/api'
 
 useHead({ title: '商品別分析 | UndeuxSales' })
 
-const { toQuery, addToFilter } = useFilters()
+const { toQuery, addToFilter, loadOptions } = useFilters()
 const { get } = useApi()
 
 const sort = ref('salesAmount')
@@ -112,7 +112,10 @@ function handleProductDrill(row: ProductRow): void {
   navigateTo({ path: '/crosstab', query: { dimension: 'product' } })
 }
 
-onMounted(load)
+onMounted(async () => {
+  await loadOptions()
+  await load()
+})
 </script>
 
 <template>
