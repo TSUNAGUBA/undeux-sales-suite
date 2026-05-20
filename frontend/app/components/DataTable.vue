@@ -40,16 +40,16 @@ function handleRowClick(row: T): void {
     :class="fillHeight ? 'h-full overflow-auto' : 'overflow-x-auto'"
   >
     <table class="w-full text-sm">
-      <thead
-        class="bg-slate-50 text-slate-500"
-        :class="fillHeight ? 'sticky top-0 z-10 shadow-[0_1px_0_0_rgb(226,232,240)]' : ''"
-      >
+      <thead class="text-slate-500">
         <tr>
           <th
             v-for="column in columns"
             :key="column.key"
-            class="whitespace-nowrap px-4 py-2.5 font-medium"
-            :class="column.align === 'right' ? 'text-right' : 'text-left'"
+            class="whitespace-nowrap bg-slate-50 px-4 py-2.5 font-medium"
+            :class="[
+              column.align === 'right' ? 'text-right' : 'text-left',
+              fillHeight ? 'sticky top-0 z-10 border-b border-slate-200' : '',
+            ]"
           >
             {{ column.label }}
           </th>
