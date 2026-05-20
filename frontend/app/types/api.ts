@@ -154,6 +154,8 @@ export interface SalesFilterState {
   customers: string[]
   businessTypes: string[]
   seasons: string[]
+  /** 品番コード。ドリルダウンで追加される（UIには直接の入力枠は無い）。 */
+  hinbans: string[]
 }
 
 /** クロス集計の基本項目（単品レベル時のみ非null）。 */

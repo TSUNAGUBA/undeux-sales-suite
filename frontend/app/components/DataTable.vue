@@ -10,7 +10,11 @@ const props = defineProps<{
   columns: TableColumn<T>[]
   rows: T[]
   rowKey: (row: T) => string | number
+  /** 行クリック可否。true のとき @row-click を発火し、カーソル等の見た目を変える。 */
+  clickable?: boolean
 }>()
+
+const emit = defineEmits<{ rowClick: [row: T] }>()
 
 function display(row: T, column: TableColumn<T>): string {
   if (column.format) {
@@ -18,6 +22,12 @@ function display(row: T, column: TableColumn<T>): string {
   }
   const value = (row as Record<string, unknown>)[column.key]
   return value == null ? '-' : String(value)
+}
+
+function handleRowClick(row: T): void {
+  if (props.clickable) {
+    emit('rowClick', row)
+  }
 }
 </script>
 
@@ -44,6 +54,8 @@ function display(row: T, column: TableColumn<T>): string {
           v-for="row in rows"
           :key="props.rowKey(row)"
           class="hover:bg-slate-50"
+          :class="clickable ? 'cursor-pointer' : ''"
+          @click="handleRowClick(row)"
         >
           <td
             v-for="column in columns"
@@ -68,6 +80,8 @@ function display(row: T, column: TableColumn<T>): string {
       v-for="row in rows"
       :key="props.rowKey(row)"
       class="rounded-xl border border-slate-200 bg-white p-3 shadow-sm"
+      :class="clickable ? 'cursor-pointer hover:bg-slate-50' : ''"
+      @click="handleRowClick(row)"
     >
       <div
         v-for="column in columns"

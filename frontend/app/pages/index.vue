@@ -94,6 +94,10 @@ async function load(): Promise<void> {
   }
 }
 
+function handleKpiDrill(): void {
+  navigateTo({ path: '/crosstab', query: { dimension: 'department' } })
+}
+
 onMounted(load)
 </script>
 
@@ -116,6 +120,8 @@ onMounted(load)
             :value="item.value"
             :icon="item.icon"
             :accent-class="item.accentClass"
+            clickable
+            @click="handleKpiDrill"
           />
         </div>
 

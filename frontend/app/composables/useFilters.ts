@@ -7,6 +7,7 @@ function emptyFilter(): SalesFilterState {
     customers: [],
     businessTypes: [],
     seasons: [],
+    hinbans: [],
   }
 }
 
@@ -62,6 +63,9 @@ export function useFilters() {
     if (current.seasons.length > 0) {
       query.seasons = current.seasons
     }
+    if (current.hinbans.length > 0) {
+      query.hinbans = current.hinbans
+    }
     return query
   }
 
@@ -70,5 +74,13 @@ export function useFilters() {
     filter.value = emptyFilter()
   }
 
-  return { filter, options, optionsError, loadOptions, toQuery, reset, years }
+  /** 配列フィルタへ重複なく値を追加する（ドリルダウン用）。 */
+  function addToFilter(field: 'departments' | 'customers' | 'businessTypes' | 'seasons' | 'hinbans', value: string): void {
+    const current = filter.value[field]
+    if (!current.includes(value)) {
+      filter.value[field] = [...current, value]
+    }
+  }
+
+  return { filter, options, optionsError, loadOptions, toQuery, reset, years, addToFilter }
 }
