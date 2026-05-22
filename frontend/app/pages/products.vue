@@ -116,6 +116,17 @@ onMounted(async () => {
   await loadOptions()
   await load()
 })
+
+// 在庫日数は「数値が大きい=売り切るまで長い=死に筋」「数値が小さい=すぐ売り切れる=売れ筋」と
+// 他の指標と意味が逆転するため、順序ドロップダウンのラベル（売れ筋/死に筋の補足）を動的に切替える。
+const orderLabels = computed(() => {
+  const invertedKeys = new Set(['stockDays'])
+  const inverted = invertedKeys.has(sort.value)
+  return {
+    desc: inverted ? '多い順（死に筋）' : '多い順（売れ筋）',
+    asc: inverted ? '少ない順（売れ筋）' : '少ない順（死に筋）',
+  }
+})
 </script>
 
 <template>
@@ -147,8 +158,8 @@ onMounted(async () => {
           class="rounded-lg border border-slate-300 bg-white px-3 py-2 text-sm"
           @change="reload"
         >
-          <option value="desc">多い順（売れ筋）</option>
-          <option value="asc">少ない順（死に筋）</option>
+          <option value="desc">{{ orderLabels.desc }}</option>
+          <option value="asc">{{ orderLabels.asc }}</option>
         </select>
       </div>
     </div>
