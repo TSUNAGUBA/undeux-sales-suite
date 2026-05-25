@@ -117,7 +117,10 @@ function handleBreakdownDrill(row: BreakdownRow): void {
   } else if (currentDim === 'season') {
     addToFilter('seasons', row.key)
   } else if (currentDim === 'product') {
-    const hinban = row.key.split('-')[0]
+    // BreakdownDimension.Product の表示ラベルは `hinban_code-tanpin_code` 形式
+    // （内部キー key は (gyotai|shohin_kigou|hinban|tanpin) のユニーク識別子なので、
+    //   品番抽出には表示用の label を使う）。
+    const hinban = row.label.split('-')[0]
     if (hinban) {
       addToFilter('hinbans', hinban)
     }

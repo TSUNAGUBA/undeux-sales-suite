@@ -161,9 +161,53 @@ flowchart TD
 | AUTH | `UNDX-AUTH-001` | 認証エラー |
 | REQ | `UNDX-REQ-001`〜`003` | リクエスト検証エラー |
 | IMP | `UNDX-IMP-001`〜`005` | 取込処理エラー |
-| DATA / SYS | `UNDX-DATA-001` / `UNDX-SYS-001` | データ層 / 想定外エラー |
+| DATA / SYS | `UNDX-DATA-001` / `UNDX-DATA-002` / `UNDX-SYS-001` | データ層 / 商品未登録 / 想定外エラー |
 
-## 9. 検証状況
+## 9. 商品マスタ（m_product / m_product_sku）
+
+### 9.1 目的
+
+`sales_weekly`（売上ファクト）の単品コード／品番／商品記号／業態に対して、
+表示用の商品名・ブランド・部門名・SKU 別画像を提供するマスタテーブル。
+存在しない場合でも既存の分析画面は壊れず、商品名のフォールバックとして `hinmei` が使われる。
+
+### 9.2 結合キー
+
+| sales_weekly | m_product / m_product_sku |
+|---|---|
+| `gyotai_code`   | `m_product.business_category_cd` |
+| `shohin_kigou`  | `m_product.product_sign` |
+| `hinban_code`   | `m_product.product_type_crd` |
+| `tanpin_code`   | `m_product_sku.unit_cd`（`product_id` 経由） |
+
+自然キー（business_category_cd, product_sign, product_type_crd）は UNIQUE 制約付き。
+
+### 9.3 データ投入（運用手順）
+
+- 商品マスタの SoT は運用部門の管理ファイル（CSV/Excel 等）。
+- データは運用担当が SQL（INSERT または `\copy`）で直接投入する（自動取込パスなし）。
+- 値の正規化（前ゼロ・スペース除去）は投入側で済ませる。コード値の表記揺れは結合不一致＝マスタ未解決として
+  扱われ、フロントは「マスタ未登録」プレースホルダー画像と `hinmei` フォールバックで表示される。
+- `business_type`（業態マスタ）の `display_name` / `short_name` は schema.sql で初回のみ投入され、
+  運用者の手動更新は温存される（`ON CONFLICT DO NOTHING`）。
+
+### 9.4 関連エンドポイント
+
+- `GET /api/product-master/options` — 業態・部門・ブランド・担当者の選択肢
+- `GET /api/product-master?search=&businessCategoryCds=...&divisionCds=...&brands=...&managers=...&page=&pageSize=` — 一覧
+- `GET /api/product-master/{productId}` — 詳細（SKU + 画像、productId 不正/未登録は `UNDX-DATA-002`）
+- `GET /api/product-analytics/{productId}?from=&to=&...` — 商品軸の包括分析
+
+### 9.5 フィルタ動作の注意
+
+商品分析の「業態別」内訳は、商品の business_category_cd を固定にして他業態との比較を見せる目的で、
+ユーザーが FilterBar で指定した BusinessTypes フィルタを意図的に除外する。期間／部門／取引先／季節は
+通常通り適用される。
+
+商品分析の「SKU 別在庫」列は商品の自然キー（業態×記号×品番）のみで集計し、ユーザーフィルタ
+（部門・取引先）には引きずられない物理在庫を表示する。
+
+## 10. 検証状況
 
 - バックエンド: ユニット・統合テスト 69 件がパス。初期DBダンプ（約160万行）の投入を確認。
 - フロントエンド: ビルド・静的生成・型チェックがパス。

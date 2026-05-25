@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { ChevronLeft, ChevronRight, Search, RotateCcw } from 'lucide-vue-next'
+import { ChevronLeft, ChevronRight, Search, RotateCcw, Package } from 'lucide-vue-next'
 import type { CrosstabResponse, CrosstabRow } from '~/types/api'
 
 useHead({ title: 'クロス集計 | UndeuxSales' })
@@ -66,6 +66,8 @@ const drillableDimensions = new Set([
   'businessType',
   'season',
   'hinban',
+  // 'product' は行クリックで一律ドリルできないため除外。代わりに productName 列のセル内
+  // リンク（マスタ解決時のみ表示）から商品軸分析へ遷移する。
 ])
 
 const canDrill = computed(() => drillableDimensions.has(dimension.value))
@@ -149,6 +151,17 @@ const tableColumns = computed<CrosstabColumn[]>(() => {
 
   if (isProductDimension.value) {
     columns.push(
+      {
+        key: 'thumbnail',
+        label: '画像',
+        format: () => '',
+      },
+      {
+        key: 'productName',
+        label: '商品名',
+        format: (row: CrosstabRow) =>
+          row.basicItems?.productName ?? row.basicItems?.hinmei ?? '-',
+      },
       {
         key: 'shohinKigo',
         label: '商品記号',
@@ -280,8 +293,8 @@ function resetAndLoad(): void {
 
 function handleRowDrill(row: CrosstabRow): void {
   const dim = dimension.value
-  let nextDim: string | null = null
 
+  let nextDim: string | null = null
   if (dim === 'department') {
     addToFilter('departments', row.key)
     nextDim = 'hinban'
@@ -394,7 +407,47 @@ onMounted(async () => {
               :clickable="canDrill"
               fill-height
               @row-click="handleRowDrill"
-            />
+            >
+              <template #thumbnail="{ row }">
+                <img
+                  v-if="(row as CrosstabRow).basicItems?.primaryImageUrl"
+                  :src="(row as CrosstabRow).basicItems!.primaryImageUrl!"
+                  :alt="(row as CrosstabRow).basicItems?.productName ?? ''"
+                  loading="lazy"
+                  class="h-10 w-10 rounded object-cover"
+                >
+                <div
+                  v-else
+                  class="flex h-10 w-10 items-center justify-center rounded bg-slate-100 text-slate-300"
+                  title="マスタ未登録"
+                >
+                  <Package class="h-4 w-4" />
+                </div>
+              </template>
+              <template #productName="{ row }">
+                <div class="flex min-w-0 flex-col">
+                  <NuxtLink
+                    v-if="(row as CrosstabRow).basicItems?.masterProductId"
+                    :to="`/product-analytics/${(row as CrosstabRow).basicItems!.masterProductId}`"
+                    class="truncate text-indigo-600 hover:underline"
+                    @click.stop
+                  >
+                    {{ (row as CrosstabRow).basicItems?.productName
+                      ?? (row as CrosstabRow).basicItems?.hinmei
+                      ?? '-' }}
+                  </NuxtLink>
+                  <span v-else class="truncate text-slate-800">
+                    {{ (row as CrosstabRow).basicItems?.productName
+                      ?? (row as CrosstabRow).basicItems?.hinmei
+                      ?? '-' }}
+                  </span>
+                  <span
+                    v-if="(row as CrosstabRow).basicItems?.brand"
+                    class="truncate text-xs text-slate-400"
+                  >{{ (row as CrosstabRow).basicItems!.brand }}</span>
+                </div>
+              </template>
+            </DataTable>
           </div>
 
           <div class="shrink-0 flex flex-wrap items-center justify-between gap-2 text-sm text-slate-600">

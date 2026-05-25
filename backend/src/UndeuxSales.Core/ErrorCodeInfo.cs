@@ -65,6 +65,11 @@ public static class ErrorCodes
         "データベース処理でエラーが発生しました。",
         "時間をおいて再試行してください。解決しない場合はシステム管理者に連絡してください。");
 
+    public static readonly ErrorCodeInfo ProductNotFound = new(
+        "UNDX-DATA-002",
+        "指定された商品が商品マスタに存在しません。",
+        "商品マスタに対象商品が登録されているか確認してください。");
+
     public static readonly ErrorCodeInfo Unexpected = new(
         "UNDX-SYS-001",
         "想定外のシステムエラーが発生しました。",
@@ -83,6 +88,7 @@ public static class ErrorCodes
         ImportRowInvalid,
         ImportFileTooLarge,
         DatabaseError,
+        ProductNotFound,
         Unexpected,
     };
 }

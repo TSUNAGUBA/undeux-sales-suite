@@ -21,6 +21,8 @@ public static class ServiceCollectionExtensions
         services.AddScoped<ImportBatchRepository>();
         services.AddScoped<SalesAnalyticsRepository>();
         services.AddScoped<MasterRepository>();
+        services.AddScoped<ProductMasterRepository>();
+        services.AddScoped<ProductAnalyticsRepository>();
 
         return services;
     }

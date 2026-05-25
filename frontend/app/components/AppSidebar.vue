@@ -7,6 +7,8 @@ import {
   LayoutGrid,
   Upload,
   LogOut,
+  Shirt,
+  BarChart3,
 } from 'lucide-vue-next'
 
 const emit = defineEmits<{ navigate: [] }>()
@@ -21,10 +23,19 @@ const navItems = [
   { to: '/products', label: '商品別分析', icon: Package },
   { to: '/inventory', label: '在庫・発注分析', icon: Boxes },
   { to: '/crosstab', label: 'クロス集計', icon: LayoutGrid },
+  { to: '/product-master', label: '商品マスタ', icon: Shirt },
+  { to: '/product-analytics', label: '商品軸分析', icon: BarChart3 },
   { to: '/imports', label: '週次取込', icon: Upload },
 ]
 
+/**
+ * サイドバー項目のアクティブ判定。サブルートを持つメニュー（商品マスタ・商品軸分析）は
+ * 親パス + '/' 以下のサブルートでもアクティブ表示する。完全一致のみのページは === で判定。
+ */
 function isActive(path: string): boolean {
+  if (path === '/product-analytics' || path === '/product-master') {
+    return route.path === path || route.path.startsWith(`${path}/`)
+  }
   return route.path === path
 }
 

@@ -231,12 +231,16 @@ public sealed class SalesAnalyticsRepository
         var sortExpression = ProductSortExpression(sortKey);
         var direction = ascending ? "ASC" : "DESC";
 
+        // 商品マスタは (gyotai_code × shohin_kigou × hinban_code) で一意。stock 集計の
+        // 1行は単品単位だが、商品マスタとの結合は品番までで一意になる（単品差は SKU 側）。
+        // 代表画像は対象商品 × tanpin の SKU 行から image_index 最小のものを採用する。
         var sql = $"""
             WITH stock AS (
-                SELECT sw.hinban_code,
+                SELECT sw.gyotai_code,
+                       sw.shohin_kigou,
+                       sw.hinban_code,
                        sw.tanpin_code,
                        MAX(sw.hinmei)       AS hinmei,
-                       MAX(sw.shohin_kigou) AS shohin_kigou,
                        MAX(sw.kisetsu)      AS kisetsu,
                        COALESCE(SUM(sw.zaikosu), 0)::bigint             AS stock,
                        COALESCE(SUM(sw.ruikei_uriage_count), 0)::bigint AS cumulative_sales,
@@ -244,22 +248,25 @@ public sealed class SalesAnalyticsRepository
                        COALESCE(AVG(sw.zainiti), 0)::float8             AS average_stock_days
                 FROM sales_weekly sw
                 WHERE sw.import_date = @latestWeek{SalesFilterSql.AndClause(filter, "sw")}
-                GROUP BY sw.hinban_code, sw.tanpin_code
+                GROUP BY sw.gyotai_code, sw.shohin_kigou, sw.hinban_code, sw.tanpin_code
             ),
             flow AS (
-                SELECT sw.hinban_code,
+                SELECT sw.gyotai_code,
+                       sw.shohin_kigou,
+                       sw.hinban_code,
                        sw.tanpin_code,
                        COALESCE(SUM({SalesMetricSql.WeekQuantity}), 0)::bigint    AS sales_quantity,
                        COALESCE(SUM({SalesMetricSql.WeekAmount}), 0)::bigint      AS sales_amount,
                        COALESCE(SUM({SalesMetricSql.WeekGrossProfit}), 0)::bigint AS gross_profit
                 FROM sales_weekly sw
                 {SalesFilterSql.WhereClause(filter, "sw")}
-                GROUP BY sw.hinban_code, sw.tanpin_code
+                GROUP BY sw.gyotai_code, sw.shohin_kigou, sw.hinban_code, sw.tanpin_code
             )
-            SELECT s.hinban_code,
+            SELECT s.gyotai_code,
+                   s.shohin_kigou,
+                   s.hinban_code,
                    s.tanpin_code,
                    s.hinmei,
-                   s.shohin_kigou,
                    s.kisetsu,
                    COALESCE(f.sales_quantity, 0) AS sales_quantity,
                    COALESCE(f.sales_amount, 0)   AS sales_amount,
@@ -268,10 +275,29 @@ public sealed class SalesAnalyticsRepository
                    s.cumulative_sales,
                    s.cumulative_delivery,
                    s.average_stock_days,
+                   mp.product_id   AS master_product_id,
+                   mp.product_name AS product_name,
+                   mp.brand        AS brand,
+                   img.image_url   AS primary_image_url,
                    (COUNT(*) OVER ())::int       AS total_count
             FROM stock s
             LEFT JOIN flow f
-                ON f.hinban_code = s.hinban_code AND f.tanpin_code = s.tanpin_code
+                ON f.gyotai_code  = s.gyotai_code
+               AND f.shohin_kigou = s.shohin_kigou
+               AND f.hinban_code  = s.hinban_code
+               AND f.tanpin_code  = s.tanpin_code
+            LEFT JOIN m_product mp
+                ON mp.business_category_cd = s.gyotai_code
+               AND mp.product_sign         = s.shohin_kigou
+               AND mp.product_type_crd     = s.hinban_code
+            LEFT JOIN LATERAL (
+                SELECT msi.image_url
+                FROM m_product_sku msi
+                WHERE msi.product_id = mp.product_id
+                  AND msi.unit_cd    = s.tanpin_code
+                ORDER BY msi.image_index, msi.sku_item_id
+                LIMIT 1
+            ) AS img ON true
             ORDER BY {sortExpression} {direction} NULLS LAST, s.hinban_code, s.tanpin_code
             LIMIT @limit OFFSET @offset;
             """;
@@ -279,23 +305,54 @@ public sealed class SalesAnalyticsRepository
         var rawRows = (await connection.QueryAsync<ProductRawRow>(
             new CommandDefinition(sql, parameters, cancellationToken: cancellationToken))).ToList();
 
-        var totalCount = rawRows.Count > 0 ? rawRows[0].TotalCount : 0;
+        // OFFSET overshoot 時 (rawRows が空) でも実件数を返すため、件数は別クエリで取得する。
+        // window関数 COUNT(*) OVER () は LIMIT が空集合だと値も返らないため。
+        var totalCount = rawRows.Count > 0
+            ? rawRows[0].TotalCount
+            : await CountProductsAsync(connection, filter, parameters, cancellationToken);
         var items = rawRows
             .Select(row => new ProductRow(
+                row.GyotaiCode,
+                row.ShohinKigou,
                 row.HinbanCode,
                 row.TanpinCode,
                 row.Hinmei,
-                row.ShohinKigou,
                 row.Kisetsu,
                 row.SalesQuantity,
                 row.SalesAmount,
                 row.GrossProfit,
                 row.Stock,
                 Ratio(row.CumulativeSales, row.CumulativeDelivery),
-                row.AverageStockDays))
+                row.AverageStockDays,
+                row.MasterProductId,
+                row.ProductName,
+                row.Brand,
+                row.PrimaryImageUrl))
             .ToList();
 
         return new ProductPage(items, totalCount, page, pageSize);
+    }
+
+    /// <summary>
+    /// 商品行（gyotai × shohin_kigou × hinban × tanpin）の総件数を最新週基準で数える。
+    /// LIMIT/OFFSET の overshoot 等で本体クエリが空集合を返した場合のフォールバック。
+    /// </summary>
+    private static async Task<int> CountProductsAsync(
+        NpgsqlConnection connection,
+        SalesQueryFilter filter,
+        DynamicParameters parameters,
+        CancellationToken cancellationToken)
+    {
+        var sql = $"""
+            SELECT COUNT(*)::int
+            FROM (
+                SELECT DISTINCT sw.gyotai_code, sw.shohin_kigou, sw.hinban_code, sw.tanpin_code
+                FROM sales_weekly sw
+                WHERE sw.import_date = @latestWeek{SalesFilterSql.AndClause(filter, "sw")}
+            ) d;
+            """;
+        return await connection.ExecuteScalarAsync<int>(
+            new CommandDefinition(sql, parameters, cancellationToken: cancellationToken));
     }
 
     /// <summary>クロス集計（指定の集計単位での複数メトリクス集計）を取得する。</summary>
@@ -326,14 +383,43 @@ public sealed class SalesAnalyticsRepository
         var (groupBy, keyExpr, labelExpr) = ResolveDimension(dimension);
         var isProduct = dimension == BreakdownDimension.Product;
 
-        // 単品 (Product) のみ、グループキーがそのまま基本項目を一意特定するため値を返す。
-        // 他のディメンションではグループ内で値が一意にならないため NULL を返す。
+        // 単品 (Product) は GROUP BY に gyotai_code/shohin_kigou/hinban_code/tanpin_code が
+        // 含まれるため、4 つの基本項目はそのまま列参照可能（MAX 不要）。color/size/kisetsu は
+        // GROUP BY 外なので MAX で代表値を採用する。
         var basicItemsSelect = isProduct
-            ? "sw.hinban_code AS hinban, sw.tanpin_code AS tanpin, "
-              + "MAX(sw.shohin_kigou) AS shohin_kigou, MAX(sw.color) AS color, "
-              + "MAX(sw.size) AS size, MAX(sw.kisetsu) AS kisetsu,"
+            ? "sw.hinban_code  AS hinban, sw.tanpin_code   AS tanpin, "
+              + "sw.shohin_kigou AS shohin_kigou, "
+              + "MAX(sw.color) AS color, MAX(sw.size) AS size, MAX(sw.kisetsu) AS kisetsu, "
+              + "sw.gyotai_code  AS gyotai_code,"
             : "NULL::text AS hinban, NULL::text AS tanpin, NULL::text AS shohin_kigou, "
-              + "NULL::text AS color, NULL::text AS size, NULL::text AS kisetsu,";
+              + "NULL::text AS color, NULL::text AS size, NULL::text AS kisetsu, "
+              + "NULL::text AS gyotai_code,";
+
+        // 単品集計のみ、商品マスタ・代表画像（image_index 最小の SKU 画像）を JOIN する。
+        var masterJoin = isProduct
+            ? """
+              LEFT JOIN m_product mp
+                  ON mp.business_category_cd = f.gyotai_code
+                 AND mp.product_sign         = f.shohin_kigou
+                 AND mp.product_type_crd     = f.hinban
+              LEFT JOIN LATERAL (
+                  SELECT msi.image_url
+                  FROM m_product_sku msi
+                  WHERE msi.product_id = mp.product_id
+                    AND msi.unit_cd    = f.tanpin
+                  ORDER BY msi.image_index, msi.sku_item_id
+                  LIMIT 1
+              ) AS img ON true
+              """
+            : string.Empty;
+
+        var masterSelect = isProduct
+            ? "mp.product_id   AS master_product_id, "
+              + "mp.product_name AS product_name, "
+              + "mp.brand        AS brand, "
+              + "img.image_url   AS primary_image_url,"
+            : "NULL::uuid AS master_product_id, NULL::text AS product_name, "
+              + "NULL::text AS brand, NULL::text AS primary_image_url,";
 
         var whereClause = SalesFilterSql.WhereClause(filter, "sw");
         var andClause = SalesFilterSql.AndClause(filter, "sw");
@@ -363,12 +449,14 @@ public sealed class SalesAnalyticsRepository
             SELECT f.key,
                    f.label,
                    f.hinban, f.tanpin, f.shohin_kigou, f.color, f.size, f.kisetsu,
+                   {masterSelect}
                    f.quantity, f.amount, f.gross_profit, f.stock_days,
                    COALESCE(s.stock, 0)::bigint               AS stock,
                    COALESCE(s.cumulative_sales, 0)::bigint    AS cumulative_sales,
                    COALESCE(s.cumulative_delivery, 0)::bigint AS cumulative_delivery,
                    (SUM(f.amount) OVER ())::bigint            AS total_amount
             FROM flow f
+            {masterJoin}
             LEFT JOIN snapshot s ON s.key = f.key
             ORDER BY f.amount DESC, f.key
             LIMIT @limit;
@@ -388,7 +476,11 @@ public sealed class SalesAnalyticsRepository
                     r.ShohinKigou ?? string.Empty,
                     r.Color ?? string.Empty,
                     r.Size ?? string.Empty,
-                    r.Kisetsu ?? string.Empty)
+                    r.Kisetsu ?? string.Empty,
+                    r.MasterProductId,
+                    r.ProductName,
+                    r.Brand,
+                    r.PrimaryImageUrl)
                 : null,
             r.Quantity,
             r.Amount,
@@ -546,9 +638,12 @@ public sealed class SalesAnalyticsRepository
         BreakdownDimension.Size =>
             ("sw.size", "sw.size", "sw.size"),
         BreakdownDimension.Product =>
-            ("sw.hinban_code, sw.tanpin_code",
-             "sw.hinban_code || '-' || sw.tanpin_code",
-             "MAX(sw.hinmei)"),
+            // 商品マスタの自然キー (gyotai × shohin_kigou × hinban) を含めて一意化することで
+            // 同一 (hinban, tanpin) が複数業態で売られているケースの行衝突を防ぎ、
+            // m_product との JOIN を 1 対 1 に保つ。表示ラベルは品番-単品（label 列）。
+            ("sw.gyotai_code, sw.shohin_kigou, sw.hinban_code, sw.tanpin_code",
+             "sw.gyotai_code || '|' || sw.shohin_kigou || '|' || sw.hinban_code || '|' || sw.tanpin_code",
+             "sw.hinban_code || '-' || sw.tanpin_code"),
         BreakdownDimension.Hinban =>
             ("sw.hinban_code", "sw.hinban_code", "sw.hinban_code"),
         BreakdownDimension.ChohyoKubun =>
@@ -635,10 +730,11 @@ public sealed class SalesAnalyticsRepository
         long CumulativeDelivery);
 
     private sealed record ProductRawRow(
+        string GyotaiCode,
+        string ShohinKigou,
         string HinbanCode,
         string TanpinCode,
         string Hinmei,
-        string ShohinKigou,
         string Kisetsu,
         long SalesQuantity,
         long SalesAmount,
@@ -647,6 +743,10 @@ public sealed class SalesAnalyticsRepository
         long CumulativeSales,
         long CumulativeDelivery,
         double AverageStockDays,
+        Guid? MasterProductId,
+        string? ProductName,
+        string? Brand,
+        string? PrimaryImageUrl,
         int TotalCount);
 
     private sealed record CrosstabRawRow(
@@ -658,6 +758,10 @@ public sealed class SalesAnalyticsRepository
         string? Color,
         string? Size,
         string? Kisetsu,
+        Guid? MasterProductId,
+        string? ProductName,
+        string? Brand,
+        string? PrimaryImageUrl,
         long Quantity,
         long Amount,
         long GrossProfit,

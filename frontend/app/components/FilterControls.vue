@@ -2,7 +2,15 @@
 import { X } from 'lucide-vue-next'
 import type { CodeName } from '~/types/api'
 
-const { filter, options, optionsError, loadOptions, years } = useFilters()
+const props = withDefaults(
+  defineProps<{
+    /** useFilters のスコープキー。既定は全社共通の 'sales-filter'。 */
+    scopeKey?: string
+  }>(),
+  { scopeKey: 'sales-filter' },
+)
+
+const { filter, options, optionsError, loadOptions, years } = useFilters(props.scopeKey)
 
 onMounted(loadOptions)
 
@@ -15,7 +23,16 @@ function toSelectOptions(items: CodeName[]): { value: string; text: string }[] {
 
 const departmentOptions = computed(() => toSelectOptions(options.value?.departments ?? []))
 const customerOptions = computed(() => toSelectOptions(options.value?.customers ?? []))
-const businessTypeOptions = computed(() => toSelectOptions(options.value?.businessTypes ?? []))
+const businessTypeOptions = computed(() =>
+  (options.value?.businessTypes ?? []).map((b) => ({
+    value: b.code,
+    text: b.name
+      ? b.shortName
+        ? `${b.code}: ${b.name} (${b.shortName})`
+        : `${b.code}: ${b.name}`
+      : b.code,
+  })),
+)
 const seasonOptions = computed(() => toSelectOptions(options.value?.seasons ?? []))
 
 function removeHinban(value: string): void {
