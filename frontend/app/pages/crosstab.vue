@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { ChevronLeft, ChevronRight, Search, RotateCcw, Package } from 'lucide-vue-next'
+import { ChevronLeft, ChevronRight, Search, RotateCcw } from 'lucide-vue-next'
 import type { CrosstabResponse, CrosstabRow } from '~/types/api'
 
 useHead({ title: 'クロス集計 | UndeuxSales' })
@@ -409,26 +409,20 @@ onMounted(async () => {
               @row-click="handleRowDrill"
             >
               <template #thumbnail="{ row }">
-                <img
-                  v-if="(row as CrosstabRow).basicItems?.primaryImageUrl"
-                  :src="(row as CrosstabRow).basicItems!.primaryImageUrl!"
-                  :alt="(row as CrosstabRow).basicItems?.productName ?? ''"
-                  loading="lazy"
-                  class="h-10 w-10 rounded object-cover"
-                >
-                <div
-                  v-else
-                  class="flex h-10 w-10 items-center justify-center rounded bg-slate-100 text-slate-300"
-                  title="マスタ未登録"
-                >
-                  <Package class="h-4 w-4" />
+                <div class="h-10 w-10 overflow-hidden rounded">
+                  <ProductImage
+                    :src="(row as CrosstabRow).basicItems?.primaryImageUrl"
+                    :alt="(row as CrosstabRow).basicItems?.productName ?? ''"
+                    icon-class="h-4 w-4"
+                    :show-label="false"
+                  />
                 </div>
               </template>
               <template #productName="{ row }">
                 <div class="flex min-w-0 flex-col">
                   <NuxtLink
                     v-if="(row as CrosstabRow).basicItems?.masterProductId"
-                    :to="`/product-analytics/${(row as CrosstabRow).basicItems!.masterProductId}`"
+                    :to="`/product-master/${(row as CrosstabRow).basicItems!.masterProductId}`"
                     class="truncate text-indigo-600 hover:underline"
                     @click.stop
                   >

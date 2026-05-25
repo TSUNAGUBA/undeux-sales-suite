@@ -8,7 +8,6 @@ import {
   Upload,
   LogOut,
   Shirt,
-  BarChart3,
 } from 'lucide-vue-next'
 
 const emit = defineEmits<{ navigate: [] }>()
@@ -17,6 +16,8 @@ const route = useRoute()
 const router = useRouter()
 const { user, logout } = useAuth()
 
+// 商品軸分析（/product-analytics）はサイドバーから隠す。ルート自体は残っており、
+// 必要に応じて直接 URL でアクセスできる。
 const navItems = [
   { to: '/', label: '全社サマリー', icon: LayoutDashboard },
   { to: '/sales', label: '売上分析', icon: TrendingUp },
@@ -24,16 +25,15 @@ const navItems = [
   { to: '/inventory', label: '在庫・発注分析', icon: Boxes },
   { to: '/crosstab', label: 'クロス集計', icon: LayoutGrid },
   { to: '/product-master', label: '商品マスタ', icon: Shirt },
-  { to: '/product-analytics', label: '商品軸分析', icon: BarChart3 },
   { to: '/imports', label: '週次取込', icon: Upload },
 ]
 
 /**
- * サイドバー項目のアクティブ判定。サブルートを持つメニュー（商品マスタ・商品軸分析）は
+ * サイドバー項目のアクティブ判定。サブルートを持つメニュー（商品マスタ）は
  * 親パス + '/' 以下のサブルートでもアクティブ表示する。完全一致のみのページは === で判定。
  */
 function isActive(path: string): boolean {
-  if (path === '/product-analytics' || path === '/product-master') {
+  if (path === '/product-master') {
     return route.path === path || route.path.startsWith(`${path}/`)
   }
   return route.path === path

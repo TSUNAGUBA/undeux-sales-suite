@@ -130,7 +130,7 @@ onMounted(async () => {
             v-for="product in pageData?.items ?? []"
             :key="product.productId"
             :product="product"
-            :href="`/product-analytics/${product.productId}`"
+            :href="`/product-master/${product.productId}`"
           />
         </div>
 
