@@ -19,14 +19,24 @@ public sealed class ProductAnalyticsController : ControllerBase
     public ProductAnalyticsController(ProductAnalyticsRepository repository)
         => _repository = repository;
 
-    /// <summary>指定商品の包括的な売上分析を返す。商品が存在しない場合は 404。</summary>
-    [HttpGet("{productId:guid}")]
+    /// <summary>
+    /// 指定商品の包括的な売上分析を返す。商品が存在しない場合や productId が GUID 形式でない場合は
+    /// ApiError (UNDX-DATA-002 ProductNotFound) を 404 で返す。
+    /// ルート制約に :guid を付けないのは、フロントが errorCode で UX 分岐するため、
+    /// 無効値でも統一エラー形式で返す必要があるため。
+    /// </summary>
+    [HttpGet("{productId}")]
     public async Task<ActionResult<ProductAnalyticsResponse>> Get(
-        Guid productId,
+        string productId,
         [FromQuery] SalesQueryFilter filter,
         CancellationToken cancellationToken)
     {
-        var response = await _repository.GetAnalyticsAsync(productId, filter, cancellationToken);
+        if (!Guid.TryParse(productId, out var parsed))
+        {
+            throw new AppException(ErrorCodes.ProductNotFound, 404);
+        }
+
+        var response = await _repository.GetAnalyticsAsync(parsed, filter, cancellationToken);
         if (response is null)
         {
             throw new AppException(ErrorCodes.ProductNotFound, 404);

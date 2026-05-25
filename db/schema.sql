@@ -195,8 +195,9 @@ ALTER TABLE business_type
     ADD COLUMN IF NOT EXISTS short_name text;
 COMMENT ON COLUMN business_type.short_name IS '業態の英数略称（例: sm=しまむら, av=アベイル）';
 
--- 業態マスタの代表データ。code をキーに display_name と short_name を上書きする
--- （冪等。新規コードのみ追加されたい場合は ON CONFLICT DO NOTHING に変更可）。
+-- 業態マスタの代表データ（01-06）。display_name / short_name は運用者が編集する
+-- 設定値であり、毎回の上書きを避けるため DO NOTHING で初回のみ投入する。
+-- 既存行が運用者によりカスタマイズされている場合は温存される（CLAUDE.md 原則2）。
 INSERT INTO business_type (code, display_name, short_name) VALUES
     ('01', 'しまむら',   'sm'),
     ('02', 'アベイル',   'av'),
@@ -204,9 +205,7 @@ INSERT INTO business_type (code, display_name, short_name) VALUES
     ('04', 'バースデイ', 'br'),
     ('05', 'シャンブル', 'cm'),
     ('06', 'ディバロ',   'di')
-ON CONFLICT (code) DO UPDATE
-    SET display_name = EXCLUDED.display_name,
-        short_name   = EXCLUDED.short_name;
+ON CONFLICT (code) DO NOTHING;
 
 -- ------------------------------------------------------------
 -- 商品マスタ（運用側で手動投入される参照データ）

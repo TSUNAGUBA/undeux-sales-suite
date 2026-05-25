@@ -107,14 +107,18 @@ function handleRowClick(row: T): void {
         class="flex justify-between gap-3 py-0.5 text-sm"
       >
         <span class="shrink-0 text-slate-500">{{ column.label }}</span>
-        <span class="min-w-0 text-right font-medium text-slate-700">
+        <!--
+          スロットに <img> や <div> などブロック要素を渡せるよう、値側のラッパは
+          <div> を使用する（<span> 内へのブロック要素配置は無効HTMLになる）。
+        -->
+        <div class="min-w-0 text-right font-medium text-slate-700">
           <slot
             :name="column.key"
             :row="row"
             :column="column"
             :value="display(row, column)"
           >{{ display(row, column) }}</slot>
-        </span>
+        </div>
       </div>
     </div>
   </div>

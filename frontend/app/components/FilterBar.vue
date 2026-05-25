@@ -1,9 +1,17 @@
 <script setup lang="ts">
 import { Search, RotateCcw } from 'lucide-vue-next'
 
+const props = withDefaults(
+  defineProps<{
+    /** useFilters のスコープキー。既定は全社共通の 'sales-filter'。 */
+    scopeKey?: string
+  }>(),
+  { scopeKey: 'sales-filter' },
+)
+
 const emit = defineEmits<{ apply: [] }>()
 
-const { reset } = useFilters()
+const { reset } = useFilters(props.scopeKey)
 
 function applyFilter(): void {
   emit('apply')
@@ -17,7 +25,7 @@ function resetFilter(): void {
 
 <template>
   <CollapsiblePanel title="フィルター">
-    <FilterControls />
+    <FilterControls :scope-key="scopeKey" />
 
     <div class="mt-4 flex flex-wrap gap-2">
       <button

@@ -117,11 +117,11 @@ function changePage(delta: number): void {
 function handleProductDrill(row: ProductRow): void {
   // 商品マスタが解決できている場合は商品軸分析へ遷移、未解決時は従来のクロス集計ドリルへフォールバック。
   if (row.masterProductId) {
-    navigateTo(`/product-analytics/${row.masterProductId}`)
+    void navigateTo(`/product-analytics/${row.masterProductId}`)
     return
   }
   addToFilter('hinbans', row.hinbanCode)
-  navigateTo({ path: '/crosstab', query: { dimension: 'product' } })
+  void navigateTo({ path: '/crosstab', query: { dimension: 'product' } })
 }
 
 onMounted(async () => {
@@ -175,7 +175,7 @@ onMounted(async () => {
         <DataTable
           :columns="columns"
           :rows="productPage?.items ?? []"
-          :row-key="(row: ProductRow) => `${row.hinbanCode}-${row.tanpinCode}`"
+          :row-key="(row: ProductRow) => `${row.gyotaiCode}|${row.shohinKigou}|${row.hinbanCode}|${row.tanpinCode}`"
           clickable
           @row-click="handleProductDrill"
         >

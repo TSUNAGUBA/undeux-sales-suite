@@ -75,11 +75,17 @@ public sealed record InventoryResponse(
     IReadOnlyList<InventoryBreakdownRow> ByDepartment);
 
 /// <summary>商品別分析の1行。商品マスタが結合できた行のみ MasterProductId 等が設定される。</summary>
+/// <remarks>
+/// 同一の (hinban_code, tanpin_code) が複数業態 (gyotai_code) で売られているとき行が分裂し、
+/// (gyotai_code, shohin_kigou, hinban_code, tanpin_code) が真の行キーになる。フロント側の
+/// v-for :key にもこの 4 つを使用すること（hinban-tanpin だけでは衝突する）。
+/// </remarks>
 public sealed record ProductRow(
+    string GyotaiCode,
+    string ShohinKigou,
     string HinbanCode,
     string TanpinCode,
     string Hinmei,
-    string ShohinKigou,
     string Kisetsu,
     long SalesQuantity,
     long SalesAmount,

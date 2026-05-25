@@ -40,8 +40,11 @@ public sealed class DatabaseFixture : IAsyncLifetime
         await EnsureTestDatabaseAsync();
         await ApplySchemaAsync();
         await TruncateAsync();
-        // schema.sql は CREATE 系の他に業態マスタの代表データ（01〜06）の INSERT も含む。
-        // TRUNCATE 後にこれらの参照データを再投入するため schema.sql を再適用する（冪等）。
+        // schema.sql は CREATE 系の他に業態マスタの代表データ（01〜06）の `INSERT ... ON CONFLICT
+        // DO NOTHING` を含む。TRUNCATE 後にこの参照データを再投入するため schema.sql を再適用する。
+        // 全 DDL は IF NOT EXISTS / IF EXISTS 形式で冪等、INSERT も DO NOTHING なので副作用は無い。
+        // ※将来 schema.sql に非冪等な DML を追加するときは、business_type の seed を別ファイルに
+        //   切り出し本フィクスチャから個別に呼ぶ形へリファクタすること。
         await ApplySchemaAsync();
         await SeedAsync();
         Factory = new CustomWebApplicationFactory(ConnectionString);

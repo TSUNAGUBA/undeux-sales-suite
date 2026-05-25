@@ -262,10 +262,11 @@ public sealed class SalesAnalyticsRepository
                 {SalesFilterSql.WhereClause(filter, "sw")}
                 GROUP BY sw.gyotai_code, sw.shohin_kigou, sw.hinban_code, sw.tanpin_code
             )
-            SELECT s.hinban_code,
+            SELECT s.gyotai_code,
+                   s.shohin_kigou,
+                   s.hinban_code,
                    s.tanpin_code,
                    s.hinmei,
-                   s.shohin_kigou,
                    s.kisetsu,
                    COALESCE(f.sales_quantity, 0) AS sales_quantity,
                    COALESCE(f.sales_amount, 0)   AS sales_amount,
@@ -304,13 +305,18 @@ public sealed class SalesAnalyticsRepository
         var rawRows = (await connection.QueryAsync<ProductRawRow>(
             new CommandDefinition(sql, parameters, cancellationToken: cancellationToken))).ToList();
 
-        var totalCount = rawRows.Count > 0 ? rawRows[0].TotalCount : 0;
+        // OFFSET overshoot 時 (rawRows が空) でも実件数を返すため、件数は別クエリで取得する。
+        // window関数 COUNT(*) OVER () は LIMIT が空集合だと値も返らないため。
+        var totalCount = rawRows.Count > 0
+            ? rawRows[0].TotalCount
+            : await CountProductsAsync(connection, filter, parameters, cancellationToken);
         var items = rawRows
             .Select(row => new ProductRow(
+                row.GyotaiCode,
+                row.ShohinKigou,
                 row.HinbanCode,
                 row.TanpinCode,
                 row.Hinmei,
-                row.ShohinKigou,
                 row.Kisetsu,
                 row.SalesQuantity,
                 row.SalesAmount,
@@ -325,6 +331,28 @@ public sealed class SalesAnalyticsRepository
             .ToList();
 
         return new ProductPage(items, totalCount, page, pageSize);
+    }
+
+    /// <summary>
+    /// 商品行（gyotai × shohin_kigou × hinban × tanpin）の総件数を最新週基準で数える。
+    /// LIMIT/OFFSET の overshoot 等で本体クエリが空集合を返した場合のフォールバック。
+    /// </summary>
+    private static async Task<int> CountProductsAsync(
+        NpgsqlConnection connection,
+        SalesQueryFilter filter,
+        DynamicParameters parameters,
+        CancellationToken cancellationToken)
+    {
+        var sql = $"""
+            SELECT COUNT(*)::int
+            FROM (
+                SELECT DISTINCT sw.gyotai_code, sw.shohin_kigou, sw.hinban_code, sw.tanpin_code
+                FROM sales_weekly sw
+                WHERE sw.import_date = @latestWeek{SalesFilterSql.AndClause(filter, "sw")}
+            ) d;
+            """;
+        return await connection.ExecuteScalarAsync<int>(
+            new CommandDefinition(sql, parameters, cancellationToken: cancellationToken));
     }
 
     /// <summary>クロス集計（指定の集計単位での複数メトリクス集計）を取得する。</summary>
@@ -355,14 +383,14 @@ public sealed class SalesAnalyticsRepository
         var (groupBy, keyExpr, labelExpr) = ResolveDimension(dimension);
         var isProduct = dimension == BreakdownDimension.Product;
 
-        // 単品 (Product) のみ、グループキーがそのまま基本項目を一意特定するため値を返す。
-        // 他のディメンションではグループ内で値が一意にならないため NULL を返す。
-        // 業態（gyotai_code）は基本項目の中で商品マスタ結合のキーになるため保持する。
+        // 単品 (Product) は GROUP BY に gyotai_code/shohin_kigou/hinban_code/tanpin_code が
+        // 含まれるため、4 つの基本項目はそのまま列参照可能（MAX 不要）。color/size/kisetsu は
+        // GROUP BY 外なので MAX で代表値を採用する。
         var basicItemsSelect = isProduct
-            ? "sw.hinban_code AS hinban, sw.tanpin_code AS tanpin, "
-              + "MAX(sw.shohin_kigou) AS shohin_kigou, MAX(sw.color) AS color, "
-              + "MAX(sw.size) AS size, MAX(sw.kisetsu) AS kisetsu, "
-              + "MAX(sw.gyotai_code) AS gyotai_code,"
+            ? "sw.hinban_code  AS hinban, sw.tanpin_code   AS tanpin, "
+              + "sw.shohin_kigou AS shohin_kigou, "
+              + "MAX(sw.color) AS color, MAX(sw.size) AS size, MAX(sw.kisetsu) AS kisetsu, "
+              + "sw.gyotai_code  AS gyotai_code,"
             : "NULL::text AS hinban, NULL::text AS tanpin, NULL::text AS shohin_kigou, "
               + "NULL::text AS color, NULL::text AS size, NULL::text AS kisetsu, "
               + "NULL::text AS gyotai_code,";
@@ -610,9 +638,12 @@ public sealed class SalesAnalyticsRepository
         BreakdownDimension.Size =>
             ("sw.size", "sw.size", "sw.size"),
         BreakdownDimension.Product =>
-            ("sw.hinban_code, sw.tanpin_code",
-             "sw.hinban_code || '-' || sw.tanpin_code",
-             "MAX(sw.hinmei)"),
+            // 商品マスタの自然キー (gyotai × shohin_kigou × hinban) を含めて一意化することで
+            // 同一 (hinban, tanpin) が複数業態で売られているケースの行衝突を防ぎ、
+            // m_product との JOIN を 1 対 1 に保つ。表示ラベルは品番-単品（label 列）。
+            ("sw.gyotai_code, sw.shohin_kigou, sw.hinban_code, sw.tanpin_code",
+             "sw.gyotai_code || '|' || sw.shohin_kigou || '|' || sw.hinban_code || '|' || sw.tanpin_code",
+             "sw.hinban_code || '-' || sw.tanpin_code"),
         BreakdownDimension.Hinban =>
             ("sw.hinban_code", "sw.hinban_code", "sw.hinban_code"),
         BreakdownDimension.ChohyoKubun =>
@@ -699,10 +730,11 @@ public sealed class SalesAnalyticsRepository
         long CumulativeDelivery);
 
     private sealed record ProductRawRow(
+        string GyotaiCode,
+        string ShohinKigou,
         string HinbanCode,
         string TanpinCode,
         string Hinmei,
-        string ShohinKigou,
         string Kisetsu,
         long SalesQuantity,
         long SalesAmount,

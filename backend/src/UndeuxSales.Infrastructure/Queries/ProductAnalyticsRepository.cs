@@ -12,6 +12,11 @@ namespace UndeuxSales.Infrastructure.Queries;
 /// </summary>
 public sealed class ProductAnalyticsRepository
 {
+    // 商品軸クエリは LATERAL JOIN + window関数 + 大量集計を含むため、
+    // m_product_sku / sales_weekly が大きくなった環境でも 30 秒のデフォルトで
+    // 打ち切られないよう、参照クエリは明示的に余裕のあるタイムアウトを与える。
+    private const int QueryCommandTimeoutSeconds = 120;
+
     private readonly IDbConnectionFactory _connectionFactory;
     private readonly ProductMasterRepository _masterRepository;
 
@@ -103,7 +108,7 @@ public sealed class ProductAnalyticsRepository
             """;
 
         return await connection.ExecuteScalarAsync<DateOnly?>(
-            new CommandDefinition(sql, parameters, cancellationToken: cancellationToken));
+            new CommandDefinition(sql, parameters, commandTimeout: QueryCommandTimeoutSeconds, cancellationToken: cancellationToken));
     }
 
     private static async Task<IReadOnlyList<TrendPoint>> QueryWeeklyTrendAsync(
@@ -124,7 +129,7 @@ public sealed class ProductAnalyticsRepository
             """;
 
         var rows = await connection.QueryAsync<TrendPoint>(
-            new CommandDefinition(sql, parameters, cancellationToken: cancellationToken));
+            new CommandDefinition(sql, parameters, commandTimeout: QueryCommandTimeoutSeconds, cancellationToken: cancellationToken));
         return rows.ToList();
     }
 
@@ -145,7 +150,7 @@ public sealed class ProductAnalyticsRepository
             WHERE {baseWhere};
             """;
         var flow = await connection.QuerySingleAsync<FlowKpiRow>(
-            new CommandDefinition(flowSql, parameters, cancellationToken: cancellationToken));
+            new CommandDefinition(flowSql, parameters, commandTimeout: QueryCommandTimeoutSeconds, cancellationToken: cancellationToken));
 
         if (!latestWeek.HasValue)
         {
@@ -170,7 +175,7 @@ public sealed class ProductAnalyticsRepository
             """;
 
         var snapshot = await connection.QuerySingleAsync<SnapshotKpiRow>(
-            new CommandDefinition(snapshotSql, parameters, cancellationToken: cancellationToken));
+            new CommandDefinition(snapshotSql, parameters, commandTimeout: QueryCommandTimeoutSeconds, cancellationToken: cancellationToken));
 
         return new ProductAnalyticsKpi(
             flow.Quantity,
@@ -194,14 +199,19 @@ public sealed class ProductAnalyticsRepository
     {
         // SKU 集計は tanpin_code で集約する。商品マスタの SKU 情報（色・サイズ・売価・代表画像）を
         // unit_cd 経由で結合し、画像は image_index 最小の 1 枚を採用。
-        // 最新週の在庫は latestWeek が無ければ 0（売上のない期間ではスナップショットも不在）。
+        // 在庫は商品自然キー（業態×記号×品番）のみで集計し、ユーザーフィルタ
+        // （部門・取引先・季節）には引きずられない物理在庫を反映する。
+        // latestWeek が無ければ 0（売上のない期間ではスナップショットも不在）。
         var stockCte = latestWeek.HasValue
-            ? $"""
+            ? """
               stock AS (
                   SELECT sw.tanpin_code,
                          COALESCE(SUM(sw.zaikosu), 0)::bigint AS stock
                   FROM sales_weekly sw
-                  WHERE sw.import_date = @latestWeek AND {baseWhere}
+                  WHERE sw.import_date = @latestWeek
+                    AND sw.gyotai_code  = @businessCategoryCd
+                    AND sw.shohin_kigou = @productSign
+                    AND sw.hinban_code  = @productTypeCrd
                   GROUP BY sw.tanpin_code
               )
               """
@@ -252,7 +262,7 @@ public sealed class ProductAnalyticsRepository
             """;
 
         var rows = (await connection.QueryAsync<SkuPerformanceRow>(
-            new CommandDefinition(sql, parameters, cancellationToken: cancellationToken))).ToList();
+            new CommandDefinition(sql, parameters, commandTimeout: QueryCommandTimeoutSeconds, cancellationToken: cancellationToken))).ToList();
 
         return rows
             .Select(r => new ProductSkuPerformance(
@@ -297,7 +307,7 @@ public sealed class ProductAnalyticsRepository
             """;
 
         var rows = (await connection.QueryAsync<CustomerPerformanceRow>(
-            new CommandDefinition(sql, parameters, cancellationToken: cancellationToken))).ToList();
+            new CommandDefinition(sql, parameters, commandTimeout: QueryCommandTimeoutSeconds, cancellationToken: cancellationToken))).ToList();
 
         return rows
             .Select(r => new ProductCustomerPerformance(
@@ -312,7 +322,9 @@ public sealed class ProductAnalyticsRepository
 
     /// <summary>
     /// 同一の商品記号・品番（業態のみ異なる）を別業態で販売しているケースの売上比較。
-    /// 業態フィルタが指定されていれば、その業態のみを返す。
+    /// 業態間の比較が目的のため、ユーザーの BusinessTypes フィルタは意図的に除外する
+    /// （指定された業態のみに絞り込んでしまうと比較が成立しないため）。
+    /// 期間／部門／取引先／季節／品番のフィルタは引き続き適用する。
     /// </summary>
     private async Task<IReadOnlyList<ProductBusinessTypePerformance>> QueryByBusinessTypeAsync(
         NpgsqlConnection connection,
@@ -320,14 +332,24 @@ public sealed class ProductAnalyticsRepository
         SalesQueryFilter filter,
         CancellationToken cancellationToken)
     {
+        // BusinessTypes だけ除外したフィルタを作る。元の filter は変更しない。
+        var crossBusinessFilter = new SalesQueryFilter
+        {
+            From = filter.From,
+            To = filter.To,
+            Departments = filter.Departments,
+            Customers = filter.Customers,
+            BusinessTypes = null,
+            Seasons = filter.Seasons,
+            Hinbans = filter.Hinbans,
+        };
+
         var parameters = new DynamicParameters();
-        SalesFilterSql.AddParameters(filter, parameters);
+        SalesFilterSql.AddParameters(crossBusinessFilter, parameters);
         parameters.Add("productSign", summary.ProductSign);
         parameters.Add("productTypeCrd", summary.ProductTypeCrd);
 
-        // 業態の絞り込みは「商品マスタの business_category_cd」と「業務キー（記号 × 品番）」の AND。
-        // ただし、業態フィルタが指定されていない場合は全業態を返す（比較目的）。
-        var andClause = SalesFilterSql.AndClause(filter, "sw");
+        var andClause = SalesFilterSql.AndClause(crossBusinessFilter, "sw");
         var sql = $"""
             WITH sales AS (
                 SELECT sw.gyotai_code,
@@ -353,7 +375,7 @@ public sealed class ProductAnalyticsRepository
             """;
 
         var rows = (await connection.QueryAsync<BusinessTypePerformanceRow>(
-            new CommandDefinition(sql, parameters, cancellationToken: cancellationToken))).ToList();
+            new CommandDefinition(sql, parameters, commandTimeout: QueryCommandTimeoutSeconds, cancellationToken: cancellationToken))).ToList();
 
         return rows
             .Select(r => new ProductBusinessTypePerformance(

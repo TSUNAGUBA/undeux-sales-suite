@@ -1,4 +1,5 @@
 using Dapper;
+using Npgsql;
 using UndeuxSales.Infrastructure.Database;
 
 namespace UndeuxSales.Infrastructure.Queries;
@@ -11,6 +12,9 @@ public sealed class ProductMasterRepository
 {
     private const int DefaultPageSize = 24;
     private const int MaxPageSize = 200;
+    // m_product_sku が大きくなった環境でも 30 秒のデフォルトで打ち切られないよう、
+    // 参照クエリは明示的に余裕のあるタイムアウトを与える（分析系の許容範囲）。
+    private const int QueryCommandTimeoutSeconds = 120;
 
     private readonly IDbConnectionFactory _connectionFactory;
 
@@ -117,12 +121,31 @@ public sealed class ProductMasterRepository
             """;
 
         var rawRows = (await connection.QueryAsync<MasterProductRawRow>(
-            new CommandDefinition(sql, parameters, cancellationToken: cancellationToken))).ToList();
+            new CommandDefinition(sql, parameters, commandTimeout: QueryCommandTimeoutSeconds, cancellationToken: cancellationToken))).ToList();
 
-        var totalCount = rawRows.Count > 0 ? rawRows[0].TotalCount : 0;
+        // OFFSET overshoot で本体クエリが空集合の場合でも、実件数を別クエリで取得する
+        // （window関数 COUNT(*) OVER () は LIMIT が空だと値を返さないため）。
+        var totalCount = rawRows.Count > 0
+            ? rawRows[0].TotalCount
+            : await CountProductsAsync(connection, filter, parameters, cancellationToken);
         var items = rawRows.Select(ToSummary).ToList();
 
         return new MasterProductPage(items, totalCount, page, pageSize);
+    }
+
+    private static async Task<int> CountProductsAsync(
+        NpgsqlConnection connection,
+        ProductMasterFilter filter,
+        DynamicParameters parameters,
+        CancellationToken cancellationToken)
+    {
+        var sql = $"""
+            SELECT COUNT(*)::int
+            FROM m_product mp
+            {ProductMasterFilterSql.WhereClause(filter, "mp")};
+            """;
+        return await connection.ExecuteScalarAsync<int>(
+            new CommandDefinition(sql, parameters, commandTimeout: QueryCommandTimeoutSeconds, cancellationToken: cancellationToken));
     }
 
     /// <summary>商品マスタの詳細（親 + SKU 一覧、SKU 内画像は IReadOnlyList で集約）を取得する。</summary>
@@ -176,7 +199,7 @@ public sealed class ProductMasterRepository
             """;
 
         var head = await connection.QuerySingleOrDefaultAsync<MasterProductRawRow>(
-            new CommandDefinition(headSql, parameters, cancellationToken: cancellationToken));
+            new CommandDefinition(headSql, parameters, commandTimeout: QueryCommandTimeoutSeconds, cancellationToken: cancellationToken));
         if (head is null)
         {
             return null;
@@ -199,7 +222,7 @@ public sealed class ProductMasterRepository
             """;
 
         var skuImageRows = (await connection.QueryAsync<MasterProductSkuRawRow>(
-            new CommandDefinition(skuSql, parameters, cancellationToken: cancellationToken))).ToList();
+            new CommandDefinition(skuSql, parameters, commandTimeout: QueryCommandTimeoutSeconds, cancellationToken: cancellationToken))).ToList();
 
         // 同一 SKU（unit_cd × color × size）に複数の画像（image_index）が紐づくケースを集約する。
         var skus = skuImageRows

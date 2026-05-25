@@ -2,7 +2,15 @@
 import { X } from 'lucide-vue-next'
 import type { CodeName } from '~/types/api'
 
-const { filter, options, optionsError, loadOptions, years } = useFilters()
+const props = withDefaults(
+  defineProps<{
+    /** useFilters のスコープキー。既定は全社共通の 'sales-filter'。 */
+    scopeKey?: string
+  }>(),
+  { scopeKey: 'sales-filter' },
+)
+
+const { filter, options, optionsError, loadOptions, years } = useFilters(props.scopeKey)
 
 onMounted(loadOptions)
 

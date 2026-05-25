@@ -15,7 +15,8 @@ useHead({ title: '商品分析 | UndeuxSales' })
 
 const route = useRoute()
 const router = useRouter()
-const { toQuery, loadOptions } = useFilters()
+// 商品分析ページ専用のフィルタスコープ（他ページの共通フィルタを汚染しない）。
+const { toQuery, loadOptions } = useFilters('product-analytics-filter')
 const { get } = useApi()
 
 const productId = computed(() => String(route.params.productId ?? ''))
@@ -100,6 +101,14 @@ watch(productId, () => {
   load()
 })
 
+// データ入れ替わり時にもインデックスをリセットして、新しい bySku 配列で常に有効な位置を指すようにする。
+watch(
+  () => data.value?.bySku.length ?? 0,
+  () => {
+    heroImageIndex.value = 0
+  },
+)
+
 onMounted(async () => {
   await loadOptions()
   await load()
@@ -125,7 +134,7 @@ onMounted(async () => {
       </NuxtLink>
     </div>
 
-    <FilterBar @apply="load" />
+    <FilterBar scope-key="product-analytics-filter" @apply="load" />
 
     <div
       v-if="notFound"
@@ -258,8 +267,9 @@ onMounted(async () => {
             accent-class="bg-slate-100 text-slate-600"
           />
           <KpiCard
-            label="取扱店舗数"
+            label="販売実績店舗数"
             :value="formatNumber(data.kpi.storeCount)"
+            sub="期間内に1回でも売上があった店舗"
             :icon="Store"
             accent-class="bg-purple-50 text-purple-600"
           />

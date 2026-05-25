@@ -102,11 +102,17 @@ export interface InventoryResponse {
   byDepartment: InventoryBreakdownRow[]
 }
 
+/**
+ * 商品別分析の1行。
+ * 真のユニークキーは (gyotaiCode, shohinKigou, hinbanCode, tanpinCode) の4組。
+ * v-for :key は必ずこの4組で組み立てること（hinban-tanpin だけでは衝突する）。
+ */
 export interface ProductRow {
+  gyotaiCode: string
+  shohinKigou: string
   hinbanCode: string
   tanpinCode: string
   hinmei: string
-  shohinKigou: string
   kisetsu: string
   salesQuantity: number
   salesAmount: number

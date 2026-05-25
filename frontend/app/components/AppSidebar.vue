@@ -28,9 +28,13 @@ const navItems = [
   { to: '/imports', label: '週次取込', icon: Upload },
 ]
 
+/**
+ * サイドバー項目のアクティブ判定。サブルートを持つメニュー（商品マスタ・商品軸分析）は
+ * 親パス + '/' 以下のサブルートでもアクティブ表示する。完全一致のみのページは === で判定。
+ */
 function isActive(path: string): boolean {
-  if (path === '/product-analytics') {
-    return route.path.startsWith('/product-analytics')
+  if (path === '/product-analytics' || path === '/product-master') {
+    return route.path === path || route.path.startsWith(`${path}/`)
   }
   return route.path === path
 }

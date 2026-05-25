@@ -66,15 +66,14 @@ const drillableDimensions = new Set([
   'businessType',
   'season',
   'hinban',
-  // 単品行は商品マスタが解決できれば商品軸分析へ遷移する（無ければクリックは無効動作）。
-  'product',
+  // 'product' は行クリックで一律ドリルできないため除外。代わりに productName 列のセル内
+  // リンク（マスタ解決時のみ表示）から商品軸分析へ遷移する。
 ])
 
 const canDrill = computed(() => drillableDimensions.has(dimension.value))
 
 const nextDimLabel = computed(() => {
   if (dimension.value === 'hinban') return '単品'
-  if (dimension.value === 'product') return '商品軸分析（マスタ登録時のみ）'
   return '品番3桁'
 })
 
@@ -295,12 +294,6 @@ function resetAndLoad(): void {
 function handleRowDrill(row: CrosstabRow): void {
   const dim = dimension.value
 
-  // 単品（Product）ディメンションで商品マスタが解決できている場合は商品分析へ遷移する。
-  if (dim === 'product' && row.basicItems?.masterProductId) {
-    void navigateTo(`/product-analytics/${row.basicItems.masterProductId}`)
-    return
-  }
-
   let nextDim: string | null = null
   if (dim === 'department') {
     addToFilter('departments', row.key)
@@ -433,7 +426,17 @@ onMounted(async () => {
               </template>
               <template #productName="{ row }">
                 <div class="flex min-w-0 flex-col">
-                  <span class="truncate text-slate-800">
+                  <NuxtLink
+                    v-if="(row as CrosstabRow).basicItems?.masterProductId"
+                    :to="`/product-analytics/${(row as CrosstabRow).basicItems!.masterProductId}`"
+                    class="truncate text-indigo-600 hover:underline"
+                    @click.stop
+                  >
+                    {{ (row as CrosstabRow).basicItems?.productName
+                      ?? (row as CrosstabRow).basicItems?.hinmei
+                      ?? '-' }}
+                  </NuxtLink>
+                  <span v-else class="truncate text-slate-800">
                     {{ (row as CrosstabRow).basicItems?.productName
                       ?? (row as CrosstabRow).basicItems?.hinmei
                       ?? '-' }}

@@ -40,12 +40,20 @@ public sealed class ProductMasterController : ControllerBase
             pageSize <= 0 ? DefaultPageSize : pageSize,
             cancellationToken);
 
-    /// <summary>商品マスタの詳細（親 + SKU 一覧 + 画像）を返す。</summary>
-    [HttpGet("{productId:guid}")]
+    /// <summary>
+    /// 商品マスタの詳細（親 + SKU 一覧 + 画像）を返す。productId が GUID 形式でない場合や、
+    /// 該当商品が存在しない場合は ApiError (UNDX-DATA-002) を 404 で返す。
+    /// </summary>
+    [HttpGet("{productId}")]
     public async Task<ActionResult<MasterProductDetail>> GetById(
-        Guid productId, CancellationToken cancellationToken)
+        string productId, CancellationToken cancellationToken)
     {
-        var detail = await _repository.GetProductDetailAsync(productId, cancellationToken);
+        if (!Guid.TryParse(productId, out var parsed))
+        {
+            throw new AppException(ErrorCodes.ProductNotFound, 404);
+        }
+
+        var detail = await _repository.GetProductDetailAsync(parsed, cancellationToken);
         if (detail is null)
         {
             throw new AppException(ErrorCodes.ProductNotFound, 404);
