@@ -250,8 +250,18 @@ COMMENT ON COLUMN m_product.brand                 IS 'ブランド名（任意�
 COMMENT ON COLUMN m_product.manager               IS '担当者名（任意）';
 
 -- 業務上の自然キー。手動投入時の重複防止と sales_weekly との結合インデックス。
-CREATE UNIQUE INDEX IF NOT EXISTS ux_m_product_business_key
-    ON m_product (business_category_cd, product_sign, product_type_crd);
+-- 既存環境で運用者が UNIQUE 制約のないテーブルへ既にデータ投入済みの場合、後から
+-- UNIQUE INDEX を作成すると重複違反 (23505) で失敗するため、エラーを捕捉してスキップする。
+-- 新規環境では通常通り UNIQUE INDEX が作成される。スキップされた場合は運用者が
+-- データ整合（重複行の整理）後に手動で `CREATE UNIQUE INDEX` を実行することを想定する。
+DO $$
+BEGIN
+    CREATE UNIQUE INDEX IF NOT EXISTS ux_m_product_business_key
+        ON m_product (business_category_cd, product_sign, product_type_crd);
+EXCEPTION WHEN unique_violation THEN
+    RAISE NOTICE 'ux_m_product_business_key の作成をスキップしました（既存データに重複あり）。データ整合後に手動で UNIQUE INDEX を作成してください。';
+END
+$$;
 
 CREATE INDEX IF NOT EXISTS ix_m_product_division_cd ON m_product (division_cd);
 CREATE INDEX IF NOT EXISTS ix_m_product_brand       ON m_product (brand);
