@@ -80,6 +80,10 @@ async function load(): Promise<void> {
       `/api/product-analytics/${productId.value}`,
       toQuery(),
     )
+    // 新しいデータセットに合わせてサムネ選択を初期化する。
+    // 件数が変わらないフィルタ変更でも SKU 順序が変わると元の indexed SKU と乖離するため、
+    // load() 完了時に必ず先頭へ戻す。
+    heroImageIndex.value = 0
   } catch (error) {
     const extracted = extractApiError(error)
     if (extracted?.errorCode === 'UNDX-DATA-002') {
@@ -96,18 +100,10 @@ function goBack(): void {
   router.back()
 }
 
+// 商品 ID 変更時はデータを再取得（load() 内で heroImageIndex も初期化される）。
 watch(productId, () => {
-  heroImageIndex.value = 0
   load()
 })
-
-// データ入れ替わり時にもインデックスをリセットして、新しい bySku 配列で常に有効な位置を指すようにする。
-watch(
-  () => data.value?.bySku.length ?? 0,
-  () => {
-    heroImageIndex.value = 0
-  },
-)
 
 onMounted(async () => {
   await loadOptions()
