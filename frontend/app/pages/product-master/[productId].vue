@@ -21,16 +21,18 @@ const selectedSku = ref<MasterProductSku | null>(null)
 const selectedImageIdx = ref(0)
 
 /**
- * SKU 一覧の表示順。サイズ昇順（数値は数値順、文字列は XS<S<M<L<LL... の規定順）で
- * 並べたうえで、同サイズ内ではカラー名昇順、最後に単品コードで決定論化する。
+ * SKU 一覧の表示順。
+ * 第一優先: カラー名（ja ロケール）昇順
+ * 第二優先: 同カラー内でサイズ昇順（数値は数値順、文字列は XS=SS<S<M<L<LL=2L<LLL=3L<LLLL=4L）
+ * 第三優先: 単品コード昇順で決定論化
  */
 const sortedSkus = computed(() => {
   const list = [...(detail.value?.skus ?? [])]
   list.sort((a, b) => {
-    const bySize = compareSize(a.sizeName, b.sizeName)
-    if (bySize !== 0) return bySize
     const byColor = a.colorName.localeCompare(b.colorName, 'ja')
     if (byColor !== 0) return byColor
+    const bySize = compareSize(a.sizeName, b.sizeName)
+    if (bySize !== 0) return bySize
     return a.unitCd.localeCompare(b.unitCd)
   })
   return list
