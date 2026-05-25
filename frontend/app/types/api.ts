@@ -19,10 +19,17 @@ export interface CodeName {
   name: string | null
 }
 
+/** 業態コード・表示名・略称の組（業態専用）。 */
+export interface BusinessTypeOption {
+  code: string
+  name: string | null
+  shortName: string | null
+}
+
 export interface FilterOptions {
   departments: CodeName[]
   customers: CodeName[]
-  businessTypes: CodeName[]
+  businessTypes: BusinessTypeOption[]
   seasons: CodeName[]
   weeks: string[]
 }
@@ -107,6 +114,14 @@ export interface ProductRow {
   stock: number
   sellThroughRate: number
   averageStockDays: number
+  /** 商品マスタが結合できた場合の商品ID（無ければ null）。 */
+  masterProductId: string | null
+  /** 商品マスタに登録された商品名（マスタ無し時は null。表示時は hinmei を fallback）。 */
+  productName: string | null
+  /** 商品マスタのブランド（任意項目）。 */
+  brand: string | null
+  /** 当該 tanpin の代表画像URL（image_index 最小のSKU画像）。 */
+  primaryImageUrl: string | null
 }
 
 export interface ProductPage {
@@ -158,7 +173,7 @@ export interface SalesFilterState {
   hinbans: string[]
 }
 
-/** クロス集計の基本項目（単品レベル時のみ非null）。 */
+/** クロス集計の基本項目（単品レベル時のみ非null）。商品マスタが解決できれば商品名・画像も含む。 */
 export interface CrosstabBasicItems {
   hinban: string
   tanpin: string
@@ -167,6 +182,10 @@ export interface CrosstabBasicItems {
   color: string
   size: string
   kisetsu: string
+  masterProductId: string | null
+  productName: string | null
+  brand: string | null
+  primaryImageUrl: string | null
 }
 
 /** クロス集計の1行。 */
@@ -188,4 +207,140 @@ export interface CrosstabResponse {
   dimension: string
   rows: CrosstabRow[]
   latestWeek: string | null
+}
+
+// ============================================================
+// 商品マスタ（m_product / m_product_sku）
+// ============================================================
+
+/** 商品マスタ一覧（カード型UI）の1件。 */
+export interface MasterProductSummary {
+  productId: string
+  businessCategoryCd: string
+  businessCategorySign: string
+  divisionCd: number
+  divisionName: string
+  productName: string
+  brand: string | null
+  productSign: string
+  manager: string | null
+  productTypeCrd: string
+  skuCount: number
+  colorCount: number
+  sizeCount: number
+  minSalesPrice: number | null
+  maxSalesPrice: number | null
+  primaryImageUrl: string | null
+}
+
+/** 商品マスタの SKU 画像（1枚）。 */
+export interface MasterProductSkuImage {
+  imageId: string
+  imageIndex: number
+  imageFileName: string | null
+  imageUrl: string
+}
+
+/** 商品マスタの SKU 1件（同一 SKU の画像はリストで保持）。 */
+export interface MasterProductSku {
+  skuItemId: string
+  unitCd: string
+  colorName: string
+  sizeName: string
+  salesPrice: number
+  costPrice: number
+  images: MasterProductSkuImage[]
+}
+
+/** 商品マスタ詳細（親 + SKU 一覧）。 */
+export interface MasterProductDetail {
+  summary: MasterProductSummary
+  skus: MasterProductSku[]
+}
+
+/** 商品マスタ一覧のページ。 */
+export interface MasterProductPage {
+  items: MasterProductSummary[]
+  totalCount: number
+  page: number
+  pageSize: number
+}
+
+/** 商品マスタ専用フィルタの選択肢一式。 */
+export interface MasterFilterOptions {
+  businessTypes: BusinessTypeOption[]
+  divisions: CodeName[]
+  brands: string[]
+  managers: string[]
+}
+
+/** 商品マスタ画面の検索フィルタ状態。 */
+export interface ProductMasterFilterState {
+  search: string
+  businessCategoryCds: string[]
+  divisionCds: number[]
+  brands: string[]
+  managers: string[]
+}
+
+// ============================================================
+// 商品軸の分析
+// ============================================================
+
+/** 商品単位の期間内 KPI。 */
+export interface ProductAnalyticsKpi {
+  quantity: number
+  amount: number
+  grossProfit: number
+  grossProfitRate: number
+  currentStock: number
+  sellThroughRate: number
+  averageStockDays: number
+  storeCount: number
+  latestWeek: string | null
+}
+
+/** SKU別の売上集計（色・サイズ別）。 */
+export interface ProductSkuPerformance {
+  unitCd: string
+  colorName: string
+  sizeName: string
+  salesPrice: number
+  primaryImageUrl: string | null
+  quantity: number
+  amount: number
+  grossProfit: number
+  stock: number
+  sharePercent: number
+}
+
+/** 取引先（店舗）別の売上集計。 */
+export interface ProductCustomerPerformance {
+  customerCode: string
+  customerName: string | null
+  quantity: number
+  amount: number
+  grossProfit: number
+  sharePercent: number
+}
+
+/** 業態別の売上集計（同一の商品記号・品番で別業態に同名商品があるケース）。 */
+export interface ProductBusinessTypePerformance {
+  businessCategoryCd: string
+  displayName: string | null
+  shortName: string | null
+  quantity: number
+  amount: number
+  grossProfit: number
+  sharePercent: number
+}
+
+/** 商品分析のレスポンス（指定商品の包括的な売上分析）。 */
+export interface ProductAnalyticsResponse {
+  product: MasterProductSummary
+  kpi: ProductAnalyticsKpi
+  weeklyTrend: TrendPoint[]
+  bySku: ProductSkuPerformance[]
+  byCustomer: ProductCustomerPerformance[]
+  byBusinessType: ProductBusinessTypePerformance[]
 }

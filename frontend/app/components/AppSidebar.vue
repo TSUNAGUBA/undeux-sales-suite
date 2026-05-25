@@ -7,6 +7,8 @@ import {
   LayoutGrid,
   Upload,
   LogOut,
+  Shirt,
+  BarChart3,
 } from 'lucide-vue-next'
 
 const emit = defineEmits<{ navigate: [] }>()
@@ -21,10 +23,15 @@ const navItems = [
   { to: '/products', label: '商品別分析', icon: Package },
   { to: '/inventory', label: '在庫・発注分析', icon: Boxes },
   { to: '/crosstab', label: 'クロス集計', icon: LayoutGrid },
+  { to: '/product-master', label: '商品マスタ', icon: Shirt },
+  { to: '/product-analytics', label: '商品軸分析', icon: BarChart3 },
   { to: '/imports', label: '週次取込', icon: Upload },
 ]
 
 function isActive(path: string): boolean {
+  if (path === '/product-analytics') {
+    return route.path.startsWith('/product-analytics')
+  }
   return route.path === path
 }
 

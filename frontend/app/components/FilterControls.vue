@@ -15,7 +15,16 @@ function toSelectOptions(items: CodeName[]): { value: string; text: string }[] {
 
 const departmentOptions = computed(() => toSelectOptions(options.value?.departments ?? []))
 const customerOptions = computed(() => toSelectOptions(options.value?.customers ?? []))
-const businessTypeOptions = computed(() => toSelectOptions(options.value?.businessTypes ?? []))
+const businessTypeOptions = computed(() =>
+  (options.value?.businessTypes ?? []).map((b) => ({
+    value: b.code,
+    text: b.name
+      ? b.shortName
+        ? `${b.code}: ${b.name} (${b.shortName})`
+        : `${b.code}: ${b.name}`
+      : b.code,
+  })),
+)
 const seasonOptions = computed(() => toSelectOptions(options.value?.seasons ?? []))
 
 function removeHinban(value: string): void {

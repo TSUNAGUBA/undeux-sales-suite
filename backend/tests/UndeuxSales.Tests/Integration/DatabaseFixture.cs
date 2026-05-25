@@ -40,6 +40,9 @@ public sealed class DatabaseFixture : IAsyncLifetime
         await EnsureTestDatabaseAsync();
         await ApplySchemaAsync();
         await TruncateAsync();
+        // schema.sql は CREATE 系の他に業態マスタの代表データ（01〜06）の INSERT も含む。
+        // TRUNCATE 後にこれらの参照データを再投入するため schema.sql を再適用する（冪等）。
+        await ApplySchemaAsync();
         await SeedAsync();
         Factory = new CustomWebApplicationFactory(ConnectionString);
     }
@@ -79,9 +82,10 @@ public sealed class DatabaseFixture : IAsyncLifetime
     {
         await using var connection = new NpgsqlConnection(ConnectionString);
         await connection.OpenAsync();
+        // m_product_sku は m_product CASCADE で消えるが、両方を明示することで意図を残す。
         await connection.ExecuteAsync("""
-            TRUNCATE sales_weekly, import_batch, department, customer,
-                     business_type, season RESTART IDENTITY CASCADE;
+            TRUNCATE m_product_sku, m_product, sales_weekly, import_batch, department,
+                     customer, business_type, season RESTART IDENTITY CASCADE;
             """);
     }
 

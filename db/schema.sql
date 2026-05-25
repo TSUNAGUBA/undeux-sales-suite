@@ -184,6 +184,113 @@ CREATE TABLE IF NOT EXISTS season (
 );
 COMMENT ON TABLE season IS '季節区分マスタ（取込時に自動導出）';
 
+-- ------------------------------------------------------------
+-- 業態マスタの拡張: short_name 列を追加し、業態名（display_name）と
+-- 略称（short_name）を保守できるようにする。SoTは依然として sales_weekly
+-- だが、コード単独では UI 表示が読みにくいため、運用側で代表名を付与する。
+-- 取込時の自動 UPSERT（INSERT ... ON CONFLICT DO NOTHING）は code 行のみ
+-- 挿入し、display_name / short_name は上書きしないため運用設定が温存される。
+-- ------------------------------------------------------------
+ALTER TABLE business_type
+    ADD COLUMN IF NOT EXISTS short_name text;
+COMMENT ON COLUMN business_type.short_name IS '業態の英数略称（例: sm=しまむら, av=アベイル）';
+
+-- 業態マスタの代表データ。code をキーに display_name と short_name を上書きする
+-- （冪等。新規コードのみ追加されたい場合は ON CONFLICT DO NOTHING に変更可）。
+INSERT INTO business_type (code, display_name, short_name) VALUES
+    ('01', 'しまむら',   'sm'),
+    ('02', 'アベイル',   'av'),
+    ('03', '思夢樂',     'sr'),
+    ('04', 'バースデイ', 'br'),
+    ('05', 'シャンブル', 'cm'),
+    ('06', 'ディバロ',   'di')
+ON CONFLICT (code) DO UPDATE
+    SET display_name = EXCLUDED.display_name,
+        short_name   = EXCLUDED.short_name;
+
+-- ------------------------------------------------------------
+-- 商品マスタ（運用側で手動投入される参照データ）
+-- ------------------------------------------------------------
+--  m_product   : 商品の親（業態 × 商品記号 × 品番で1行）
+--  m_product_sku: SKU（カラー × サイズ × 単品コード）。画像は SKU + image_index で多枚保持。
+--
+--  sales_weekly との結合キー対応:
+--    sales_weekly.gyotai_code   = m_product.business_category_cd
+--    sales_weekly.shohin_kigou  = m_product.product_sign
+--    sales_weekly.hinban_code   = m_product.product_type_crd
+--    sales_weekly.tanpin_code   = m_product_sku.unit_cd
+--
+--  SoTは投入元の運用ファイル（手動投入）。アプリは表示・分析のみ行う。
+-- ------------------------------------------------------------
+CREATE TABLE IF NOT EXISTS m_product (
+    product_id              uuid          NOT NULL,
+    business_category_cd    varchar(2)    NOT NULL,
+    business_category_sign  varchar(50)   NOT NULL,
+    division_cd             integer       NOT NULL,
+    division_name           varchar(50)   NOT NULL,
+    product_name            varchar(255)  NOT NULL,
+    brand                   varchar(100),
+    product_sign            varchar(50)   NOT NULL,
+    manager                 varchar(100),
+    product_type_crd        varchar(50)   NOT NULL,
+    created_at              timestamptz   NOT NULL DEFAULT now(),
+    updated_at              timestamptz   NOT NULL DEFAULT now(),
+
+    CONSTRAINT pk_m_product PRIMARY KEY (product_id)
+);
+
+COMMENT ON TABLE  m_product IS '商品マスタ（親）。業態×商品記号×品番で一意';
+COMMENT ON COLUMN m_product.business_category_cd  IS '業態コード（sales_weekly.gyotai_code と対応）';
+COMMENT ON COLUMN m_product.business_category_sign IS '業態の表示用記号';
+COMMENT ON COLUMN m_product.division_cd           IS '部門コード（数値。例 11, 12, 51, 56）';
+COMMENT ON COLUMN m_product.division_name         IS '部門表示名';
+COMMENT ON COLUMN m_product.product_name          IS '商品名';
+COMMENT ON COLUMN m_product.product_sign          IS '商品記号（sales_weekly.shohin_kigou と対応）';
+COMMENT ON COLUMN m_product.product_type_crd      IS '品番コード（sales_weekly.hinban_code と対応）';
+COMMENT ON COLUMN m_product.brand                 IS 'ブランド名（任意）';
+COMMENT ON COLUMN m_product.manager               IS '担当者名（任意）';
+
+-- 業務上の自然キー。手動投入時の重複防止と sales_weekly との結合インデックス。
+CREATE UNIQUE INDEX IF NOT EXISTS ux_m_product_business_key
+    ON m_product (business_category_cd, product_sign, product_type_crd);
+
+CREATE INDEX IF NOT EXISTS ix_m_product_division_cd ON m_product (division_cd);
+CREATE INDEX IF NOT EXISTS ix_m_product_brand       ON m_product (brand);
+CREATE INDEX IF NOT EXISTS ix_m_product_manager     ON m_product (manager);
+
+CREATE TABLE IF NOT EXISTS m_product_sku (
+    sku_item_id     uuid          NOT NULL,
+    product_id      uuid          NOT NULL,
+    unit_cd         varchar(50)   NOT NULL,
+    color_name      varchar(50)   NOT NULL,
+    size_name       varchar(50)   NOT NULL,
+    sales_price     integer       NOT NULL DEFAULT 0,
+    cost_price      integer       NOT NULL DEFAULT 0,
+    image_id        uuid          NOT NULL,
+    image_index     integer       NOT NULL,
+    image_file_name varchar(255),
+    image_url       text          NOT NULL,
+    created_at      timestamptz   NOT NULL DEFAULT now(),
+    updated_at      timestamptz   NOT NULL DEFAULT now(),
+
+    CONSTRAINT pk_m_product_sku PRIMARY KEY (sku_item_id),
+    CONSTRAINT fk_m_product_sku_parent FOREIGN KEY (product_id)
+        REFERENCES m_product (product_id) ON DELETE CASCADE
+);
+
+COMMENT ON TABLE  m_product_sku IS '商品SKU。1行=SKU×画像（単品×色×サイズ×画像index）';
+COMMENT ON COLUMN m_product_sku.unit_cd     IS '単品コード（sales_weekly.tanpin_code と対応）';
+COMMENT ON COLUMN m_product_sku.image_index IS '同一SKU内での画像表示順（0=サムネ既定）';
+COMMENT ON COLUMN m_product_sku.image_url   IS '画像配信URL（外部CDN想定）';
+
+-- SKU 単位（単品×色×サイズ）のクエリと、sales_weekly との結合性能を確保する。
+CREATE INDEX IF NOT EXISTS ix_m_product_sku_product
+    ON m_product_sku (product_id);
+CREATE INDEX IF NOT EXISTS ix_m_product_sku_product_unit
+    ON m_product_sku (product_id, unit_cd);
+CREATE INDEX IF NOT EXISTS ix_m_product_sku_unit_cd
+    ON m_product_sku (unit_cd);
+
 -- 日次粒度の集計は、週次ファクトを取込日で先に集計してから日次7列を展開する
 -- 方式（アプリ側クエリ）で行う。160万行を縦展開する前に集約するため高速。
 -- 日付対応ロジック: sales_date = import_date - 8 + day_index

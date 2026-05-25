@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { ChevronLeft, ChevronRight } from 'lucide-vue-next'
+import { ChevronLeft, ChevronRight, Package } from 'lucide-vue-next'
 import type { ProductPage, ProductRow } from '~/types/api'
 
 useHead({ title: '商品別分析 | UndeuxSales' })
@@ -31,12 +31,19 @@ const totalPages = computed(() => {
 })
 
 const columns = [
+  // 画像セル（slot で描画）。マスタ未登録時はプレースホルダーを表示。
+  { key: 'thumbnail', label: '画像', format: (_row: ProductRow) => '' },
   {
     key: 'product',
     label: '品番-単品',
     format: (row: ProductRow) => `${row.hinbanCode}-${row.tanpinCode}`,
   },
-  { key: 'hinmei', label: '品名', format: (row: ProductRow) => row.hinmei },
+  // 商品名はマスタ優先、無ければ既存 hinmei を fallback（ブランドは slot で副表示）。
+  {
+    key: 'productName',
+    label: '商品名',
+    format: (row: ProductRow) => row.productName ?? row.hinmei,
+  },
   { key: 'kisetsu', label: '季節', format: (row: ProductRow) => row.kisetsu },
   {
     key: 'salesQuantity',
@@ -108,6 +115,11 @@ function changePage(delta: number): void {
 }
 
 function handleProductDrill(row: ProductRow): void {
+  // 商品マスタが解決できている場合は商品軸分析へ遷移、未解決時は従来のクロス集計ドリルへフォールバック。
+  if (row.masterProductId) {
+    navigateTo(`/product-analytics/${row.masterProductId}`)
+    return
+  }
   addToFilter('hinbans', row.hinbanCode)
   navigateTo({ path: '/crosstab', query: { dimension: 'product' } })
 }
@@ -166,7 +178,35 @@ onMounted(async () => {
           :row-key="(row: ProductRow) => `${row.hinbanCode}-${row.tanpinCode}`"
           clickable
           @row-click="handleProductDrill"
-        />
+        >
+          <template #thumbnail="{ row }">
+            <img
+              v-if="(row as ProductRow).primaryImageUrl"
+              :src="(row as ProductRow).primaryImageUrl!"
+              :alt="(row as ProductRow).productName ?? (row as ProductRow).hinmei"
+              loading="lazy"
+              class="h-10 w-10 rounded object-cover"
+            >
+            <div
+              v-else
+              class="flex h-10 w-10 items-center justify-center rounded bg-slate-100 text-slate-300"
+              :title="'マスタ未登録'"
+            >
+              <Package class="h-4 w-4" />
+            </div>
+          </template>
+          <template #productName="{ row }">
+            <div class="flex min-w-0 flex-col">
+              <span class="truncate text-slate-800">
+                {{ (row as ProductRow).productName ?? (row as ProductRow).hinmei }}
+              </span>
+              <span
+                v-if="(row as ProductRow).brand"
+                class="truncate text-xs text-slate-400"
+              >{{ (row as ProductRow).brand }}</span>
+            </div>
+          </template>
+        </DataTable>
 
         <div class="flex items-center justify-between text-sm text-slate-600">
           <span>全 {{ formatNumber(productPage?.totalCount ?? 0) }} 件</span>
