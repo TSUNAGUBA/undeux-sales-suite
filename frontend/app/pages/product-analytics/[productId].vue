@@ -3,7 +3,6 @@ import {
   ArrowLeft,
   ShoppingBag,
   TrendingUp,
-  Store,
   Boxes,
   Percent,
   CalendarDays,
@@ -42,15 +41,6 @@ const trendSeries = computed(() => [
     color: '#10b981',
   },
 ])
-
-const customerLabels = computed(() =>
-  (data.value?.byCustomer.slice(0, 10) ?? []).map((c) =>
-    c.customerName ? `${c.customerCode} ${c.customerName}` : c.customerCode,
-  ),
-)
-const customerData = computed(() =>
-  (data.value?.byCustomer.slice(0, 10) ?? []).map((c) => c.amount),
-)
 
 const businessTypeLabels = computed(() =>
   (data.value?.byBusinessType ?? []).map((b) =>
@@ -261,13 +251,6 @@ onMounted(async () => {
             accent-class="bg-slate-100 text-slate-600"
           />
           <KpiCard
-            label="販売実績店舗数"
-            :value="formatNumber(data.kpi.storeCount)"
-            sub="期間内に1回でも売上があった店舗"
-            :icon="Store"
-            accent-class="bg-purple-50 text-purple-600"
-          />
-          <KpiCard
             label="最新週"
             :value="data.kpi.latestWeek ?? '—'"
             :icon="CalendarDays"
@@ -282,26 +265,15 @@ onMounted(async () => {
           :series="trendSeries"
         />
 
-        <div class="grid grid-cols-1 gap-4 lg:grid-cols-2">
-          <BarChartCard
-            v-if="customerLabels.length > 0"
-            title="取引先別売上 TOP10"
-            :labels="customerLabels"
-            :data="customerData"
-            color="#4f46e5"
-            series-label="売上金額"
-            horizontal
-          />
-          <BarChartCard
-            v-if="businessTypeLabels.length > 0"
-            title="業態別売上（同一商品記号・品番）"
-            :labels="businessTypeLabels"
-            :data="businessTypeData"
-            color="#10b981"
-            series-label="売上金額"
-            horizontal
-          />
-        </div>
+        <BarChartCard
+          v-if="businessTypeLabels.length > 0"
+          title="業態別売上（同一商品記号・品番）"
+          :labels="businessTypeLabels"
+          :data="businessTypeData"
+          color="#10b981"
+          series-label="売上金額"
+          horizontal
+        />
 
         <div class="rounded-xl border border-slate-200 bg-white shadow-sm">
           <div class="border-b border-slate-100 px-4 py-3">

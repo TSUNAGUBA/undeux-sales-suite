@@ -28,7 +28,6 @@ const dimensionOptions = [
   { value: 'hinban', label: '品番3桁' },
   { value: 'product', label: '単品（品番-単品）' },
   { value: 'department', label: '部門' },
-  { value: 'customer', label: '取引先' },
   { value: 'businessType', label: '業態' },
   { value: 'season', label: '季節区分' },
   { value: 'color', label: 'カラー' },
@@ -62,12 +61,11 @@ const keyLabel = computed(
 
 const drillableDimensions = new Set([
   'department',
-  'customer',
   'businessType',
   'season',
   'hinban',
   // 'product' は行クリックで一律ドリルできないため除外。代わりに productName 列のセル内
-  // リンク（マスタ解決時のみ表示）から商品軸分析へ遷移する。
+  // リンク（マスタ解決時のみ表示）から商品マスタ詳細へ遷移する。
 ])
 
 const canDrill = computed(() => drillableDimensions.has(dimension.value))
@@ -297,9 +295,6 @@ function handleRowDrill(row: CrosstabRow): void {
   let nextDim: string | null = null
   if (dim === 'department') {
     addToFilter('departments', row.key)
-    nextDim = 'hinban'
-  } else if (dim === 'customer') {
-    addToFilter('customers', row.key)
     nextDim = 'hinban'
   } else if (dim === 'businessType') {
     addToFilter('businessTypes', row.key)

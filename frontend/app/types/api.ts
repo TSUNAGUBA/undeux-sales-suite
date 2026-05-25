@@ -26,9 +26,13 @@ export interface BusinessTypeOption {
   shortName: string | null
 }
 
+/**
+ * フィルタUIの選択肢一式。
+ * 取引先（customer_code）は本アプリでは常に同じ値（メーカー固有コード）のため
+ * 選択肢としては提供しない。
+ */
 export interface FilterOptions {
   departments: CodeName[]
-  customers: CodeName[]
   businessTypes: BusinessTypeOption[]
   seasons: CodeName[]
   weeks: string[]
@@ -167,12 +171,14 @@ export interface ApiError {
   details?: string[]
 }
 
-/** 売上分析クエリの共通フィルタ状態（年度 = 1月〜12月のカレンダー年）。 */
+/**
+ * 売上分析クエリの共通フィルタ状態（年度 = 1月〜12月のカレンダー年）。
+ * 取引先（customer_code）は本アプリでは常に同じ値（メーカー固有コード）のためフィルタには含めない。
+ */
 export interface SalesFilterState {
   /** 西暦年。null=全期間。 */
   year: number | null
   departments: string[]
-  customers: string[]
   businessTypes: string[]
   seasons: string[]
   /** 品番コード。ドリルダウンで追加される（UIには直接の入力枠は無い）。 */
@@ -302,7 +308,6 @@ export interface ProductAnalyticsKpi {
   currentStock: number
   sellThroughRate: number
   averageStockDays: number
-  storeCount: number
   latestWeek: string | null
 }
 
@@ -317,16 +322,6 @@ export interface ProductSkuPerformance {
   amount: number
   grossProfit: number
   stock: number
-  sharePercent: number
-}
-
-/** 取引先（店舗）別の売上集計。 */
-export interface ProductCustomerPerformance {
-  customerCode: string
-  customerName: string | null
-  quantity: number
-  amount: number
-  grossProfit: number
   sharePercent: number
 }
 
@@ -347,6 +342,5 @@ export interface ProductAnalyticsResponse {
   kpi: ProductAnalyticsKpi
   weeklyTrend: TrendPoint[]
   bySku: ProductSkuPerformance[]
-  byCustomer: ProductCustomerPerformance[]
   byBusinessType: ProductBusinessTypePerformance[]
 }

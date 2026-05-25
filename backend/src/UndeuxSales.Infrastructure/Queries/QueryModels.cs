@@ -6,10 +6,13 @@ public sealed record CodeName(string Code, string? Name);
 /// <summary>業態コード・表示名・略称の組（業態専用）。</summary>
 public sealed record BusinessTypeOption(string Code, string? Name, string? ShortName);
 
-/// <summary>フィルタUIの選択肢一式。</summary>
+/// <summary>
+/// フィルタUIの選択肢一式。
+/// 取引先（customer_code）は本アプリのユーザー（メーカー）に対して小売側が振り出した
+/// 固有コードで、本アプリ内では常に同じ値となるため選択肢として提供しない。
+/// </summary>
 public sealed record FilterOptions(
     IReadOnlyList<CodeName> Departments,
-    IReadOnlyList<CodeName> Customers,
     IReadOnlyList<BusinessTypeOption> BusinessTypes,
     IReadOnlyList<CodeName> Seasons,
     IReadOnlyList<DateOnly> Weeks);
@@ -202,6 +205,11 @@ public sealed record MasterFilterOptions(
 // ============================================================
 
 /// <summary>商品単位の期間内 KPI。</summary>
+/// <remarks>
+/// 取引先（customer_code）は本アプリでは常に同じ値（メーカー固有コード）のため、
+/// 旧 StoreCount = COUNT(DISTINCT customer_code) は常に 1 となり指標として無意味だった。
+/// よって本 KPI からは除外している。
+/// </remarks>
 public sealed record ProductAnalyticsKpi(
     long Quantity,
     long Amount,
@@ -210,7 +218,6 @@ public sealed record ProductAnalyticsKpi(
     long CurrentStock,
     double SellThroughRate,
     double AverageStockDays,
-    int StoreCount,
     DateOnly? LatestWeek);
 
 /// <summary>SKU別の売上集計（色・サイズ別）。</summary>
@@ -226,15 +233,6 @@ public sealed record ProductSkuPerformance(
     long Stock,
     double SharePercent);
 
-/// <summary>取引先（店舗）別の売上集計。</summary>
-public sealed record ProductCustomerPerformance(
-    string CustomerCode,
-    string? CustomerName,
-    long Quantity,
-    long Amount,
-    long GrossProfit,
-    double SharePercent);
-
 /// <summary>業態別の売上集計。</summary>
 public sealed record ProductBusinessTypePerformance(
     string BusinessCategoryCd,
@@ -245,11 +243,13 @@ public sealed record ProductBusinessTypePerformance(
     long GrossProfit,
     double SharePercent);
 
-/// <summary>商品分析のレスポンス（指定商品の包括的な売上分析）。</summary>
+/// <summary>
+/// 商品分析のレスポンス（指定商品の包括的な売上分析）。
+/// 取引先別売上は customer_code が常に同じ値のため意味を持たず、提供しない。
+/// </summary>
 public sealed record ProductAnalyticsResponse(
     MasterProductSummary Product,
     ProductAnalyticsKpi Kpi,
     IReadOnlyList<TrendPoint> WeeklyTrend,
     IReadOnlyList<ProductSkuPerformance> BySku,
-    IReadOnlyList<ProductCustomerPerformance> ByCustomer,
     IReadOnlyList<ProductBusinessTypePerformance> ByBusinessType);

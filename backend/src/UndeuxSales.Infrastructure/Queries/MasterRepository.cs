@@ -14,13 +14,15 @@ public sealed class MasterRepository
         DapperConfiguration.Initialize();
     }
 
-    /// <summary>フィルタUIの選択肢一式（部門・取引先・業態・季節・取込日）を取得する。</summary>
+    /// <summary>
+    /// フィルタUIの選択肢一式（部門・業態・季節・取込日）を取得する。
+    /// 取引先（customer_code）は常に同じ値（メーカー固有コード）のため選択肢には含めない。
+    /// </summary>
     public async Task<FilterOptions> GetFilterOptionsAsync(CancellationToken cancellationToken = default)
     {
         await using var connection = await _connectionFactory.OpenConnectionAsync(cancellationToken);
 
         var departments = await QueryCodeNamesAsync(connection, "department", cancellationToken);
-        var customers = await QueryCodeNamesAsync(connection, "customer", cancellationToken);
         var businessTypes = await QueryBusinessTypesAsync(connection, cancellationToken);
         var seasons = await QueryCodeNamesAsync(connection, "season", cancellationToken);
 
@@ -30,7 +32,7 @@ public sealed class MasterRepository
             ORDER BY import_date;
             """, cancellationToken: cancellationToken))).ToList();
 
-        return new FilterOptions(departments, customers, businessTypes, seasons, weeks);
+        return new FilterOptions(departments, businessTypes, seasons, weeks);
     }
 
     private static async Task<IReadOnlyList<CodeName>> QueryCodeNamesAsync(

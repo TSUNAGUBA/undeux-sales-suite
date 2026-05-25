@@ -20,6 +20,22 @@ const selectedSku = ref<MasterProductSku | null>(null)
 // 選択中 SKU 内での表示画像インデックス。
 const selectedImageIdx = ref(0)
 
+/**
+ * SKU 一覧の表示順。サイズ昇順（数値は数値順、文字列は XS<S<M<L<LL... の規定順）で
+ * 並べたうえで、同サイズ内ではカラー名昇順、最後に単品コードで決定論化する。
+ */
+const sortedSkus = computed(() => {
+  const list = [...(detail.value?.skus ?? [])]
+  list.sort((a, b) => {
+    const bySize = compareSize(a.sizeName, b.sizeName)
+    if (bySize !== 0) return bySize
+    const byColor = a.colorName.localeCompare(b.colorName, 'ja')
+    if (byColor !== 0) return byColor
+    return a.unitCd.localeCompare(b.unitCd)
+  })
+  return list
+})
+
 const heroImageUrl = computed<string | null>(() => {
   if (selectedSku.value) {
     const images = selectedSku.value.images
@@ -254,7 +270,7 @@ onMounted(load)
               </thead>
               <tbody>
                 <tr
-                  v-for="sku in detail.skus"
+                  v-for="sku in sortedSkus"
                   :key="sku.skuItemId"
                   class="cursor-pointer border-b border-slate-100 hover:bg-slate-50 last:border-0"
                   :class="selectedSku?.skuItemId === sku.skuItemId ? 'bg-indigo-50' : ''"
@@ -288,7 +304,7 @@ onMounted(load)
           <!-- モバイル: カード -->
           <div class="flex flex-col gap-2 p-3 sm:hidden">
             <button
-              v-for="sku in detail.skus"
+              v-for="sku in sortedSkus"
               :key="sku.skuItemId"
               type="button"
               class="flex items-start gap-3 rounded-lg border border-slate-200 p-3 text-left"

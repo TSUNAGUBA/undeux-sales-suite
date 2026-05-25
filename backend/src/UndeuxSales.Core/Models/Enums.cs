@@ -19,13 +19,16 @@ public enum ImportStatus
 }
 
 /// <summary>売上分析の集計軸。</summary>
+/// <remarks>
+/// 取引先（customer_code）は本アプリのユーザー（メーカー）に対して小売側が振り出した
+/// 固有コードで、本アプリ内では常に同じ値となるため集計軸・フィルタとして無意味。
+/// よって BreakdownDimension からは除外している（sales_weekly.customer_code カラム自体は
+/// 取込で必要なため残置）。
+/// </remarks>
 public enum BreakdownDimension
 {
     /// <summary>部門。</summary>
     Department,
-
-    /// <summary>取引先。</summary>
-    Customer,
 
     /// <summary>業態。</summary>
     BusinessType,

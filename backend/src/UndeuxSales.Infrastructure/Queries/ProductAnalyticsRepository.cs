@@ -8,7 +8,9 @@ namespace UndeuxSales.Infrastructure.Queries;
 
 /// <summary>
 /// 商品（商品マスタの product_id）を軸にした包括的な売上分析を提供する。
-/// 商品の自然キー（業態・商品記号・品番）と期間/取引先/季節等の任意フィルタの AND で sales_weekly を絞り込む。
+/// 商品の自然キー（業態・商品記号・品番）と期間/部門/季節等の任意フィルタの AND で sales_weekly を絞り込む。
+/// 取引先（customer_code）は本アプリでは常に同じ値（メーカー固有コード）のためフィルタ・集計軸として
+/// 提供しない。
 /// </summary>
 public sealed class ProductAnalyticsRepository
 {
@@ -30,7 +32,7 @@ public sealed class ProductAnalyticsRepository
     }
 
     /// <summary>
-    /// 指定の商品（product_id）について、期間内 KPI・週次トレンド・SKU別売上・取引先別売上・業態別売上を返す。
+    /// 指定の商品（product_id）について、期間内 KPI・週次トレンド・SKU 別売上・業態別売上を返す。
     /// 商品が存在しない場合は null。
     /// </summary>
     public async Task<ProductAnalyticsResponse?> GetAnalyticsAsync(
@@ -80,9 +82,6 @@ public sealed class ProductAnalyticsRepository
         var bySku = await QueryBySkuAsync(
             connection, baseWhere, productId, latestWeek, parameters, cancellationToken);
 
-        var byCustomer = await QueryByCustomerAsync(
-            connection, baseWhere, parameters, cancellationToken);
-
         var byBusinessType = await QueryByBusinessTypeAsync(
             connection, summary, filter, cancellationToken);
 
@@ -91,7 +90,6 @@ public sealed class ProductAnalyticsRepository
             kpi,
             weeklyTrend,
             bySku,
-            byCustomer,
             byBusinessType);
     }
 
@@ -144,8 +142,7 @@ public sealed class ProductAnalyticsRepository
             SELECT COALESCE(SUM({SalesMetricSql.WeekQuantity}), 0)::bigint    AS quantity,
                    COALESCE(SUM({SalesMetricSql.WeekAmount}), 0)::bigint      AS amount,
                    COALESCE(SUM({SalesMetricSql.WeekGrossProfit}), 0)::bigint AS gross_profit,
-                   COALESCE(AVG(sw.zainiti), 0)::float8                       AS average_stock_days,
-                   COUNT(DISTINCT sw.customer_code)::int                      AS store_count
+                   COALESCE(AVG(sw.zainiti), 0)::float8                       AS average_stock_days
             FROM sales_weekly sw
             WHERE {baseWhere};
             """;
@@ -162,7 +159,6 @@ public sealed class ProductAnalyticsRepository
                 0,
                 0.0,
                 flow.AverageStockDays,
-                flow.StoreCount,
                 null);
         }
 
@@ -185,7 +181,6 @@ public sealed class ProductAnalyticsRepository
             snapshot.Stock,
             Ratio(snapshot.CumulativeSales, snapshot.CumulativeDelivery),
             flow.AverageStockDays,
-            flow.StoreCount,
             latestWeek);
     }
 
@@ -200,7 +195,7 @@ public sealed class ProductAnalyticsRepository
         // SKU 集計は tanpin_code で集約する。商品マスタの SKU 情報（色・サイズ・売価・代表画像）を
         // unit_cd 経由で結合し、画像は image_index 最小の 1 枚を採用。
         // 在庫は商品自然キー（業態×記号×品番）のみで集計し、ユーザーフィルタ
-        // （部門・取引先・季節）には引きずられない物理在庫を反映する。
+        // （部門・季節）には引きずられない物理在庫を反映する。
         // latestWeek が無ければ 0（売上のない期間ではスナップショットも不在）。
         var stockCte = latestWeek.HasValue
             ? """
@@ -279,52 +274,11 @@ public sealed class ProductAnalyticsRepository
             .ToList();
     }
 
-    private static async Task<IReadOnlyList<ProductCustomerPerformance>> QueryByCustomerAsync(
-        NpgsqlConnection connection,
-        string baseWhere,
-        DynamicParameters parameters,
-        CancellationToken cancellationToken)
-    {
-        var sql = $"""
-            WITH sales AS (
-                SELECT sw.customer_code,
-                       COALESCE(SUM({SalesMetricSql.WeekQuantity}), 0)::bigint    AS quantity,
-                       COALESCE(SUM({SalesMetricSql.WeekAmount}), 0)::bigint      AS amount,
-                       COALESCE(SUM({SalesMetricSql.WeekGrossProfit}), 0)::bigint AS gross_profit
-                FROM sales_weekly sw
-                WHERE {baseWhere}
-                GROUP BY sw.customer_code
-            )
-            SELECT sa.customer_code,
-                   c.display_name AS customer_name,
-                   sa.quantity,
-                   sa.amount,
-                   sa.gross_profit,
-                   (SUM(sa.amount) OVER ())::bigint AS total_amount
-            FROM sales sa
-            LEFT JOIN customer c ON c.code = sa.customer_code
-            ORDER BY sa.amount DESC, sa.customer_code;
-            """;
-
-        var rows = (await connection.QueryAsync<CustomerPerformanceRow>(
-            new CommandDefinition(sql, parameters, commandTimeout: QueryCommandTimeoutSeconds, cancellationToken: cancellationToken))).ToList();
-
-        return rows
-            .Select(r => new ProductCustomerPerformance(
-                r.CustomerCode,
-                r.CustomerName,
-                r.Quantity,
-                r.Amount,
-                r.GrossProfit,
-                SharePercent(r.Amount, r.TotalAmount)))
-            .ToList();
-    }
-
     /// <summary>
     /// 同一の商品記号・品番（業態のみ異なる）を別業態で販売しているケースの売上比較。
     /// 業態間の比較が目的のため、ユーザーの BusinessTypes フィルタは意図的に除外する
     /// （指定された業態のみに絞り込んでしまうと比較が成立しないため）。
-    /// 期間／部門／取引先／季節／品番のフィルタは引き続き適用する。
+    /// 期間／部門／季節／品番のフィルタは引き続き適用する。
     /// </summary>
     private async Task<IReadOnlyList<ProductBusinessTypePerformance>> QueryByBusinessTypeAsync(
         NpgsqlConnection connection,
@@ -338,7 +292,6 @@ public sealed class ProductAnalyticsRepository
             From = filter.From,
             To = filter.To,
             Departments = filter.Departments,
-            Customers = filter.Customers,
             BusinessTypes = null,
             Seasons = filter.Seasons,
             Hinbans = filter.Hinbans,
@@ -396,7 +349,7 @@ public sealed class ProductAnalyticsRepository
         => totalAmount == 0 ? 0.0 : (double)amount / totalAmount * 100.0;
 
     private sealed record FlowKpiRow(
-        long Quantity, long Amount, long GrossProfit, double AverageStockDays, int StoreCount);
+        long Quantity, long Amount, long GrossProfit, double AverageStockDays);
 
     private sealed record SnapshotKpiRow(
         long Stock, long CumulativeSales, long CumulativeDelivery);
@@ -411,14 +364,6 @@ public sealed class ProductAnalyticsRepository
         long Amount,
         long GrossProfit,
         long Stock,
-        long TotalAmount);
-
-    private sealed record CustomerPerformanceRow(
-        string CustomerCode,
-        string? CustomerName,
-        long Quantity,
-        long Amount,
-        long GrossProfit,
         long TotalAmount);
 
     private sealed record BusinessTypePerformanceRow(
