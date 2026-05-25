@@ -26,7 +26,7 @@ public sealed class SalesController : ControllerBase
         => _analyticsRepository.GetTrendAsync(
             filter, RequestParsing.Granularity(granularity), cancellationToken);
 
-    /// <summary>集計軸（部門・取引先・業態・季節・商品・カラー・サイズ）別の売上ランキングを取得する。</summary>
+    /// <summary>集計軸（部門・業態・季節・商品・カラー・サイズ）別の売上ランキングを取得する。</summary>
     [HttpGet("breakdown")]
     public Task<BreakdownResponse> Breakdown(
         [FromQuery] SalesQueryFilter filter,

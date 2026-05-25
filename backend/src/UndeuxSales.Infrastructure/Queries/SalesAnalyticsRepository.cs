@@ -627,8 +627,6 @@ public sealed class SalesAnalyticsRepository
     {
         BreakdownDimension.Department =>
             ("sw.department", "sw.department", "sw.department"),
-        BreakdownDimension.Customer =>
-            ("sw.customer_code", "sw.customer_code", "sw.customer_code"),
         BreakdownDimension.BusinessType =>
             ("sw.gyotai_code", "sw.gyotai_code", "sw.gyotai_code"),
         BreakdownDimension.Season =>

@@ -7,7 +7,7 @@ namespace UndeuxSales.Api.Controllers;
 
 /// <summary>
 /// 商品（商品マスタの product_id）を軸にした包括的な売上分析 API。
-/// 期間内 KPI / 週次トレンド / SKU 別 / 取引先別 / 業態別の各観点を返す。
+/// 期間内 KPI / 週次トレンド / SKU 別 / 業態別の各観点を返す。
 /// </summary>
 [ApiController]
 [Authorize]

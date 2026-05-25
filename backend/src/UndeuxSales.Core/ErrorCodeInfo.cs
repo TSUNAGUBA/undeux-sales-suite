@@ -33,7 +33,7 @@ public static class ErrorCodes
     public static readonly ErrorCodeInfo UnknownDimension = new(
         "UNDX-REQ-003",
         "指定された集計軸が不正です。",
-        "指定可能な集計軸（部門・取引先・業態・季節・商品・カラー・サイズ）から選択してください。");
+        "指定可能な集計軸（部門・業態・季節・商品・カラー・サイズ）から選択してください。");
 
     public static readonly ErrorCodeInfo ImportFileMissing = new(
         "UNDX-IMP-001",

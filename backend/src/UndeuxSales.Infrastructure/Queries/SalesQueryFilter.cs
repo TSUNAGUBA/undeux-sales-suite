@@ -15,9 +15,6 @@ public sealed class SalesQueryFilter
     /// <summary>部門コード（いずれかに一致）。</summary>
     public string[]? Departments { get; set; }
 
-    /// <summary>取引先コード（いずれかに一致）。</summary>
-    public string[]? Customers { get; set; }
-
     /// <summary>業態コード（いずれかに一致）。</summary>
     public string[]? BusinessTypes { get; set; }
 
@@ -61,11 +58,6 @@ internal static class SalesFilterSql
             parameters.Add("departments", filter.Departments);
         }
 
-        if (filter.Customers is { Length: > 0 })
-        {
-            parameters.Add("customers", filter.Customers);
-        }
-
         if (filter.BusinessTypes is { Length: > 0 })
         {
             parameters.Add("businessTypes", filter.BusinessTypes);
@@ -100,11 +92,6 @@ internal static class SalesFilterSql
         if (filter.Departments is { Length: > 0 })
         {
             conditions.Add($"{alias}.department = ANY(@departments)");
-        }
-
-        if (filter.Customers is { Length: > 0 })
-        {
-            conditions.Add($"{alias}.customer_code = ANY(@customers)");
         }
 
         if (filter.BusinessTypes is { Length: > 0 })

@@ -15,7 +15,7 @@ public sealed class FiltersController : ControllerBase
     public FiltersController(MasterRepository masterRepository)
         => _masterRepository = masterRepository;
 
-    /// <summary>部門・取引先・業態・季節・取込日（週）の選択肢一式を取得する。</summary>
+    /// <summary>部門・業態・季節・取込日（週）の選択肢一式を取得する。</summary>
     [HttpGet]
     public Task<FilterOptions> Get(CancellationToken cancellationToken)
         => _masterRepository.GetFilterOptionsAsync(cancellationToken);

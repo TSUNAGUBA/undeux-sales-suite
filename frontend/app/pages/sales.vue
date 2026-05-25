@@ -17,7 +17,6 @@ const errorMessage = ref<string | null>(null)
 
 const dimensionOptions = [
   { value: 'department', label: '部門別' },
-  { value: 'customer', label: '取引先別' },
   { value: 'businessType', label: '業態別' },
   { value: 'season', label: '季節別' },
   { value: 'product', label: '商品別' },
@@ -110,8 +109,6 @@ function handleBreakdownDrill(row: BreakdownRow): void {
 
   if (currentDim === 'department') {
     addToFilter('departments', row.key)
-  } else if (currentDim === 'customer') {
-    addToFilter('customers', row.key)
   } else if (currentDim === 'businessType') {
     addToFilter('businessTypes', row.key)
   } else if (currentDim === 'season') {

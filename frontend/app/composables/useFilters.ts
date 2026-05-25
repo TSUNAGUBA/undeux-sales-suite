@@ -4,7 +4,6 @@ function emptyFilter(): SalesFilterState {
   return {
     year: new Date().getFullYear(),
     departments: [],
-    customers: [],
     businessTypes: [],
     seasons: [],
     hinbans: [],
@@ -75,9 +74,6 @@ export function useFilters(scopeKey: string = 'sales-filter') {
     if (current.departments.length > 0) {
       query.departments = current.departments
     }
-    if (current.customers.length > 0) {
-      query.customers = current.customers
-    }
     if (current.businessTypes.length > 0) {
       query.businessTypes = current.businessTypes
     }
@@ -97,7 +93,7 @@ export function useFilters(scopeKey: string = 'sales-filter') {
   }
 
   /** 配列フィルタへ重複なく値を追加する（ドリルダウン用）。 */
-  function addToFilter(field: 'departments' | 'customers' | 'businessTypes' | 'seasons' | 'hinbans', value: string): void {
+  function addToFilter(field: 'departments' | 'businessTypes' | 'seasons' | 'hinbans', value: string): void {
     const current = filter.value[field]
     if (!current.includes(value)) {
       filter.value[field] = [...current, value]

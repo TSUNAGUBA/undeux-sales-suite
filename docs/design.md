@@ -5,7 +5,7 @@
 
 ## 1. 概要
 
-- 小売（取引先）から週次で提供される売上参照ファイルを取り込み、蓄積する。
+- 小売（しまむら）から週次で提供される売上参照ファイル（しまむら店舗におけるメーカー商品の売上）を取り込み、蓄積する。
 - 全社サマリー・売上分析・商品別分析・在庫発注分析の4観点で可視化する。
 - 初期データは提供済みの蓄積DBダンプ（MariaDB 形式、約160万行 / 2018-01〜2026-05）。
 
@@ -74,11 +74,13 @@ graph LR
 |----------|------|
 | `sales_weekly` | 売上参照ファクト。週次スナップショット（取込日 × 店舗 × 商品単品） |
 | `import_batch` | 取込バッチ履歴（追記専用）。取込済みデータの SoT |
-| `department` / `customer` / `business_type` / `season` | コードマスタ（取込時に自動導出） |
+| `department` / `business_type` / `season` | コードマスタ（取込時に自動導出。フィルタ・集計軸に使用） |
+| `customer` | 取込時に自動導出されるが本アプリでは UI/API から除外。`customer_code` は本アプリのユーザー（メーカー）に対して小売から振り出された固有コードで常に同一値となるため、フィルタ・集計軸として無意味 |
 
 - ファクトテーブルの主キーは意味を持たない代理キー（`bigint` 採番）。
-- 業務複合キー（取込日・取引先・業態・品番・単品・商品記号・導入日）は冪等な
+- 業務複合キー（取込日・取引先コード・業態・品番・単品・商品記号・導入日）は冪等な
   UPSERT のための UNIQUE 制約に限定し、リレーションには用いない。
+  ※ 取込ファイル仕様上の業務キーであり、本アプリの UI/API 集計軸とは別の概念。
 
 ### 4.3 Source of Truth（SoT）
 
@@ -113,7 +115,7 @@ flowchart TD
 | メソッド | パス | 説明 |
 |---------|------|------|
 | GET | `/api/health` `/api/health/ready` | 稼働・準備状態 |
-| GET | `/api/filters` | フィルタ選択肢（部門・取引先・業態・季節・取込週） |
+| GET | `/api/filters` | フィルタ選択肢（部門・業態・季節・取込週） |
 | GET | `/api/summary` | 全社サマリー（KPI + 週次トレンド） |
 | GET | `/api/sales/trend` | 売上トレンド（`granularity=daily\|weekly`） |
 | GET | `/api/sales/breakdown` | 集計軸別ランキング（`dimension`・`metric`・`order`・`limit`） |
@@ -123,7 +125,7 @@ flowchart TD
 | POST | `/api/imports` | 週次CSV取込（multipart）。**取込権限ロール（`role=admin` クレーム）必須** |
 | GET | `/api/error-codes` | エラーコード一覧 |
 
-共通フィルタ（クエリ）: `from`・`to`（取込週）、`departments`・`customers`・`businessTypes`・`seasons`（複数可）。
+共通フィルタ（クエリ）: `from`・`to`（取込週）、`departments`・`businessTypes`・`seasons`（複数可）。
 
 ### 認可
 
@@ -201,11 +203,11 @@ flowchart TD
 ### 9.5 フィルタ動作の注意
 
 商品分析の「業態別」内訳は、商品の business_category_cd を固定にして他業態との比較を見せる目的で、
-ユーザーが FilterBar で指定した BusinessTypes フィルタを意図的に除外する。期間／部門／取引先／季節は
+ユーザーが FilterBar で指定した BusinessTypes フィルタを意図的に除外する。期間／部門／季節は
 通常通り適用される。
 
 商品分析の「SKU 別在庫」列は商品の自然キー（業態×記号×品番）のみで集計し、ユーザーフィルタ
-（部門・取引先）には引きずられない物理在庫を表示する。
+（部門）には引きずられない物理在庫を表示する。
 
 ## 10. 検証状況
 

@@ -9,7 +9,7 @@ useHead({ title: '商品軸分析 | UndeuxSales' })
     <div>
       <h1 class="text-xl font-bold text-slate-800">商品軸分析</h1>
       <p class="text-sm text-slate-500">
-        商品マスタの 1 商品を選択すると、期間内の売上 KPI、週次トレンド、SKU 別売上、取引先別売上、業態別売上を一画面で確認できます。
+        商品マスタの 1 商品を選択すると、期間内の売上 KPI、週次トレンド、SKU 別売上、業態別売上を一画面で確認できます。
       </p>
     </div>
 

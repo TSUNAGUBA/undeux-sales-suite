@@ -22,7 +22,6 @@ function toSelectOptions(items: CodeName[]): { value: string; text: string }[] {
 }
 
 const departmentOptions = computed(() => toSelectOptions(options.value?.departments ?? []))
-const customerOptions = computed(() => toSelectOptions(options.value?.customers ?? []))
 const businessTypeOptions = computed(() =>
   (options.value?.businessTypes ?? []).map((b) => ({
     value: b.code,
@@ -67,11 +66,6 @@ function removeHinban(value: string): void {
         v-model="filter.departments"
         label="部門"
         :options="departmentOptions"
-      />
-      <MultiSelect
-        v-model="filter.customers"
-        label="取引先"
-        :options="customerOptions"
       />
       <MultiSelect
         v-model="filter.businessTypes"
