@@ -1,7 +1,6 @@
 <script setup lang="ts">
 import {
   ArrowLeft,
-  Package,
   ShoppingBag,
   TrendingUp,
   Store,
@@ -150,18 +149,12 @@ onMounted(async () => {
         <div class="grid grid-cols-1 gap-4 md:grid-cols-[280px_minmax(0,1fr)]">
           <div class="rounded-xl border border-slate-200 bg-white p-3 shadow-sm">
             <div class="relative aspect-square w-full overflow-hidden rounded-lg bg-slate-100">
-              <img
-                v-if="heroImage"
+              <ProductImage
                 :src="heroImage"
                 :alt="data.product.productName"
-                class="size-full object-cover"
-              >
-              <div
-                v-else
-                class="flex size-full items-center justify-center text-slate-300"
-              >
-                <Package class="h-12 w-12" :stroke-width="1.5" />
-              </div>
+                icon-class="h-12 w-12"
+                label-class="text-xs"
+              />
             </div>
 
             <div
@@ -172,7 +165,7 @@ onMounted(async () => {
                 v-for="(sku, i) in data.bySku.filter((s) => s.primaryImageUrl)"
                 :key="`${sku.unitCd}-${i}`"
                 type="button"
-                class="overflow-hidden rounded ring-2 transition-opacity"
+                class="h-10 w-10 overflow-hidden rounded ring-2 transition-opacity"
                 :class="
                   heroImageIndex === data.bySku.indexOf(sku)
                     ? 'ring-indigo-500 opacity-100'
@@ -181,7 +174,12 @@ onMounted(async () => {
                 :title="`${sku.colorName} / ${sku.sizeName}`"
                 @click="heroImageIndex = data.bySku.indexOf(sku)"
               >
-                <img :src="sku.primaryImageUrl!" alt="" class="h-10 w-10 object-cover">
+                <ProductImage
+                  :src="sku.primaryImageUrl"
+                  alt=""
+                  icon-class="h-4 w-4"
+                  :show-label="false"
+                />
               </button>
             </div>
           </div>
@@ -333,17 +331,13 @@ onMounted(async () => {
                   class="border-b border-slate-100 last:border-0"
                 >
                   <td class="px-3 py-2">
-                    <img
-                      v-if="sku.primaryImageUrl"
-                      :src="sku.primaryImageUrl"
-                      alt=""
-                      class="h-10 w-10 rounded object-cover"
-                    >
-                    <div
-                      v-else
-                      class="flex h-10 w-10 items-center justify-center rounded bg-slate-100 text-slate-300"
-                    >
-                      <Package class="h-4 w-4" />
+                    <div class="h-10 w-10 overflow-hidden rounded">
+                      <ProductImage
+                        :src="sku.primaryImageUrl"
+                        :alt="`${sku.colorName} / ${sku.sizeName}`"
+                        icon-class="h-4 w-4"
+                        :show-label="false"
+                      />
                     </div>
                   </td>
                   <td class="px-3 py-2 font-mono text-xs text-slate-500">{{ sku.unitCd }}</td>
@@ -371,17 +365,13 @@ onMounted(async () => {
               class="rounded-lg border border-slate-200 p-3"
             >
               <div class="flex items-start gap-3">
-                <img
-                  v-if="sku.primaryImageUrl"
-                  :src="sku.primaryImageUrl"
-                  alt=""
-                  class="h-14 w-14 shrink-0 rounded object-cover"
-                >
-                <div
-                  v-else
-                  class="flex h-14 w-14 shrink-0 items-center justify-center rounded bg-slate-100 text-slate-300"
-                >
-                  <Package class="h-5 w-5" />
+                <div class="h-14 w-14 shrink-0 overflow-hidden rounded">
+                  <ProductImage
+                    :src="sku.primaryImageUrl"
+                    :alt="`${sku.colorName} / ${sku.sizeName}`"
+                    icon-class="h-5 w-5"
+                    :show-label="false"
+                  />
                 </div>
                 <div class="min-w-0 flex-1">
                   <p class="font-mono text-xs text-slate-500">{{ sku.unitCd }}</p>
