@@ -136,60 +136,90 @@ public sealed class ApiIntegrationTests
     }
 
     [Fact]
-    public async Task Crosstab_ByDepartment_ReturnsTwoRows()
+    public async Task CrosstabMatrix_DepartmentByHinban_ReturnsMatrix()
     {
         var client = CreateAuthedClient();
 
-        var response = await client.GetFromJsonAsync<CrosstabResponse>(
-            "/api/crosstab?dimension=department&from=2026-05-04&to=2026-05-11");
+        var response = await client.GetFromJsonAsync<CrosstabMatrixResponse>(
+            "/api/crosstab?rowDimension=category:department&columnDimension=category:hinban"
+            + "&from=2026-05-04&to=2026-05-11");
 
         Assert.NotNull(response);
-        Assert.Equal(2, response!.Rows.Count);
+        Assert.Equal("category:department", response!.RowDimension.Key);
+        Assert.Equal("category:hinban", response.ColumnDimension.Key);
+        // 部門は 01, 02 の 2 種類、品番は 100, 200 の 2 種類。
+        Assert.Equal(2, response.RowLabels.Count);
+        Assert.Equal(2, response.ColumnLabels.Count);
+        // 時間軸を含まないので在庫系メトリクスも利用可能。
+        Assert.Contains("stock", response.AvailableMetrics);
+        Assert.Contains("stockDays", response.AvailableMetrics);
+        Assert.Contains("sellThroughRate", response.AvailableMetrics);
         Assert.NotNull(response.LatestWeek);
-        Assert.All(response.Rows, row => Assert.Null(row.BasicItems));
     }
 
     [Fact]
-    public async Task Crosstab_ByProduct_IncludesBasicItems()
+    public async Task CrosstabMatrix_BusinessTypeByYear_ReturnsMatrix()
     {
         var client = CreateAuthedClient();
 
-        var response = await client.GetFromJsonAsync<CrosstabResponse>(
-            "/api/crosstab?dimension=product&from=2026-05-04&to=2026-05-11");
+        var response = await client.GetFromJsonAsync<CrosstabMatrixResponse>(
+            "/api/crosstab?rowDimension=category:businessType&columnDimension=time:year"
+            + "&from=2026-05-04&to=2026-05-11");
 
         Assert.NotNull(response);
-        Assert.NotEmpty(response!.Rows);
-        Assert.All(response.Rows, row => Assert.NotNull(row.BasicItems));
+        Assert.Equal("category:businessType", response!.RowDimension.Key);
+        Assert.Equal("time:year", response.ColumnDimension.Key);
+        // 業態は G1 のみ、年は 2026 のみ（シードデータ）。
+        Assert.Single(response.RowLabels);
+        Assert.Single(response.ColumnLabels);
+        Assert.Equal("2026", response.ColumnLabels[0]);
+        // セルが正しく構築されている
+        Assert.True(response.Cells.ContainsKey("G1"));
     }
 
     [Fact]
-    public async Task Crosstab_ByHinban_GroupsByHinbanCode()
+    public async Task CrosstabMatrix_StockMetrics_DisabledWithTimeAxis()
     {
         var client = CreateAuthedClient();
 
-        var response = await client.GetFromJsonAsync<CrosstabResponse>(
-            "/api/crosstab?dimension=hinban&from=2026-05-04&to=2026-05-11");
+        var response = await client.GetFromJsonAsync<CrosstabMatrixResponse>(
+            "/api/crosstab?rowDimension=category:hinban&columnDimension=time:month"
+            + "&from=2026-05-04&to=2026-05-11");
 
         Assert.NotNull(response);
-        Assert.NotEmpty(response!.Rows);
-        Assert.All(response.Rows, row => Assert.Null(row.BasicItems));
+        // 時間軸絡みなので在庫系メトリクスは availableMetrics に含まれない
+        Assert.DoesNotContain("stock", response!.AvailableMetrics);
+        Assert.DoesNotContain("stockDays", response.AvailableMetrics);
+        Assert.DoesNotContain("sellThroughRate", response.AvailableMetrics);
+        // 通常のフロー系は含まれる
+        Assert.Contains("amount", response.AvailableMetrics);
+        Assert.Contains("quantity", response.AvailableMetrics);
+        Assert.Contains("grossProfit", response.AvailableMetrics);
+        Assert.Contains("sharePercent", response.AvailableMetrics);
+
+        // セル値の在庫系は null
+        Assert.NotEmpty(response.RowLabels);
+        Assert.NotEmpty(response.ColumnLabels);
+        var firstRowLabel = response.RowLabels[0];
+        var firstColLabel = response.ColumnLabels[0];
+        var cell = response.Cells[firstRowLabel][firstColLabel];
+        Assert.Null(cell.Values.Stock);
+        Assert.Null(cell.Values.StockDays);
+        Assert.Null(cell.Values.SellThroughRate);
     }
 
     [Fact]
-    public async Task Crosstab_WithHinbanFilter_LimitsToMatchingProducts()
+    public async Task CrosstabMatrix_SameDimensionRowCol_Returns400()
     {
         var client = CreateAuthedClient();
 
-        var response = await client.GetFromJsonAsync<CrosstabResponse>(
-            "/api/crosstab?dimension=product&from=2026-05-04&to=2026-05-11&hinbans=100");
+        var response = await client.GetAsync(
+            "/api/crosstab?rowDimension=category:hinban&columnDimension=category:hinban"
+            + "&from=2026-05-04&to=2026-05-11");
 
-        Assert.NotNull(response);
-        Assert.NotEmpty(response!.Rows);
-        Assert.All(response.Rows, row =>
-        {
-            Assert.NotNull(row.BasicItems);
-            Assert.Equal("100", row.BasicItems!.Hinban);
-        });
+        Assert.Equal(HttpStatusCode.BadRequest, response.StatusCode);
+        var error = await response.Content.ReadFromJsonAsync<ApiError>();
+        Assert.Equal(ErrorCodes.InvalidRequest.Code, error!.ErrorCode);
     }
 
     [Fact]
@@ -197,9 +227,146 @@ public sealed class ApiIntegrationTests
     {
         var client = CreateAuthedClient();
 
-        var response = await client.GetAsync("/api/crosstab?dimension=unknown");
+        var response = await client.GetAsync(
+            "/api/crosstab?rowDimension=invalid&columnDimension=category:hinban");
 
         Assert.Equal(HttpStatusCode.BadRequest, response.StatusCode);
+        var error = await response.Content.ReadFromJsonAsync<ApiError>();
+        Assert.Equal(ErrorCodes.UnknownDimension.Code, error!.ErrorCode);
+    }
+
+    [Fact]
+    public async Task CrosstabMatrix_RowDimensionMissing_Returns400()
+    {
+        var client = CreateAuthedClient();
+
+        var response = await client.GetAsync(
+            "/api/crosstab?columnDimension=category:hinban&from=2026-05-04&to=2026-05-11");
+
+        Assert.Equal(HttpStatusCode.BadRequest, response.StatusCode);
+        var error = await response.Content.ReadFromJsonAsync<ApiError>();
+        Assert.Equal(ErrorCodes.UnknownDimension.Code, error!.ErrorCode);
+    }
+
+    [Fact]
+    public async Task CrosstabMatrix_InvalidDateRange_ReturnsBadRequest()
+    {
+        var client = CreateAuthedClient();
+
+        // from > to の不正な日付範囲。SalesQueryFilter.EnsureValid が
+        // ErrorCodes.InvalidDateRange を投げる挙動を Crosstab API でも確認する。
+        var response = await client.GetAsync(
+            "/api/crosstab?rowDimension=category:department&columnDimension=category:hinban"
+            + "&from=2026-05-11&to=2026-05-04");
+
+        Assert.Equal(HttpStatusCode.BadRequest, response.StatusCode);
+        var error = await response.Content.ReadFromJsonAsync<ApiError>();
+        Assert.Equal(ErrorCodes.InvalidDateRange.Code, error!.ErrorCode);
+    }
+
+    [Fact]
+    public async Task CrosstabMatrix_EmptyData_ReturnsEmptyMatrix()
+    {
+        var client = CreateAuthedClient();
+
+        // シードに含まれない日付範囲を指定 → 空マトリクスを 200 で返す
+        var response = await client.GetFromJsonAsync<CrosstabMatrixResponse>(
+            "/api/crosstab?rowDimension=category:department&columnDimension=category:hinban"
+            + "&from=2099-01-01&to=2099-12-31");
+
+        Assert.NotNull(response);
+        Assert.Empty(response!.RowLabels);
+        Assert.Empty(response.ColumnLabels);
+        Assert.Empty(response.Cells);
+        Assert.Empty(response.RowTotals);
+        Assert.Empty(response.ColumnTotals);
+        // grandTotal は値全 null の空セル
+        Assert.Null(response.GrandTotal.Values.Amount);
+        Assert.Null(response.GrandTotal.Values.Quantity);
+        Assert.False(response.RowTruncated);
+        Assert.False(response.ColumnTruncated);
+    }
+
+    [Fact]
+    public async Task CrosstabMatrix_GrandTotalEqualsSumOfCells()
+    {
+        var client = CreateAuthedClient();
+
+        var response = await client.GetFromJsonAsync<CrosstabMatrixResponse>(
+            "/api/crosstab?rowDimension=category:department&columnDimension=category:hinban"
+            + "&from=2026-05-04&to=2026-05-11");
+
+        Assert.NotNull(response);
+
+        // 各行合計 amount の和 == grandTotal.amount を検証（切り詰め後でも整合）
+        long sumRowTotals = 0;
+        foreach (var rl in response!.RowLabels)
+        {
+            Assert.True(response.RowTotals.ContainsKey(rl));
+            sumRowTotals += response.RowTotals[rl].Values.Amount ?? 0;
+        }
+        long sumColTotals = 0;
+        foreach (var cl in response.ColumnLabels)
+        {
+            Assert.True(response.ColumnTotals.ContainsKey(cl));
+            sumColTotals += response.ColumnTotals[cl].Values.Amount ?? 0;
+        }
+
+        var grand = response.GrandTotal.Values.Amount ?? 0;
+        Assert.Equal(grand, sumRowTotals);
+        Assert.Equal(grand, sumColTotals);
+
+        // 表示セル全和 == grandTotal も検証
+        long sumCells = 0;
+        foreach (var rl in response.RowLabels)
+        {
+            if (!response.Cells.TryGetValue(rl, out var rowCells)) continue;
+            foreach (var cl in response.ColumnLabels)
+            {
+                if (rowCells.TryGetValue(cl, out var cell))
+                {
+                    sumCells += cell.Values.Amount ?? 0;
+                }
+            }
+        }
+        Assert.Equal(grand, sumCells);
+    }
+
+    [Fact]
+    public async Task CrosstabMatrix_UnsetLabel_AppearsAtEnd()
+    {
+        var client = CreateAuthedClient();
+
+        // tanawari1 はシードでは NULL のまま（COALESCE で '' に置換 → '(未設定)' ラベル）。
+        // カテゴリ軸ソートでも時間軸ソートでも '(未設定)' は末尾に来ることを確認する。
+        var response = await client.GetFromJsonAsync<CrosstabMatrixResponse>(
+            "/api/crosstab?rowDimension=category:tanawari1&columnDimension=category:department"
+            + "&from=2026-05-04&to=2026-05-11");
+
+        Assert.NotNull(response);
+        Assert.NotEmpty(response!.RowLabels);
+        // tanawari1 は全 NULL なので '(未設定)' のみ（1件）が末尾候補
+        Assert.Equal("(未設定)", response.RowLabels[^1]);
+    }
+
+    [Fact]
+    public async Task CrosstabMatrix_LegacyDimension_BackwardCompat()
+    {
+        var client = CreateAuthedClient();
+
+        // 既存の category:hinban / time:year が引き続き受理されることを確認
+        // （フロントのレガシー互換層で `dimension=hinban` → `rowDimension=category:hinban` に
+        //   変換される際の API レベルでの受理確認）
+        var response = await client.GetFromJsonAsync<CrosstabMatrixResponse>(
+            "/api/crosstab?rowDimension=category:hinban&columnDimension=time:year"
+            + "&from=2026-05-04&to=2026-05-11");
+
+        Assert.NotNull(response);
+        Assert.Equal("category:hinban", response!.RowDimension.Key);
+        Assert.Equal("time:year", response.ColumnDimension.Key);
+        // IsTimeAxis の SoT 統一: time:year は true、category:hinban は false
+        Assert.False(response.RowDimension.IsTimeAxis);
+        Assert.True(response.ColumnDimension.IsTimeAxis);
     }
 
     [Fact]

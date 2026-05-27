@@ -1,276 +1,189 @@
 <script setup lang="ts">
-import { ChevronLeft, ChevronRight, Search, RotateCcw } from 'lucide-vue-next'
-import type { CrosstabResponse, CrosstabRow } from '~/types/api'
+/**
+ * クロス集計（/crosstab）ページ。
+ *
+ * tokutake-ai-platform の /cross-tab の設計を全面採用：
+ * - 行 × 列マトリクス + メトリクスをセル値に表示
+ * - スタック表示 / インライン列表示の切替
+ * - 行・列のスワップボタン
+ * - スティッキーヘッダ
+ * - 行小計・列小計・総計
+ * - 条件設定パネル（モバイル時はデフォルト閉、PC時はデフォルト開）
+ * - マルチセレクトチップ（検索・全選択・全解除）
+ *
+ * ドリルダウンは削除（tokutake に無く、行クリックでカテゴリを追加していく挙動は
+ * 2軸マトリクスの設計に合わない）。代わりにフィルタ UI で絞り込みを行う。
+ *
+ * 在庫系メトリクス（在日・消化率・在庫数）は最新週スナップショット基準のため、
+ * 時間軸（年/四半期/月）を含む組合せでは UI 上で無効化され、自動的に選択解除される。
+ */
+
+import type {
+  CrosstabDimensionInfo,
+  CrosstabDimensionKey,
+  CrosstabMatrixResponse,
+  CrosstabMetricInfo,
+  CrosstabMetricKey,
+  MetricDisplayMode,
+  SalesFilterState,
+} from '~/types/api'
 
 useHead({ title: 'クロス集計 | UndeuxSales' })
 
-const route = useRoute()
-const router = useRouter()
-const { filter, toQuery, reset, addToFilter, loadOptions } = useFilters()
+const { filter, optionsError, loadOptions, years, toQuery, reset } = useFilters()
 const { get } = useApi()
+const route = useRoute()
 
-const dimension = ref<string>(
-  typeof route.query.dimension === 'string' ? route.query.dimension : 'hinban',
+// ---------------------------------------------------------------
+// ディメンションカタログ（バックエンドの enum と一致）
+//
+// isTimeAxis はバックエンドの API レスポンス（CrosstabDimensionInfo.isTimeAxis）が SoT。
+// ここではフロント単独でカタログを表示する用途のため key 接頭辞で算出する。
+// API データ取得後は data.value.rowDimension.isTimeAxis を参照する。
+// ---------------------------------------------------------------
+
+const DIMENSIONS: CrosstabDimensionInfo[] = [
+  { key: 'time:year', category: 'time', label: '年', isTimeAxis: true },
+  { key: 'time:quarter', category: 'time', label: '四半期', isTimeAxis: true },
+  { key: 'time:month', category: 'time', label: '月', isTimeAxis: true },
+  { key: 'category:department', category: 'category', label: '部門', isTimeAxis: false },
+  { key: 'category:businessType', category: 'category', label: '業態', isTimeAxis: false },
+  { key: 'category:season', category: 'category', label: '季節区分', isTimeAxis: false },
+  { key: 'category:hinban', category: 'category', label: '品番3桁', isTimeAxis: false },
+  { key: 'category:product', category: 'category', label: '単品（品番-単品）', isTimeAxis: false },
+  { key: 'category:color', category: 'category', label: 'カラー', isTimeAxis: false },
+  { key: 'category:size', category: 'category', label: 'サイズ', isTimeAxis: false },
+  { key: 'category:chohyoKubun', category: 'category', label: '帳票区分', isTimeAxis: false },
+  { key: 'category:tanawari1', category: 'category', label: '棚割1', isTimeAxis: false },
+  { key: 'category:tanawari2', category: 'category', label: '棚割2', isTimeAxis: false },
+  { key: 'category:shohinKigo', category: 'category', label: '商品記号', isTimeAxis: false },
+]
+
+const DIMENSION_KEYS: ReadonlySet<CrosstabDimensionKey> = new Set(
+  DIMENSIONS.map((d) => d.key),
 )
-const selectedMetrics = ref<string[]>([
-  'amount',
-  'quantity',
-  'grossProfit',
-  'sharePercent',
-  'stockDays',
-])
 
-const result = ref<CrosstabResponse | null>(null)
+/** 旧 `?dimension=hinban` 形式を新 API 仕様の `category:xxx` に変換するマップ。 */
+const LEGACY_DIMENSION_MAP: Record<string, CrosstabDimensionKey> = {
+  department: 'category:department',
+  businessType: 'category:businessType',
+  season: 'category:season',
+  hinban: 'category:hinban',
+  product: 'category:product',
+  color: 'category:color',
+  size: 'category:size',
+  chohyoKubun: 'category:chohyoKubun',
+  tanawari1: 'category:tanawari1',
+  tanawari2: 'category:tanawari2',
+  shohinKigo: 'category:shohinKigo',
+}
+
+/** ルートクエリから有効なディメンションキーを抽出。無効ならundefined。 */
+function pickDimensionKey(raw: unknown): CrosstabDimensionKey | undefined {
+  if (typeof raw !== 'string') return undefined
+  return DIMENSION_KEYS.has(raw as CrosstabDimensionKey)
+    ? (raw as CrosstabDimensionKey)
+    : undefined
+}
+
+const METRICS: CrosstabMetricInfo[] = [
+  { key: 'amount', label: '売上金額', format: 'currency' },
+  { key: 'quantity', label: '売上数量', format: 'number' },
+  { key: 'grossProfit', label: '粗利', format: 'currency' },
+  { key: 'sharePercent', label: '構成比率', format: 'percent' },
+  { key: 'stockDays', label: '在日（平均）', format: 'decimal' },
+  { key: 'sellThroughRate', label: '消化率', format: 'percent' },
+  { key: 'stock', label: '在庫数', format: 'number' },
+]
+
+const DEFAULT_ROW: CrosstabDimensionKey = 'category:businessType'
+const DEFAULT_COL: CrosstabDimensionKey = 'time:year'
+const DEFAULT_METRICS: CrosstabMetricKey[] = ['amount', 'quantity', 'grossProfit']
+
+// ---------------------------------------------------------------
+// ローカル state
+// ---------------------------------------------------------------
+
+const rowDimensionKey = ref<CrosstabDimensionKey>(DEFAULT_ROW)
+const columnDimensionKey = ref<CrosstabDimensionKey>(DEFAULT_COL)
+const selectedMetrics = ref<CrosstabMetricKey[]>([...DEFAULT_METRICS])
+const metricDisplayMode = ref<MetricDisplayMode>('stacked')
+
+const data = ref<CrosstabMatrixResponse | null>(null)
 const loading = ref(true)
 const errorMessage = ref<string | null>(null)
 
-const dimensionOptions = [
-  { value: 'hinban', label: '品番3桁' },
-  { value: 'product', label: '単品（品番-単品）' },
-  { value: 'department', label: '部門' },
-  { value: 'businessType', label: '業態' },
-  { value: 'season', label: '季節区分' },
-  { value: 'color', label: 'カラー' },
-  { value: 'size', label: 'サイズ' },
-  { value: 'chohyoKubun', label: '帳票区分' },
-  { value: 'tanawari1', label: '棚割1' },
-  { value: 'tanawari2', label: '棚割2' },
-  { value: 'shohinKigo', label: '商品記号' },
-]
+// 初期化完了フラグ。onMounted 内の初期 load() 完了まで watch ベースの
+// 自動 fetch を抑止し、ルートクエリ解釈による初期値変更と初期 load() の
+// 二重発火（race）を防ぐ。
+const initialized = ref(false)
+// resetAndLoad で row/col を既定値に戻す際、watch による自動 fetch を
+// 1 回だけスキップする旗。明示的 load() と watch の二重発火を防ぐ。
+let skipNextDimensionWatch = false
 
-const allMetricOptions = [
-  { value: 'amount', label: '売上金額' },
-  { value: 'quantity', label: '売上数量' },
-  { value: 'grossProfit', label: '粗利' },
-  { value: 'sharePercent', label: '構成比率' },
-  { value: 'stockDays', label: '在日（平均）' },
-  { value: 'sellThroughRate', label: '消化率' },
-  { value: 'stock', label: '在庫数' },
-]
+// ---------------------------------------------------------------
+// メトリクスの利用可否（時間軸 ⇒ 在庫系を除外）
+//
+// SoT: バックエンドの CrosstabDimensionInfo.isTimeAxis と AvailableMetrics。
+// data 取得後は data.value 由来で判定し、未取得時のみ DIMENSIONS カタログから
+// 算出する（API レスポンス到達前でも UI を破綻なく表示するためのフォールバック）。
+// ---------------------------------------------------------------
 
-const metricSelectOptions = computed(() =>
-  allMetricOptions.map((o) => ({ value: o.value, text: o.label })),
-)
+const STOCK_METRICS: CrosstabMetricKey[] = ['stockDays', 'sellThroughRate', 'stock']
 
-const isProductDimension = computed(() => dimension.value === 'product')
-
-const keyLabel = computed(
-  () =>
-    dimensionOptions.find((o) => o.value === dimension.value)?.label ?? '区分',
-)
-
-const drillableDimensions = new Set([
-  'department',
-  'businessType',
-  'season',
-  'hinban',
-  // 'product' は行クリックで一律ドリルできないため除外。代わりに productName 列のセル内
-  // リンク（マスタ解決時のみ表示）から商品マスタ詳細へ遷移する。
-])
-
-const canDrill = computed(() => drillableDimensions.has(dimension.value))
-
-const nextDimLabel = computed(() => {
-  if (dimension.value === 'hinban') return '単品'
-  return '品番3桁'
-})
-
-interface CrosstabColumn {
-  key: string
-  label: string
-  align?: 'left' | 'right'
-  format?: (row: CrosstabRow) => string
-}
-
-function buildMetricColumn(metricValue: string, label: string): CrosstabColumn {
-  switch (metricValue) {
-    case 'amount':
-      return {
-        key: 'amount',
-        label,
-        align: 'right',
-        format: (row: CrosstabRow) => formatCurrency(row.amount),
-      }
-    case 'quantity':
-      return {
-        key: 'quantity',
-        label,
-        align: 'right',
-        format: (row: CrosstabRow) => formatNumber(row.quantity),
-      }
-    case 'grossProfit':
-      return {
-        key: 'grossProfit',
-        label,
-        align: 'right',
-        format: (row: CrosstabRow) => formatCurrency(row.grossProfit),
-      }
-    case 'sharePercent':
-      return {
-        key: 'sharePercent',
-        label,
-        align: 'right',
-        format: (row: CrosstabRow) => formatPercent(row.sharePercent),
-      }
-    case 'stockDays':
-      return {
-        key: 'stockDays',
-        label,
-        align: 'right',
-        format: (row: CrosstabRow) => formatDecimal(row.stockDays, 1),
-      }
-    case 'sellThroughRate':
-      return {
-        key: 'sellThroughRate',
-        label,
-        align: 'right',
-        format: (row: CrosstabRow) => formatPercent(row.sellThroughRate),
-      }
-    case 'stock':
-      return {
-        key: 'stock',
-        label,
-        align: 'right',
-        format: (row: CrosstabRow) => formatNumber(row.stock),
-      }
-    default:
-      return { key: metricValue, label }
+/**
+ * 行・列のいずれかが時間軸なら true。
+ * 取得済みデータの dimensionInfo.isTimeAxis を優先し、未取得時は DIMENSIONS カタログから算出する。
+ * 文字列前方一致 (`key.startsWith('time:')`) はバックエンドと二重実装になるため使わない。
+ */
+const hasTimeAxis = computed(() => {
+  const d = data.value
+  if (d) {
+    return d.rowDimension.isTimeAxis || d.columnDimension.isTimeAxis
   }
-}
+  const rowInfo = DIMENSIONS.find((x) => x.key === rowDimensionKey.value)
+  const colInfo = DIMENSIONS.find((x) => x.key === columnDimensionKey.value)
+  return Boolean(rowInfo?.isTimeAxis || colInfo?.isTimeAxis)
+})
 
-const tableColumns = computed<CrosstabColumn[]>(() => {
-  const columns: CrosstabColumn[] = [
-    {
-      key: 'label',
-      label: keyLabel.value,
-      format: (row: CrosstabRow) => (row.label === '' ? '(未設定)' : row.label),
-    },
-  ]
-
-  if (isProductDimension.value) {
-    columns.push(
-      {
-        key: 'thumbnail',
-        label: '画像',
-        format: () => '',
-      },
-      {
-        key: 'productName',
-        label: '商品名',
-        format: (row: CrosstabRow) =>
-          row.basicItems?.productName ?? row.basicItems?.hinmei ?? '-',
-      },
-      {
-        key: 'shohinKigo',
-        label: '商品記号',
-        format: (row: CrosstabRow) => row.basicItems?.shohinKigo ?? '-',
-      },
-      {
-        key: 'color',
-        label: 'カラー',
-        format: (row: CrosstabRow) => row.basicItems?.color ?? '-',
-      },
-      {
-        key: 'size',
-        label: 'サイズ',
-        format: (row: CrosstabRow) => row.basicItems?.size ?? '-',
-      },
-      {
-        key: 'kisetsu',
-        label: '季節',
-        format: (row: CrosstabRow) => row.basicItems?.kisetsu ?? '-',
-      },
-    )
+/**
+ * UI上で選択可能なメトリクス（在庫系は時間軸絡みなら除外）。
+ * data 取得済みなら API レスポンスの availableMetrics を SoT として参照する。
+ * 未取得時は DIMENSIONS カタログから時間軸判定 → 在庫系を除外する。
+ */
+const availableMetrics = computed<CrosstabMetricKey[]>(() => {
+  const d = data.value
+  if (d) {
+    return d.availableMetrics
   }
-
-  for (const metricValue of selectedMetrics.value) {
-    const opt = allMetricOptions.find((o) => o.value === metricValue)
-    if (!opt) continue
-    columns.push(buildMetricColumn(metricValue, opt.label))
+  if (hasTimeAxis.value) {
+    return METRICS.filter((m) => !STOCK_METRICS.includes(m.key)).map((m) => m.key)
   }
-  return columns
+  return METRICS.map((m) => m.key)
 })
 
-// テーブル表示領域の高さに合わせてページサイズを動的算出する。
-// 41px ≈ DataTable の 1 行高（py-2.5 + text-sm + border）。
-const ROW_HEIGHT_PX = 41
-const HEADER_HEIGHT_PX = 41
-const PAGE_SIZE_FALLBACK = 25
-const MIN_PAGE_SIZE = 10
-
-const tableContainer = ref<HTMLElement | null>(null)
-const containerHeight = ref(0)
-let resizeObserver: ResizeObserver | null = null
-
-onMounted(() => {
-  if (tableContainer.value && typeof ResizeObserver !== 'undefined') {
-    resizeObserver = new ResizeObserver((entries) => {
-      const entry = entries[0]
-      if (entry) {
-        containerHeight.value = entry.contentRect.height
-      }
-    })
-    resizeObserver.observe(tableContainer.value)
-  }
+// 時間軸を含む組合せに切り替わったら、selectedMetrics から在庫系を自動的に外す。
+watch(hasTimeAxis, (timeAxis) => {
+  if (!timeAxis) return
+  const before = selectedMetrics.value
+  const after = before.filter((m) => !STOCK_METRICS.includes(m))
+  if (after.length === before.length) return
+  // 全部消えてしまうケース（万一）は amount を残す。
+  selectedMetrics.value = after.length > 0 ? after : ['amount']
 })
 
-onBeforeUnmount(() => {
-  resizeObserver?.disconnect()
-  resizeObserver = null
-})
-
-const pageSize = computed(() => {
-  if (containerHeight.value <= 0) return PAGE_SIZE_FALLBACK
-  const usable = Math.max(0, containerHeight.value - HEADER_HEIGHT_PX)
-  return Math.max(MIN_PAGE_SIZE, Math.floor(usable / ROW_HEIGHT_PX))
-})
-
-const currentPage = ref(1)
-
-const totalRows = computed(() => result.value?.rows.length ?? 0)
-
-const totalPages = computed(() => {
-  if (totalRows.value === 0) return 1
-  return Math.ceil(totalRows.value / pageSize.value)
-})
-
-watch(result, () => {
-  currentPage.value = 1
-})
-
-watch(totalPages, (newTotal) => {
-  if (currentPage.value > newTotal) {
-    currentPage.value = Math.max(1, newTotal)
-  }
-})
-
-const visibleRows = computed<CrosstabRow[]>(() => {
-  const rows = result.value?.rows ?? []
-  const start = (currentPage.value - 1) * pageSize.value
-  return rows.slice(start, start + pageSize.value)
-})
-
-const rangeStart = computed(() =>
-  totalRows.value === 0 ? 0 : (currentPage.value - 1) * pageSize.value + 1,
-)
-const rangeEnd = computed(() =>
-  Math.min(totalRows.value, currentPage.value * pageSize.value),
-)
-
-function changePage(delta: number): void {
-  const next = currentPage.value + delta
-  if (next >= 1 && next <= totalPages.value) {
-    currentPage.value = next
-  }
-}
+// ---------------------------------------------------------------
+// データ取得
+// ---------------------------------------------------------------
 
 async function load(): Promise<void> {
   loading.value = true
   errorMessage.value = null
   try {
-    result.value = await get<CrosstabResponse>('/api/crosstab', {
+    data.value = await get<CrosstabMatrixResponse>('/api/crosstab', {
       ...toQuery(),
-      dimension: dimension.value,
+      rowDimension: rowDimensionKey.value,
+      columnDimension: columnDimensionKey.value,
     })
   } catch (error) {
     errorMessage.value = apiErrorMessage(error)
@@ -280,193 +193,170 @@ async function load(): Promise<void> {
 }
 
 async function applyAndLoad(): Promise<void> {
-  await router.replace({ query: { ...route.query, dimension: dimension.value } })
   await load()
 }
 
 function resetAndLoad(): void {
   reset()
-  void applyAndLoad()
+  // row/col が既定値と異なる場合のみ watch が発火する。そのときだけ
+  // 自動 fetch を 1 回スキップし、明示的 load() に集約する。
+  if (
+    rowDimensionKey.value !== DEFAULT_ROW
+    || columnDimensionKey.value !== DEFAULT_COL
+  ) {
+    skipNextDimensionWatch = true
+  }
+  rowDimensionKey.value = DEFAULT_ROW
+  columnDimensionKey.value = DEFAULT_COL
+  selectedMetrics.value = [...DEFAULT_METRICS]
+  metricDisplayMode.value = 'stacked'
+  void load()
 }
 
-function handleRowDrill(row: CrosstabRow): void {
-  const dim = dimension.value
+function swapDimensions(): void {
+  const tmp = rowDimensionKey.value
+  rowDimensionKey.value = columnDimensionKey.value
+  columnDimensionKey.value = tmp
+}
 
-  let nextDim: string | null = null
-  if (dim === 'department') {
-    addToFilter('departments', row.key)
-    nextDim = 'hinban'
-  } else if (dim === 'businessType') {
-    addToFilter('businessTypes', row.key)
-    nextDim = 'hinban'
-  } else if (dim === 'season') {
-    addToFilter('seasons', row.key)
-    nextDim = 'hinban'
-  } else if (dim === 'hinban') {
-    addToFilter('hinbans', row.key)
-    nextDim = 'product'
-  } else {
+function removeHinban(value: string): void {
+  filter.value.hinbans = filter.value.hinbans.filter((h) => h !== value)
+}
+
+/** 子コンポーネントから受け取った新しいフィルタ state を ref に代入する。 */
+function assignFilter(next: SalesFilterState): void {
+  filter.value = next
+}
+
+// 行・列ディメンションが入れ替わって同一になった場合のガード。
+// （実際は CrossTabConditionPanel の rowChoices/colChoices で除外しているため発生しない）
+watch([rowDimensionKey, columnDimensionKey], ([r, c]) => {
+  if (r === c) {
+    const fallback = DIMENSIONS.find((d) => d.key !== r)
+    if (fallback) {
+      columnDimensionKey.value = fallback.key
+    }
+  }
+})
+
+// メトリクス更新ハンドラ。1つだけのときは表示モードを stacked に強制リセット。
+function onUpdateSelectedMetrics(next: CrosstabMetricKey[]): void {
+  selectedMetrics.value = next
+  if (next.length < 2) {
+    metricDisplayMode.value = 'stacked'
+  }
+}
+
+// セル数の警告判定。SoT はバックエンドの rowTruncated/columnTruncated。
+// 閾値（100）の二重実装をやめ、API レスポンスのフラグで判定する。
+const cellCountWarning = computed(() => {
+  const d = data.value
+  if (!d) return null
+  if (d.rowTruncated || d.columnTruncated) {
+    const rows = d.rowLabels.length
+    const cols = d.columnLabels.length
+    return `表示は最大 ${rows} × ${cols} で打ち切られています。フィルタで絞り込んでください。`
+  }
+  return null
+})
+
+/**
+ * 行・列ディメンション変更時の自動 fetch。
+ * tokutake 設計に揃え、行/列の変更は即座にデータを取得する。
+ * フィルタ（年・業態・部門・季節・品番）は引き続き「適用」ボタンで明示的に取得する。
+ * メトリクス・表示モード変更はクライアント側の射影のため fetch 不要。
+ *
+ * 初期化中（initialized=false）は抑止し、onMounted の明示的 load() のみ実行する。
+ * resetAndLoad など、明示的 load() と watch が衝突するケースは skipNextDimensionWatch で抑止する。
+ */
+watch([rowDimensionKey, columnDimensionKey], (next, prev) => {
+  if (!initialized.value) return
+  const [r, c] = next
+  const [pr, pc] = prev
+  if (r === pr && c === pc) return
+  if (skipNextDimensionWatch) {
+    skipNextDimensionWatch = false
     return
   }
-
-  dimension.value = nextDim
-  void applyAndLoad()
-}
+  void load()
+})
 
 onMounted(async () => {
+  // 旧形式 `?dimension=xxx` 互換および新形式 `?rowDimension=&columnDimension=` を解釈する。
+  // 行のみ指定された場合の列、列のみ指定された場合の行はそれぞれ既定値（DEFAULT_COL/DEFAULT_ROW）を使う。
+  const queryRow = pickDimensionKey(route.query.rowDimension)
+  const queryCol = pickDimensionKey(route.query.columnDimension)
+  const legacyDim = typeof route.query.dimension === 'string'
+    ? LEGACY_DIMENSION_MAP[route.query.dimension]
+    : undefined
+
+  if (queryRow || queryCol) {
+    rowDimensionKey.value = queryRow ?? DEFAULT_ROW
+    columnDimensionKey.value = queryCol ?? DEFAULT_COL
+  } else if (legacyDim) {
+    // レガシー互換: `?dimension=hinban` → 行=category:hinban, 列=time:year
+    rowDimensionKey.value = legacyDim
+    columnDimensionKey.value = 'time:year'
+  }
+
   await loadOptions()
   await load()
+  // 初期 load 完了後に自動 fetch watch を有効化する。
+  initialized.value = true
 })
 </script>
 
 <template>
-  <div class="flex h-full flex-col gap-4">
-    <div class="shrink-0">
-      <h1 class="text-xl font-bold text-slate-800">クロス集計</h1>
-      <p class="text-sm text-slate-500">
-        集計単位ごとに複数のメトリクスを横並び表示。行クリックでドリルダウン可能。
-      </p>
-    </div>
+  <div class="flex h-full flex-col gap-3">
+    <CrossTabConditionPanel
+      :dimensions="DIMENSIONS"
+      :metrics="METRICS"
+      :row-dimension-key="rowDimensionKey"
+      :column-dimension-key="columnDimensionKey"
+      :selected-metrics="selectedMetrics"
+      :metric-display-mode="metricDisplayMode"
+      :available-metrics="availableMetrics"
+      :filter-state="filter"
+      :options-error="optionsError"
+      :available-years="years"
+      :loading="loading"
+      @update:row-dimension-key="(v) => (rowDimensionKey = v as CrosstabDimensionKey)"
+      @update:column-dimension-key="(v) => (columnDimensionKey = v as CrosstabDimensionKey)"
+      @update:selected-metrics="onUpdateSelectedMetrics"
+      @update:metric-display-mode="(v) => (metricDisplayMode = v)"
+      @update:filter-state="(v) => assignFilter(v)"
+      @swap-dimensions="swapDimensions"
+      @apply="applyAndLoad"
+      @reset="resetAndLoad"
+      @remove-hinban="removeHinban"
+    />
 
-    <div class="shrink-0">
-      <CollapsiblePanel title="条件設定">
-        <FilterControls />
-
-        <div class="mt-4 grid grid-cols-1 gap-3 sm:grid-cols-2">
-          <div>
-            <label class="mb-1 block text-xs font-medium text-slate-500">集計単位</label>
-            <select
-              v-model="dimension"
-              class="w-full rounded-lg border border-slate-300 bg-white px-3 py-2 text-sm"
-            >
-              <option v-for="opt in dimensionOptions" :key="opt.value" :value="opt.value">
-                {{ opt.label }}
-              </option>
-            </select>
-          </div>
-          <MultiSelect
-            v-model="selectedMetrics"
-            label="表示集計値"
-            :options="metricSelectOptions"
-          />
-        </div>
-
-        <p class="mt-2 text-xs text-slate-400">
-          単品を選ぶと、基本項目（商品記号・カラー・サイズ・季節）も表示されます。
-          在庫数・消化率は最新取込週スナップショット基準。
-        </p>
-
-        <div class="mt-4 flex flex-wrap gap-2">
-          <button
-            type="button"
-            class="flex items-center gap-1.5 rounded-lg bg-indigo-600 px-4 py-2 text-sm font-medium text-white hover:bg-indigo-700"
-            @click="applyAndLoad"
-          >
-            <Search class="h-4 w-4" />
-            適用
-          </button>
-          <button
-            type="button"
-            class="flex items-center gap-1.5 rounded-lg border border-slate-300 px-4 py-2 text-sm font-medium text-slate-600 hover:bg-slate-50"
-            @click="resetAndLoad"
-          >
-            <RotateCcw class="h-4 w-4" />
-            リセット
-          </button>
-        </div>
-      </CollapsiblePanel>
-    </div>
-
-    <div class="flex min-h-0 flex-1 flex-col">
+    <div class="flex min-h-0 flex-1 flex-col gap-2">
       <StatusBlock
         :loading="loading"
         :error="errorMessage"
-        :empty="totalRows === 0"
-        empty-message="該当するデータがありません。"
+        :empty="!data || data.rowLabels.length === 0"
+        empty-message="該当するデータがありません。フィルタを見直してください。"
       >
         <div class="flex h-full flex-col gap-2">
-          <div class="shrink-0 space-y-1">
-            <p v-if="result?.latestWeek" class="text-xs text-slate-400">
-              最新取込週: {{ result.latestWeek }}（在庫・消化率のスナップショット基準）
+          <div class="shrink-0 flex flex-wrap items-center justify-between gap-2 text-xs text-slate-500">
+            <p>
+              行 {{ data?.rowLabels.length ?? 0 }} ／ 列 {{ data?.columnLabels.length ?? 0 }}
+              <span v-if="data?.latestWeek"> ／ 最新取込週: {{ data.latestWeek }}（在庫スナップショット基準）</span>
+              <span v-if="hasTimeAxis"> ／ 在日・消化率・在庫数は時間軸との組合せでは表示されません</span>
             </p>
-            <p v-if="canDrill" class="text-xs text-indigo-600">
-              行をクリックすると、その{{ keyLabel }}でさらに絞り込んで「{{ nextDimLabel }}」へドリルダウンします。
+            <p v-if="cellCountWarning" class="rounded bg-amber-50 px-2 py-1 text-xs text-amber-700">
+              {{ cellCountWarning }}
             </p>
           </div>
 
-          <div ref="tableContainer" class="flex min-h-0 flex-1 flex-col">
-            <DataTable
-              :columns="tableColumns"
-              :rows="visibleRows"
-              :row-key="(row: CrosstabRow) => row.key"
-              :clickable="canDrill"
-              fill-height
-              @row-click="handleRowDrill"
-            >
-              <template #thumbnail="{ row }">
-                <div class="h-10 w-10 overflow-hidden rounded">
-                  <ProductImage
-                    :src="(row as CrosstabRow).basicItems?.primaryImageUrl"
-                    :alt="(row as CrosstabRow).basicItems?.productName ?? ''"
-                    icon-class="h-4 w-4"
-                    :show-label="false"
-                  />
-                </div>
-              </template>
-              <template #productName="{ row }">
-                <div class="flex min-w-0 flex-col">
-                  <NuxtLink
-                    v-if="(row as CrosstabRow).basicItems?.masterProductId"
-                    :to="`/product-master/${(row as CrosstabRow).basicItems!.masterProductId}`"
-                    class="truncate text-indigo-600 hover:underline"
-                    @click.stop
-                  >
-                    {{ (row as CrosstabRow).basicItems?.productName
-                      ?? (row as CrosstabRow).basicItems?.hinmei
-                      ?? '-' }}
-                  </NuxtLink>
-                  <span v-else class="truncate text-slate-800">
-                    {{ (row as CrosstabRow).basicItems?.productName
-                      ?? (row as CrosstabRow).basicItems?.hinmei
-                      ?? '-' }}
-                  </span>
-                  <span
-                    v-if="(row as CrosstabRow).basicItems?.brand"
-                    class="truncate text-xs text-slate-400"
-                  >{{ (row as CrosstabRow).basicItems!.brand }}</span>
-                </div>
-              </template>
-            </DataTable>
-          </div>
-
-          <div class="shrink-0 flex flex-wrap items-center justify-between gap-2 text-sm text-slate-600">
-            <span>
-              全 {{ formatNumber(totalRows) }} 件中
-              {{ formatNumber(rangeStart) }} - {{ formatNumber(rangeEnd) }} 件を表示
-              （売上金額の降順、最大1000件）
-            </span>
-            <div class="flex items-center gap-2">
-              <button
-                type="button"
-                class="flex items-center gap-1 rounded-lg border border-slate-300 px-2 py-1 disabled:opacity-40"
-                :disabled="currentPage <= 1"
-                @click="changePage(-1)"
-              >
-                <ChevronLeft class="h-4 w-4" />
-                前へ
-              </button>
-              <span>{{ currentPage }} / {{ totalPages }}</span>
-              <button
-                type="button"
-                class="flex items-center gap-1 rounded-lg border border-slate-300 px-2 py-1 disabled:opacity-40"
-                :disabled="currentPage >= totalPages"
-                @click="changePage(1)"
-              >
-                次へ
-                <ChevronRight class="h-4 w-4" />
-              </button>
-            </div>
-          </div>
+          <CrossTabTable
+            v-if="data"
+            :data="data"
+            :selected-metrics="selectedMetrics"
+            :metrics="METRICS"
+            :display-mode="metricDisplayMode"
+          />
         </div>
       </StatusBlock>
     </div>

@@ -108,38 +108,101 @@ public sealed record ProductPage(
     int Page,
     int PageSize);
 
-/// <summary>クロス集計の基本項目（単品レベル時のみ設定される）。商品マスタが解決できれば商品名・画像も含む。</summary>
-public sealed record CrosstabBasicItems(
-    string Hinban,
-    string Tanpin,
-    string Hinmei,
-    string ShohinKigo,
-    string Color,
-    string Size,
-    string Kisetsu,
-    Guid? MasterProductId,
-    string? ProductName,
-    string? Brand,
-    string? PrimaryImageUrl);
+/// <summary>クロス集計（行×列マトリクス）で使用可能なディメンション。</summary>
+/// <remarks>
+/// プレフィックスで時間軸（time）かカテゴリ軸（category）を区別する。
+/// 時間軸は <c>sw.import_date</c> から導出し、カテゴリ軸は <see cref="BreakdownDimension"/> と
+/// 同等の SQL 式（商品=複数列連結など）を使う。
+/// </remarks>
+public enum CrosstabDimension
+{
+    // 時間軸
+    /// <summary>年（YYYY）。</summary>
+    TimeYear,
+    /// <summary>四半期（YYYY-Q1 等）。</summary>
+    TimeQuarter,
+    /// <summary>月（YYYY-MM）。</summary>
+    TimeMonth,
+    // カテゴリ軸
+    /// <summary>部門。</summary>
+    CategoryDepartment,
+    /// <summary>業態。</summary>
+    CategoryBusinessType,
+    /// <summary>季節区分。</summary>
+    CategorySeason,
+    /// <summary>品番3桁（hinban_code 単独）。</summary>
+    CategoryHinban,
+    /// <summary>単品（品番-単品）。</summary>
+    CategoryProduct,
+    /// <summary>カラー。</summary>
+    CategoryColor,
+    /// <summary>サイズ。</summary>
+    CategorySize,
+    /// <summary>帳票区分名。</summary>
+    CategoryChohyoKubun,
+    /// <summary>棚割1。</summary>
+    CategoryTanawari1,
+    /// <summary>棚割2。</summary>
+    CategoryTanawari2,
+    /// <summary>商品記号。</summary>
+    CategoryShohinKigo,
+}
 
-/// <summary>クロス集計の1行。基本項目は単品レベル時のみ非nullになる。</summary>
-public sealed record CrosstabRow(
-    string Key,
-    string Label,
-    CrosstabBasicItems? BasicItems,
-    long Quantity,
-    long Amount,
-    long GrossProfit,
-    double SharePercent,
-    long Stock,
-    double StockDays,
-    double SellThroughRate);
+/// <summary>クロス集計のディメンション情報（行・列のメタ情報）。</summary>
+/// <param name="Key">フロント側の文字列キー（例 "time:year", "category:department"）。</param>
+/// <param name="Category">"time" または "category"。</param>
+/// <param name="Label">表示ラベル。</param>
+/// <param name="IsTimeAxis">
+/// 時間軸ディメンション（年・四半期・月）かどうか。フロント側で在庫系メトリクスの可否判定に使う。
+/// バックエンドの <c>TimeDimensions</c> 判定と一致しており、フロント側の文字列前方一致判定の
+/// 重複実装を避けるため、API レスポンスから渡す（SoT 統一）。
+/// </param>
+public sealed record CrosstabDimensionInfo(string Key, string Category, string Label, bool IsTimeAxis);
 
-/// <summary>クロス集計のレスポンス（売上金額の降順）。</summary>
-public sealed record CrosstabResponse(
-    string Dimension,
-    IReadOnlyList<CrosstabRow> Rows,
-    DateOnly? LatestWeek);
+/// <summary>
+/// クロス集計の1セルの値。7メトリクスを保持する。在庫系（stockDays / stock / sellThroughRate）は
+/// 時間軸を含む組合せでは <c>null</c> になる（最新週スナップショットに基づくため）。
+/// </summary>
+public sealed record CrosstabCellValues(
+    long? Amount,
+    long? Quantity,
+    long? GrossProfit,
+    double? SharePercent,
+    double? StockDays,
+    double? SellThroughRate,
+    long? Stock);
+
+/// <summary>クロス集計の1セル。</summary>
+public sealed record CrosstabCell(CrosstabCellValues Values);
+
+/// <summary>クロス集計（マトリクス）のレスポンス。</summary>
+/// <param name="RowDimension">行ディメンション情報。</param>
+/// <param name="ColumnDimension">列ディメンション情報。</param>
+/// <param name="RowLabels">行ラベルの順序付きリスト（最大 100 件で切り詰め）。</param>
+/// <param name="ColumnLabels">列ラベルの順序付きリスト（最大 100 件で切り詰め）。</param>
+/// <param name="Cells">[行ラベル][列ラベル] = CrosstabCell。空セルは省略。</param>
+/// <param name="RowTotals">行ごとの合計（最終列に表示）。表示行の和と一致する。</param>
+/// <param name="ColumnTotals">列ごとの合計（最終行に表示）。表示列の和と一致する。</param>
+/// <param name="GrandTotal">
+/// 全体合計（右下セル）。切り詰め後の表示セル・行合計・列合計と完全に整合する。
+/// </param>
+/// <param name="LatestWeek">在庫スナップショット基準週（時間軸絡みでない場合に設定）。</param>
+/// <param name="AvailableMetrics">時間軸が含まれる場合は在庫系を除いたメトリクスキー一覧。</param>
+/// <param name="RowTruncated">行ラベル数が 100 を超え切り詰められた場合 true。</param>
+/// <param name="ColumnTruncated">列ラベル数が 100 を超え切り詰められた場合 true。</param>
+public sealed record CrosstabMatrixResponse(
+    CrosstabDimensionInfo RowDimension,
+    CrosstabDimensionInfo ColumnDimension,
+    IReadOnlyList<string> RowLabels,
+    IReadOnlyList<string> ColumnLabels,
+    IReadOnlyDictionary<string, IReadOnlyDictionary<string, CrosstabCell>> Cells,
+    IReadOnlyDictionary<string, CrosstabCell> RowTotals,
+    IReadOnlyDictionary<string, CrosstabCell> ColumnTotals,
+    CrosstabCell GrandTotal,
+    string? LatestWeek,
+    IReadOnlyList<string> AvailableMetrics,
+    bool RowTruncated,
+    bool ColumnTruncated);
 
 // ============================================================
 // 商品マスタ（m_product / m_product_sku）の参照モデル

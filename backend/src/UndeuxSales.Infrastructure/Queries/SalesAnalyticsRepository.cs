@@ -1,4 +1,7 @@
+using System.Diagnostics;
 using Dapper;
+using Microsoft.Extensions.Logging;
+using Microsoft.Extensions.Logging.Abstractions;
 using Npgsql;
 using UndeuxSales.Core;
 using UndeuxSales.Core.Models;
@@ -12,11 +15,20 @@ public sealed class SalesAnalyticsRepository
     private const int MaxBreakdownLimit = 1000;
     private const int MaxPageSize = 200;
 
-    private readonly IDbConnectionFactory _connectionFactory;
+    /// <summary>クロス集計クエリの遅さを警告するしきい値（ms）。</summary>
+    private const int CrosstabSlowQueryWarningThresholdMs = 1000;
 
-    public SalesAnalyticsRepository(IDbConnectionFactory connectionFactory)
+    private readonly IDbConnectionFactory _connectionFactory;
+    private readonly ILogger<SalesAnalyticsRepository> _logger;
+
+    public SalesAnalyticsRepository(
+        IDbConnectionFactory connectionFactory,
+        ILogger<SalesAnalyticsRepository>? logger = null)
     {
         _connectionFactory = connectionFactory;
+        // DI 経由では ILogger<T> が自動注入される。テストや旧呼び出しのために null 許容で
+        // NullLogger を fallback として用意する（ロガー注入を必須としない）。
+        _logger = logger ?? NullLogger<SalesAnalyticsRepository>.Instance;
         DapperConfiguration.Initialize();
     }
 
@@ -355,144 +367,575 @@ public sealed class SalesAnalyticsRepository
             new CommandDefinition(sql, parameters, cancellationToken: cancellationToken));
     }
 
-    /// <summary>クロス集計（指定の集計単位での複数メトリクス集計）を取得する。</summary>
+    // ------------------------------------------------------------
+    // クロス集計（マトリクス: 行×列ディメンション、7メトリクスのセル値）
+    // ------------------------------------------------------------
+
+    /// <summary>クロス集計マトリクス表示の最大件数（行・列それぞれ）。</summary>
+    private const int MaxCrosstabAxisLabels = 100;
+
+    /// <summary>時間軸ディメンション。これらが行・列のいずれかに含まれる場合、在庫系メトリクスは null とする。</summary>
+    private static readonly HashSet<CrosstabDimension> TimeDimensions = new()
+    {
+        CrosstabDimension.TimeYear,
+        CrosstabDimension.TimeQuarter,
+        CrosstabDimension.TimeMonth,
+    };
+
+    /// <summary>全7メトリクスのキー（フロントエンド側と一致）。</summary>
+    private static readonly IReadOnlyList<string> AllMetricKeys = new[]
+    {
+        "amount", "quantity", "grossProfit", "sharePercent",
+        "stockDays", "sellThroughRate", "stock",
+    };
+
+    /// <summary>在庫系メトリクス（最新週スナップショット基準のため、時間軸と組み合わせ不可）。</summary>
+    private static readonly HashSet<string> StockMetrics = new()
+    {
+        "stockDays", "sellThroughRate", "stock",
+    };
+
+    /// <summary>未設定（NULL/空文字）のラベル代替表記。</summary>
+    private const string UnsetLabel = "(未設定)";
+
+    /// <summary>
+    /// カテゴリ系ディメンションの SQL 式（sw エイリアス前提）。
+    /// クロス集計（<see cref="ResolveCrosstabDimensionSql"/>）とブレイクダウン
+    /// （<see cref="ResolveDimension"/>）の両方から参照され、SQL 式の二重メンテを防ぐ。
+    /// 時間軸ディメンションはクロス集計固有のため別扱い（<see cref="ResolveCrosstabDimensionSql"/> 内）。
+    /// </summary>
+    private static readonly IReadOnlyDictionary<string, string> CategoryDimensionSqlMap =
+        new Dictionary<string, string>(StringComparer.Ordinal)
+        {
+            ["department"] = "sw.department",
+            ["businessType"] = "sw.gyotai_code",
+            ["season"] = "sw.kisetsu",
+            ["hinban"] = "sw.hinban_code",
+            ["color"] = "sw.color",
+            ["size"] = "sw.size",
+            ["chohyoKubun"] = "sw.chohyo_kubun_name",
+            ["tanawari1"] = "COALESCE(sw.tanawari1, '')",
+            ["tanawari2"] = "COALESCE(sw.tanawari2, '')",
+            ["shohinKigo"] = "sw.shohin_kigou",
+            // 単品（品番-単品）は表示用ラベルの式（クロス集計用）。
+            // ブレイクダウンは GroupBy/KeyExpr/LabelExpr が分離する別仕様のため利用しない。
+            ["product"] = "(sw.hinban_code || '-' || sw.tanpin_code)",
+        };
+
+    /// <summary>クロス集計マトリクス（行×列の2次元集計）を取得する。</summary>
     /// <remarks>
-    /// フロー指標（数量・金額・粗利）は期間内合算、在日は平均、在庫・累計は最新取込週スナップショット基準。
-    /// 単品 (Product) のみ基本項目（品番・単品・商品記号・カラー・サイズ・季節）を返す。
+    /// フロー指標（数量・金額・粗利・在日）は期間内集計、在庫スナップショット指標（在庫・消化率）は
+    /// 最新取込週のみ。時間軸（年/四半期/月）が行か列のいずれかに含まれる場合、最新週スナップショットの
+    /// 概念が時間バケットに揃わないため在庫系メトリクスは null を返し、AvailableMetrics からも除外する。
     /// </remarks>
-    public async Task<CrosstabResponse> GetCrosstabAsync(
+    public async Task<CrosstabMatrixResponse> GetCrosstabMatrixAsync(
         SalesQueryFilter filter,
-        BreakdownDimension dimension,
+        CrosstabDimension rowDim,
+        CrosstabDimension colDim,
         CancellationToken cancellationToken = default)
     {
         filter.EnsureValid();
-        await using var connection = await _connectionFactory.OpenConnectionAsync(cancellationToken);
-
-        var parameters = new DynamicParameters();
-        SalesFilterSql.AddParameters(filter, parameters);
-
-        var latestWeek = await QueryLatestWeekAsync(connection, filter, parameters, cancellationToken);
-        if (!latestWeek.HasValue)
+        if (rowDim == colDim)
         {
-            return new CrosstabResponse(dimension.ToString(), Array.Empty<CrosstabRow>(), null);
+            throw new AppException(ErrorCodes.InvalidRequest, 400,
+                "行と列に同じディメンションを指定することはできません。");
         }
 
-        parameters.Add("latestWeek", latestWeek.Value);
-        parameters.Add("limit", MaxBreakdownLimit);
+        // 実行時間計測（しきい値超過時に警告ログを出す）。クエリ単体ではなく
+        // GetCrosstabMatrixAsync 全体（フロー + スナップショット + 後段の集計構築）を計測する。
+        // try/finally で例外パス（DB 失敗・OperationCanceled 等）でも必ず計測ログが出るようにする。
+        var stopwatch = Stopwatch.StartNew();
+        CrosstabMatrixResponse? response = null;
+        try
+        {
+            var rowInfo = ToInfo(rowDim);
+            var colInfo = ToInfo(colDim);
+            var hasTimeAxis = TimeDimensions.Contains(rowDim) || TimeDimensions.Contains(colDim);
+            var availableMetrics = hasTimeAxis
+                ? AllMetricKeys.Where(m => !StockMetrics.Contains(m)).ToList()
+                : AllMetricKeys.ToList();
 
-        var (groupBy, keyExpr, labelExpr) = ResolveDimension(dimension);
-        var isProduct = dimension == BreakdownDimension.Product;
+            await using var connection = await _connectionFactory.OpenConnectionAsync(cancellationToken);
 
-        // 単品 (Product) は GROUP BY に gyotai_code/shohin_kigou/hinban_code/tanpin_code が
-        // 含まれるため、4 つの基本項目はそのまま列参照可能（MAX 不要）。color/size/kisetsu は
-        // GROUP BY 外なので MAX で代表値を採用する。
-        var basicItemsSelect = isProduct
-            ? "sw.hinban_code  AS hinban, sw.tanpin_code   AS tanpin, "
-              + "sw.shohin_kigou AS shohin_kigou, "
-              + "MAX(sw.color) AS color, MAX(sw.size) AS size, MAX(sw.kisetsu) AS kisetsu, "
-              + "sw.gyotai_code  AS gyotai_code,"
-            : "NULL::text AS hinban, NULL::text AS tanpin, NULL::text AS shohin_kigou, "
-              + "NULL::text AS color, NULL::text AS size, NULL::text AS kisetsu, "
-              + "NULL::text AS gyotai_code,";
+            var parameters = new DynamicParameters();
+            SalesFilterSql.AddParameters(filter, parameters);
 
-        // 単品集計のみ、商品マスタ・代表画像（image_index 最小の SKU 画像）を JOIN する。
-        var masterJoin = isProduct
-            ? """
-              LEFT JOIN m_product mp
-                  ON mp.business_category_cd = f.gyotai_code
-                 AND mp.product_sign         = f.shohin_kigou
-                 AND mp.product_type_crd     = f.hinban
-              LEFT JOIN LATERAL (
-                  SELECT msi.image_url
-                  FROM m_product_sku msi
-                  WHERE msi.product_id = mp.product_id
-                    AND msi.unit_cd    = f.tanpin
-                  ORDER BY msi.image_index, msi.sku_item_id
-                  LIMIT 1
-              ) AS img ON true
-              """
-            : string.Empty;
+            var rowExpr = ResolveCrosstabDimensionSql(rowDim);
+            var colExpr = ResolveCrosstabDimensionSql(colDim);
+            var whereClause = SalesFilterSql.WhereClause(filter, "sw");
+            var andClause = SalesFilterSql.AndClause(filter, "sw");
 
-        var masterSelect = isProduct
-            ? "mp.product_id   AS master_product_id, "
-              + "mp.product_name AS product_name, "
-              + "mp.brand        AS brand, "
-              + "img.image_url   AS primary_image_url,"
-            : "NULL::uuid AS master_product_id, NULL::text AS product_name, "
-              + "NULL::text AS brand, NULL::text AS primary_image_url,";
+            // 期間内データが空の場合（latestWeek=null）は空マトリクスを返す（500ではなく200で空）
+            var latestWeek = await QueryLatestWeekAsync(connection, filter, parameters, cancellationToken);
+            if (!latestWeek.HasValue)
+            {
+                response = BuildEmptyMatrix(rowInfo, colInfo, availableMetrics);
+                return response;
+            }
 
-        var whereClause = SalesFilterSql.WhereClause(filter, "sw");
-        var andClause = SalesFilterSql.AndClause(filter, "sw");
+            // フロー集計（期間内）。null/空ラベルは未設定として置換。
+            // 注: GROUP BY は SELECT のエイリアス（row_key / col_key）を参照しても PostgreSQL では
+            // 動作するが、CTE で前段に式を畳むことで読みやすさと SQL 実行計画の安定性を確保する。
+            var rowKeyExpr = $"COALESCE(NULLIF({rowExpr}, ''), '{UnsetLabel}')";
+            var colKeyExpr = $"COALESCE(NULLIF({colExpr}, ''), '{UnsetLabel}')";
+            var flowSql = $"""
+                WITH labeled AS (
+                    SELECT {rowKeyExpr} AS row_key,
+                           {colKeyExpr} AS col_key,
+                           {SalesMetricSql.WeekQuantity}    AS week_quantity,
+                           {SalesMetricSql.WeekAmount}      AS week_amount,
+                           {SalesMetricSql.WeekGrossProfit} AS week_gross_profit,
+                           sw.zainiti                       AS zainiti
+                    FROM sales_weekly sw
+                    {whereClause}
+                )
+                SELECT row_key,
+                       col_key,
+                       COALESCE(SUM(week_quantity), 0)::bigint    AS quantity,
+                       COALESCE(SUM(week_amount), 0)::bigint      AS amount,
+                       COALESCE(SUM(week_gross_profit), 0)::bigint AS gross_profit,
+                       COALESCE(AVG(zainiti), 0)::float8          AS stock_days
+                FROM labeled
+                GROUP BY row_key, col_key;
+                """;
+            var flowRows = (await connection.QueryAsync<CrosstabFlowRow>(
+                new CommandDefinition(flowSql, parameters, cancellationToken: cancellationToken))).ToList();
 
-        var sql = $"""
-            WITH flow AS (
-                SELECT {keyExpr} AS key,
-                       {labelExpr} AS label,
-                       {basicItemsSelect}
-                       COALESCE(SUM({SalesMetricSql.WeekQuantity}), 0)::bigint    AS quantity,
-                       COALESCE(SUM({SalesMetricSql.WeekAmount}), 0)::bigint      AS amount,
-                       COALESCE(SUM({SalesMetricSql.WeekGrossProfit}), 0)::bigint AS gross_profit,
-                       COALESCE(AVG(sw.zainiti), 0)::float8                       AS stock_days
-                FROM sales_weekly sw
-                {whereClause}
-                GROUP BY {groupBy}
-            ),
-            snapshot AS (
-                SELECT {keyExpr} AS key,
-                       COALESCE(SUM(sw.zaikosu), 0)::bigint             AS stock,
-                       COALESCE(SUM(sw.ruikei_uriage_count), 0)::bigint AS cumulative_sales,
-                       COALESCE(SUM(sw.ruikei_nohin_count), 0)::bigint  AS cumulative_delivery
-                FROM sales_weekly sw
-                WHERE sw.import_date = @latestWeek{andClause}
-                GROUP BY {groupBy}
-            )
-            SELECT f.key,
-                   f.label,
-                   f.hinban, f.tanpin, f.shohin_kigou, f.color, f.size, f.kisetsu,
-                   {masterSelect}
-                   f.quantity, f.amount, f.gross_profit, f.stock_days,
-                   COALESCE(s.stock, 0)::bigint               AS stock,
-                   COALESCE(s.cumulative_sales, 0)::bigint    AS cumulative_sales,
-                   COALESCE(s.cumulative_delivery, 0)::bigint AS cumulative_delivery,
-                   (SUM(f.amount) OVER ())::bigint            AS total_amount
-            FROM flow f
-            {masterJoin}
-            LEFT JOIN snapshot s ON s.key = f.key
-            ORDER BY f.amount DESC, f.key
-            LIMIT @limit;
-            """;
+            // スナップショット集計（時間軸が含まれない場合のみ取得）。
+            Dictionary<(string Row, string Col), CrosstabSnapshotRow> snapshotMap = new();
+            if (!hasTimeAxis)
+            {
+                parameters.Add("latestWeek", latestWeek.Value);
+                var snapshotSql = $"""
+                    WITH labeled AS (
+                        SELECT {rowKeyExpr} AS row_key,
+                               {colKeyExpr} AS col_key,
+                               sw.zaikosu               AS zaikosu,
+                               sw.ruikei_uriage_count   AS ruikei_uriage_count,
+                               sw.ruikei_nohin_count    AS ruikei_nohin_count
+                        FROM sales_weekly sw
+                        WHERE sw.import_date = @latestWeek{andClause}
+                    )
+                    SELECT row_key,
+                           col_key,
+                           COALESCE(SUM(zaikosu), 0)::bigint             AS stock,
+                           COALESCE(SUM(ruikei_uriage_count), 0)::bigint AS cumulative_sales,
+                           COALESCE(SUM(ruikei_nohin_count), 0)::bigint  AS cumulative_delivery
+                    FROM labeled
+                    GROUP BY row_key, col_key;
+                    """;
+                var snapshotRows = await connection.QueryAsync<CrosstabSnapshotRow>(
+                    new CommandDefinition(snapshotSql, parameters, cancellationToken: cancellationToken));
+                foreach (var s in snapshotRows)
+                {
+                    snapshotMap[(s.RowKey, s.ColKey)] = s;
+                }
+            }
 
-        var rawRows = (await connection.QueryAsync<CrosstabRawRow>(
-            new CommandDefinition(sql, parameters, cancellationToken: cancellationToken))).ToList();
+            response = BuildMatrix(
+                flowRows,
+                snapshotMap,
+                rowInfo,
+                colInfo,
+                hasTimeAxis,
+                availableMetrics,
+                latestWeek);
 
-        var rows = rawRows.Select(r => new CrosstabRow(
-            r.Key,
-            r.Label,
-            isProduct
-                ? new CrosstabBasicItems(
-                    r.Hinban ?? string.Empty,
-                    r.Tanpin ?? string.Empty,
-                    r.Label,
-                    r.ShohinKigou ?? string.Empty,
-                    r.Color ?? string.Empty,
-                    r.Size ?? string.Empty,
-                    r.Kisetsu ?? string.Empty,
-                    r.MasterProductId,
-                    r.ProductName,
-                    r.Brand,
-                    r.PrimaryImageUrl)
-                : null,
-            r.Quantity,
-            r.Amount,
-            r.GrossProfit,
-            SharePercentByAmount(r.Amount, r.TotalAmount),
-            r.Stock,
-            r.StockDays,
-            Ratio(r.CumulativeSales, r.CumulativeDelivery) * 100.0))
-            .ToList();
-
-        return new CrosstabResponse(dimension.ToString(), rows, latestWeek);
+            return response;
+        }
+        finally
+        {
+            LogIfSlow(stopwatch, rowDim, colDim, filter,
+                rowsCount: response?.RowLabels.Count ?? -1,
+                colsCount: response?.ColumnLabels.Count ?? -1);
+        }
     }
+
+    /// <summary>
+    /// クロス集計クエリの実行時間がしきい値を超えたら警告ログを出す。
+    /// 本番ではクエリ最適化判断の入力情報として使う（フィルタ・行列ディメンションも含めて記録）。
+    /// </summary>
+    private void LogIfSlow(
+        Stopwatch stopwatch,
+        CrosstabDimension rowDim,
+        CrosstabDimension colDim,
+        SalesQueryFilter filter,
+        int rowsCount,
+        int colsCount)
+    {
+        stopwatch.Stop();
+        var elapsedMs = stopwatch.ElapsedMilliseconds;
+        if (elapsedMs <= CrosstabSlowQueryWarningThresholdMs)
+        {
+            return;
+        }
+        _logger.LogWarning(
+            "Crosstab query slow: {ElapsedMs}ms row={Row} col={Col} rows={Rows} cols={Cols} "
+            + "from={From} to={To} depts={DeptCount} biz={BizCount} seasons={SeasonCount} hinbans={HinbanCount}",
+            elapsedMs,
+            rowDim,
+            colDim,
+            rowsCount,
+            colsCount,
+            filter.From,
+            filter.To,
+            filter.Departments?.Length ?? 0,
+            filter.BusinessTypes?.Length ?? 0,
+            filter.Seasons?.Length ?? 0,
+            filter.Hinbans?.Length ?? 0);
+    }
+
+    /// <summary>空マトリクス（データなし時）を返す。</summary>
+    private static CrosstabMatrixResponse BuildEmptyMatrix(
+        CrosstabDimensionInfo rowInfo,
+        CrosstabDimensionInfo colInfo,
+        IReadOnlyList<string> availableMetrics) => new(
+        rowInfo,
+        colInfo,
+        Array.Empty<string>(),
+        Array.Empty<string>(),
+        new Dictionary<string, IReadOnlyDictionary<string, CrosstabCell>>(),
+        new Dictionary<string, CrosstabCell>(),
+        new Dictionary<string, CrosstabCell>(),
+        new CrosstabCell(new CrosstabCellValues(null, null, null, null, null, null, null)),
+        null,
+        availableMetrics,
+        false,
+        false);
+
+    /// <summary>
+    /// 集計結果（flow + snapshot）からレスポンスを構築する。
+    /// 行・列ラベルのソート、合計算出、メトリクス値の null 制御をここで行う。
+    ///
+    /// 切り詰めと合計の整合性を保つため、行・列ラベル確定後に対象キーのみで
+    /// 行/列/総計を再構築する：
+    /// - 切り詰めされたラベル集合に含まれないキーの flow/snapshot は集計から除外する
+    /// - これにより rowTotals == sum(visible cells)、grandTotal == sum(rowTotals) == sum(columnTotals)
+    ///   が表示マトリクスと完全に一致する（sharePercent の合計も 100% になる）
+    /// </summary>
+    private static CrosstabMatrixResponse BuildMatrix(
+        IReadOnlyList<CrosstabFlowRow> flowRows,
+        IReadOnlyDictionary<(string Row, string Col), CrosstabSnapshotRow> snapshotMap,
+        CrosstabDimensionInfo rowInfo,
+        CrosstabDimensionInfo colInfo,
+        bool hasTimeAxis,
+        IReadOnlyList<string> availableMetrics,
+        DateOnly? latestWeek)
+    {
+        // 1) ラベル順序確定用の暫定集計（全データ）。amount 降順でラベル順を決めるためにだけ使う。
+        var initialRowAggregates = new Dictionary<string, FlowAggregate>();
+        var initialColAggregates = new Dictionary<string, FlowAggregate>();
+        foreach (var row in flowRows)
+        {
+            if (!initialRowAggregates.TryGetValue(row.RowKey, out var ra))
+            {
+                ra = new FlowAggregate();
+                initialRowAggregates[row.RowKey] = ra;
+            }
+            ra.Add(row);
+
+            if (!initialColAggregates.TryGetValue(row.ColKey, out var ca))
+            {
+                ca = new FlowAggregate();
+                initialColAggregates[row.ColKey] = ca;
+            }
+            ca.Add(row);
+        }
+
+        // 2) 行・列ラベルのソート（時間軸: 文字列昇順、カテゴリ軸: amount 降順、未設定は末尾）
+        var rowLabels = SortLabels(initialRowAggregates, rowInfo);
+        var columnLabels = SortLabels(initialColAggregates, colInfo);
+
+        // 3) 最大100件で切り詰める（truncated フラグを記録）
+        var rowTruncated = rowLabels.Count > MaxCrosstabAxisLabels;
+        var columnTruncated = columnLabels.Count > MaxCrosstabAxisLabels;
+        if (rowTruncated)
+        {
+            rowLabels = rowLabels.Take(MaxCrosstabAxisLabels).ToList();
+        }
+        if (columnTruncated)
+        {
+            columnLabels = columnLabels.Take(MaxCrosstabAxisLabels).ToList();
+        }
+        var rowSet = new HashSet<string>(rowLabels);
+        var colSet = new HashSet<string>(columnLabels);
+
+        // 4) 切り詰め後の集計を再構築。表示対象セル（rowSet × colSet）のみを対象に
+        //    rowAggregates / colAggregates / grand / cells を構築することで、
+        //    rowTotals == sum(visible cells per row) と grandTotal == sum(rowTotals) を一致させる。
+        var rowAggregates = new Dictionary<string, FlowAggregate>();
+        var colAggregates = new Dictionary<string, FlowAggregate>();
+        var grand = new FlowAggregate();
+        var cells = new Dictionary<string, IReadOnlyDictionary<string, CrosstabCell>>();
+
+        // フローセル：amount 等は flowRows から積み上げるが grandAmount は cell 構築より先に
+        // 確定する必要があるため、いったん集計用にループしたあと、改めてセル化する。
+        foreach (var row in flowRows)
+        {
+            if (!rowSet.Contains(row.RowKey) || !colSet.Contains(row.ColKey))
+            {
+                continue;
+            }
+            if (!rowAggregates.TryGetValue(row.RowKey, out var ra))
+            {
+                ra = new FlowAggregate();
+                rowAggregates[row.RowKey] = ra;
+            }
+            if (!colAggregates.TryGetValue(row.ColKey, out var ca))
+            {
+                ca = new FlowAggregate();
+                colAggregates[row.ColKey] = ca;
+            }
+            ra.Add(row);
+            ca.Add(row);
+            grand.Add(row);
+        }
+
+        // スナップショット：行/列/全体合計を 1 ループで構築（O(N²) を O(N) に改善）。
+        Dictionary<string, FlowSnapshotAggregate>? rowSnapshotAggregates = null;
+        Dictionary<string, FlowSnapshotAggregate>? colSnapshotAggregates = null;
+        FlowSnapshotAggregate? grandSnapshot = null;
+        if (!hasTimeAxis)
+        {
+            rowSnapshotAggregates = new Dictionary<string, FlowSnapshotAggregate>();
+            colSnapshotAggregates = new Dictionary<string, FlowSnapshotAggregate>();
+            grandSnapshot = new FlowSnapshotAggregate();
+            foreach (var ((rKey, cKey), snap) in snapshotMap)
+            {
+                // 切り詰めにより表示対象外となったキーのスナップショットも合計から除外する。
+                if (!rowSet.Contains(rKey) || !colSet.Contains(cKey))
+                {
+                    continue;
+                }
+                if (!rowSnapshotAggregates.TryGetValue(rKey, out var rs))
+                {
+                    rs = new FlowSnapshotAggregate();
+                    rowSnapshotAggregates[rKey] = rs;
+                }
+                if (!colSnapshotAggregates.TryGetValue(cKey, out var cs))
+                {
+                    cs = new FlowSnapshotAggregate();
+                    colSnapshotAggregates[cKey] = cs;
+                }
+                rs.Add(snap);
+                cs.Add(snap);
+                grandSnapshot.Add(snap);
+            }
+        }
+
+        var grandAmount = grand.Amount;
+
+        // 5) セルマップ構築（grandAmount 確定後に sharePercent を計算する）
+        foreach (var row in flowRows)
+        {
+            if (!rowSet.Contains(row.RowKey) || !colSet.Contains(row.ColKey))
+            {
+                continue;
+            }
+
+            if (!cells.TryGetValue(row.RowKey, out var rowCells))
+            {
+                rowCells = new Dictionary<string, CrosstabCell>();
+                cells[row.RowKey] = rowCells;
+            }
+
+            CrosstabSnapshotRow? snap = null;
+            if (!hasTimeAxis && snapshotMap.TryGetValue((row.RowKey, row.ColKey), out var s))
+            {
+                snap = s;
+            }
+
+            ((Dictionary<string, CrosstabCell>)rowCells)[row.ColKey] = BuildCell(
+                row.Amount,
+                row.Quantity,
+                row.GrossProfit,
+                row.StockDays,
+                snap,
+                grandAmount,
+                hasTimeAxis);
+        }
+
+        // 6) 行合計セル / 列合計セル / 総計セル
+        var rowTotals = new Dictionary<string, CrosstabCell>();
+        foreach (var label in rowLabels)
+        {
+            rowAggregates.TryGetValue(label, out var agg);
+            agg ??= new FlowAggregate();
+            CrosstabSnapshotRow? rowSnap = null;
+            if (rowSnapshotAggregates != null
+                && rowSnapshotAggregates.TryGetValue(label, out var rs))
+            {
+                rowSnap = rs.ToRow(label, string.Empty);
+            }
+            rowTotals[label] = BuildCell(
+                agg.Amount, agg.Quantity, agg.GrossProfit, agg.AverageStockDays(),
+                rowSnap, grandAmount, hasTimeAxis);
+        }
+
+        var columnTotals = new Dictionary<string, CrosstabCell>();
+        foreach (var label in columnLabels)
+        {
+            colAggregates.TryGetValue(label, out var agg);
+            agg ??= new FlowAggregate();
+            CrosstabSnapshotRow? colSnap = null;
+            if (colSnapshotAggregates != null
+                && colSnapshotAggregates.TryGetValue(label, out var cs))
+            {
+                colSnap = cs.ToRow(string.Empty, label);
+            }
+            columnTotals[label] = BuildCell(
+                agg.Amount, agg.Quantity, agg.GrossProfit, agg.AverageStockDays(),
+                colSnap, grandAmount, hasTimeAxis);
+        }
+
+        var grandSnap = grandSnapshot?.ToRow(string.Empty, string.Empty);
+        var grandTotal = BuildCell(
+            grand.Amount, grand.Quantity, grand.GrossProfit, grand.AverageStockDays(),
+            grandSnap, grandAmount, hasTimeAxis);
+
+        return new CrosstabMatrixResponse(
+            rowInfo,
+            colInfo,
+            rowLabels,
+            columnLabels,
+            cells,
+            rowTotals,
+            columnTotals,
+            grandTotal,
+            latestWeek.HasValue ? latestWeek.Value.ToString("yyyy-MM-dd") : null,
+            availableMetrics,
+            rowTruncated,
+            columnTruncated);
+    }
+
+    private static List<string> SortLabels(
+        Dictionary<string, FlowAggregate> aggregates,
+        CrosstabDimensionInfo info)
+    {
+        var labels = aggregates.Keys.ToList();
+        if (string.Equals(info.Category, "time", StringComparison.Ordinal))
+        {
+            // 時間軸: 文字列の昇順（YYYY / YYYY-Qn / YYYY-MM はそれで時系列順になる）
+            // ただし import_date が NULL（→ '(未設定)' に置換）の行は時系列の前後関係を持たないため
+            // カテゴリ軸と同様に末尾に固定する。
+            labels.Sort((a, b) =>
+            {
+                var aUnset = a == UnsetLabel;
+                var bUnset = b == UnsetLabel;
+                if (aUnset != bUnset)
+                {
+                    return aUnset ? 1 : -1;
+                }
+                return StringComparer.Ordinal.Compare(a, b);
+            });
+        }
+        else
+        {
+            // 行小計の amount 降順、未設定（'(未設定)'）は末尾
+            labels.Sort((a, b) =>
+            {
+                var aUnset = a == UnsetLabel;
+                var bUnset = b == UnsetLabel;
+                if (aUnset != bUnset)
+                {
+                    return aUnset ? 1 : -1;
+                }
+                var cmp = aggregates[b].Amount.CompareTo(aggregates[a].Amount);
+                return cmp != 0 ? cmp : StringComparer.Ordinal.Compare(a, b);
+            });
+        }
+        return labels;
+    }
+
+    /// <summary>セル値を構築する。在庫系は時間軸絡みなら null、構成比率は amount/grandAmount × 100。</summary>
+    private static CrosstabCell BuildCell(
+        long amount,
+        long quantity,
+        long grossProfit,
+        double? stockDays,
+        CrosstabSnapshotRow? snap,
+        long grandAmount,
+        bool hasTimeAxis)
+    {
+        var sharePercent = grandAmount == 0
+            ? (double?)null
+            : (double)amount / grandAmount * 100.0;
+
+        long? stock;
+        double? sellThroughRate;
+        double? stockDaysOut;
+        if (hasTimeAxis)
+        {
+            stock = null;
+            sellThroughRate = null;
+            stockDaysOut = null;
+        }
+        else
+        {
+            stock = snap?.Stock;
+            sellThroughRate = snap == null || snap.CumulativeDelivery == 0
+                ? (double?)null
+                : (double)snap.CumulativeSales / snap.CumulativeDelivery * 100.0;
+            stockDaysOut = stockDays;
+        }
+
+        return new CrosstabCell(new CrosstabCellValues(
+            amount,
+            quantity,
+            grossProfit,
+            sharePercent,
+            stockDaysOut,
+            sellThroughRate,
+            stock));
+    }
+
+    /// <summary>
+    /// CrosstabDimension の SQL 式（GROUP BY と SELECT に使う1つの式）を解決する。
+    /// 時間軸はクロス集計固有なのでここで直接定義し、カテゴリ系は
+    /// <see cref="CategoryDimensionSqlMap"/> を参照する（SQL 式の二重メンテ防止）。
+    /// </summary>
+    private static string ResolveCrosstabDimensionSql(CrosstabDimension dim) => dim switch
+    {
+        CrosstabDimension.TimeYear =>
+            "EXTRACT(YEAR FROM sw.import_date)::int::text",
+        CrosstabDimension.TimeQuarter =>
+            "EXTRACT(YEAR FROM sw.import_date)::int::text "
+            + "|| '-Q' || EXTRACT(QUARTER FROM sw.import_date)::int::text",
+        CrosstabDimension.TimeMonth =>
+            "to_char(sw.import_date, 'YYYY-MM')",
+        CrosstabDimension.CategoryDepartment => CategoryDimensionSqlMap["department"],
+        CrosstabDimension.CategoryBusinessType => CategoryDimensionSqlMap["businessType"],
+        CrosstabDimension.CategorySeason => CategoryDimensionSqlMap["season"],
+        CrosstabDimension.CategoryHinban => CategoryDimensionSqlMap["hinban"],
+        CrosstabDimension.CategoryProduct => CategoryDimensionSqlMap["product"],
+        CrosstabDimension.CategoryColor => CategoryDimensionSqlMap["color"],
+        CrosstabDimension.CategorySize => CategoryDimensionSqlMap["size"],
+        CrosstabDimension.CategoryChohyoKubun => CategoryDimensionSqlMap["chohyoKubun"],
+        CrosstabDimension.CategoryTanawari1 => CategoryDimensionSqlMap["tanawari1"],
+        CrosstabDimension.CategoryTanawari2 => CategoryDimensionSqlMap["tanawari2"],
+        CrosstabDimension.CategoryShohinKigo => CategoryDimensionSqlMap["shohinKigo"],
+        _ => throw new AppException(ErrorCodes.UnknownDimension, 400),
+    };
+
+    /// <summary>CrosstabDimension からフロント側に返す情報（Key/Category/Label/IsTimeAxis）を生成する。</summary>
+    private static CrosstabDimensionInfo ToInfo(CrosstabDimension dim) => dim switch
+    {
+        CrosstabDimension.TimeYear => new CrosstabDimensionInfo("time:year", "time", "年", true),
+        CrosstabDimension.TimeQuarter => new CrosstabDimensionInfo("time:quarter", "time", "四半期", true),
+        CrosstabDimension.TimeMonth => new CrosstabDimensionInfo("time:month", "time", "月", true),
+        CrosstabDimension.CategoryDepartment => new CrosstabDimensionInfo("category:department", "category", "部門", false),
+        CrosstabDimension.CategoryBusinessType => new CrosstabDimensionInfo("category:businessType", "category", "業態", false),
+        CrosstabDimension.CategorySeason => new CrosstabDimensionInfo("category:season", "category", "季節区分", false),
+        CrosstabDimension.CategoryHinban => new CrosstabDimensionInfo("category:hinban", "category", "品番3桁", false),
+        CrosstabDimension.CategoryProduct => new CrosstabDimensionInfo("category:product", "category", "単品（品番-単品）", false),
+        CrosstabDimension.CategoryColor => new CrosstabDimensionInfo("category:color", "category", "カラー", false),
+        CrosstabDimension.CategorySize => new CrosstabDimensionInfo("category:size", "category", "サイズ", false),
+        CrosstabDimension.CategoryChohyoKubun => new CrosstabDimensionInfo("category:chohyoKubun", "category", "帳票区分", false),
+        CrosstabDimension.CategoryTanawari1 => new CrosstabDimensionInfo("category:tanawari1", "category", "棚割1", false),
+        CrosstabDimension.CategoryTanawari2 => new CrosstabDimensionInfo("category:tanawari2", "category", "棚割2", false),
+        CrosstabDimension.CategoryShohinKigo => new CrosstabDimensionInfo("category:shohinKigo", "category", "商品記号", false),
+        _ => throw new AppException(ErrorCodes.UnknownDimension, 400),
+    };
 
     // ------------------------------------------------------------
     // 内部クエリ（呼び出し側が開いた接続を共有して逐次実行する）
@@ -622,42 +1065,42 @@ public sealed class SalesAnalyticsRepository
             new CommandDefinition(sql, parameters, cancellationToken: cancellationToken));
     }
 
+    /// <summary>
+    /// BreakdownDimension の SQL 式（GroupBy / KeyExpr / LabelExpr）を解決する。
+    /// 単品（Product）以外は <see cref="CategoryDimensionSqlMap"/> の式を3列とも同じに使う。
+    /// </summary>
     private static (string GroupBy, string KeyExpr, string LabelExpr) ResolveDimension(
-        BreakdownDimension dimension) => dimension switch
+        BreakdownDimension dimension)
     {
-        BreakdownDimension.Department =>
-            ("sw.department", "sw.department", "sw.department"),
-        BreakdownDimension.BusinessType =>
-            ("sw.gyotai_code", "sw.gyotai_code", "sw.gyotai_code"),
-        BreakdownDimension.Season =>
-            ("sw.kisetsu", "sw.kisetsu", "sw.kisetsu"),
-        BreakdownDimension.Color =>
-            ("sw.color", "sw.color", "sw.color"),
-        BreakdownDimension.Size =>
-            ("sw.size", "sw.size", "sw.size"),
-        BreakdownDimension.Product =>
-            // 商品マスタの自然キー (gyotai × shohin_kigou × hinban) を含めて一意化することで
-            // 同一 (hinban, tanpin) が複数業態で売られているケースの行衝突を防ぎ、
-            // m_product との JOIN を 1 対 1 に保つ。表示ラベルは品番-単品（label 列）。
-            ("sw.gyotai_code, sw.shohin_kigou, sw.hinban_code, sw.tanpin_code",
-             "sw.gyotai_code || '|' || sw.shohin_kigou || '|' || sw.hinban_code || '|' || sw.tanpin_code",
-             "sw.hinban_code || '-' || sw.tanpin_code"),
-        BreakdownDimension.Hinban =>
-            ("sw.hinban_code", "sw.hinban_code", "sw.hinban_code"),
-        BreakdownDimension.ChohyoKubun =>
-            ("sw.chohyo_kubun_name", "sw.chohyo_kubun_name", "sw.chohyo_kubun_name"),
-        BreakdownDimension.Tanawari1 =>
-            ("COALESCE(sw.tanawari1, '')",
-             "COALESCE(sw.tanawari1, '')",
-             "COALESCE(sw.tanawari1, '')"),
-        BreakdownDimension.Tanawari2 =>
-            ("COALESCE(sw.tanawari2, '')",
-             "COALESCE(sw.tanawari2, '')",
-             "COALESCE(sw.tanawari2, '')"),
-        BreakdownDimension.ShohinKigo =>
-            ("sw.shohin_kigou", "sw.shohin_kigou", "sw.shohin_kigou"),
-        _ => throw new AppException(ErrorCodes.UnknownDimension, 400),
-    };
+        // 商品マスタの自然キー (gyotai × shohin_kigou × hinban) を含めて一意化することで
+        // 同一 (hinban, tanpin) が複数業態で売られているケースの行衝突を防ぎ、
+        // m_product との JOIN を 1 対 1 に保つ。表示ラベルは品番-単品（label 列）。
+        if (dimension == BreakdownDimension.Product)
+        {
+            return (
+                "sw.gyotai_code, sw.shohin_kigou, sw.hinban_code, sw.tanpin_code",
+                "sw.gyotai_code || '|' || sw.shohin_kigou || '|' || sw.hinban_code || '|' || sw.tanpin_code",
+                "sw.hinban_code || '-' || sw.tanpin_code");
+        }
+
+        // 共通の SQL 式マップを参照して GroupBy/KeyExpr/LabelExpr 3列とも同じ式を割り当てる。
+        var key = dimension switch
+        {
+            BreakdownDimension.Department => "department",
+            BreakdownDimension.BusinessType => "businessType",
+            BreakdownDimension.Season => "season",
+            BreakdownDimension.Color => "color",
+            BreakdownDimension.Size => "size",
+            BreakdownDimension.Hinban => "hinban",
+            BreakdownDimension.ChohyoKubun => "chohyoKubun",
+            BreakdownDimension.Tanawari1 => "tanawari1",
+            BreakdownDimension.Tanawari2 => "tanawari2",
+            BreakdownDimension.ShohinKigo => "shohinKigo",
+            _ => throw new AppException(ErrorCodes.UnknownDimension, 400),
+        };
+        var expr = CategoryDimensionSqlMap[key];
+        return (expr, expr, expr);
+    }
 
     private static string MetricColumn(SalesMetric metric) => metric switch
     {
@@ -690,10 +1133,6 @@ public sealed class SalesAnalyticsRepository
     // 分母0は0を返す（ゼロ除算の防止）。
     private static double Ratio(long numerator, long denominator)
         => denominator == 0 ? 0.0 : (double)numerator / denominator;
-
-    // 売上金額ベースの構成比率（%）。分母0は0を返す。
-    private static double SharePercentByAmount(long amount, long totalAmount)
-        => totalAmount == 0 ? 0.0 : (double)amount / totalAmount * 100.0;
 
     private sealed record SnapshotRow(long Stock, long CumulativeSales, long CumulativeDelivery);
 
@@ -747,25 +1186,73 @@ public sealed class SalesAnalyticsRepository
         string? PrimaryImageUrl,
         int TotalCount);
 
-    private sealed record CrosstabRawRow(
-        string Key,
-        string Label,
-        string? Hinban,
-        string? Tanpin,
-        string? ShohinKigou,
-        string? Color,
-        string? Size,
-        string? Kisetsu,
-        Guid? MasterProductId,
-        string? ProductName,
-        string? Brand,
-        string? PrimaryImageUrl,
+    // ------------------------------------------------------------
+    // クロス集計マトリクスの内部レコード
+    // ------------------------------------------------------------
+
+    private sealed record CrosstabFlowRow(
+        string RowKey,
+        string ColKey,
         long Quantity,
         long Amount,
         long GrossProfit,
-        double StockDays,
+        double StockDays);
+
+    private sealed record CrosstabSnapshotRow(
+        string RowKey,
+        string ColKey,
         long Stock,
         long CumulativeSales,
-        long CumulativeDelivery,
-        long TotalAmount);
+        long CumulativeDelivery);
+
+    /// <summary>クロス集計のフロー指標（数量・金額・粗利・在日）の集計累計。</summary>
+    private sealed class FlowAggregate
+    {
+        public long Quantity { get; private set; }
+        public long Amount { get; private set; }
+        public long GrossProfit { get; private set; }
+        private double _stockDaysSum;
+        private int _stockDaysCount;
+
+        public void Add(CrosstabFlowRow row)
+        {
+            Quantity += row.Quantity;
+            Amount += row.Amount;
+            GrossProfit += row.GrossProfit;
+            _stockDaysSum += row.StockDays;
+            _stockDaysCount += 1;
+        }
+
+        /// <summary>セルごとの zainiti AVG を、行/列合計では単純平均する。データなしは null。</summary>
+        public double? AverageStockDays() => _stockDaysCount == 0
+            ? (double?)null
+            : _stockDaysSum / _stockDaysCount;
+    }
+
+    /// <summary>
+    /// クロス集計のスナップショット指標（在庫数・累計売上数・累計納品数）の集計累計。
+    /// 行ラベル単位・列ラベル単位・総計を一度のループで構築するために使う
+    /// （旧 AggregateSnapshotBy* メソッドの O(N×M) を O(N) に改善）。
+    /// </summary>
+    private sealed class FlowSnapshotAggregate
+    {
+        private long _stock;
+        private long _sales;
+        private long _delivery;
+        private bool _hasData;
+
+        public void Add(CrosstabSnapshotRow snap)
+        {
+            _stock += snap.Stock;
+            _sales += snap.CumulativeSales;
+            _delivery += snap.CumulativeDelivery;
+            _hasData = true;
+        }
+
+        /// <summary>累計の <see cref="CrosstabSnapshotRow"/> に変換する。データなしは null。</summary>
+        public CrosstabSnapshotRow? ToRow(string rowKey, string colKey)
+            => _hasData
+                ? new CrosstabSnapshotRow(rowKey, colKey, _stock, _sales, _delivery)
+                : null;
+    }
 }

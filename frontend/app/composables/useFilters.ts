@@ -100,5 +100,67 @@ export function useFilters(scopeKey: string = 'sales-filter') {
     }
   }
 
-  return { filter, options, optionsError, loadOptions, toQuery, reset, years, addToFilter }
+  // ============================================================
+  // セレクトオプション組立ヘルパー（FilterControls / CrossTabConditionPanel の重複削減）
+  //
+  // FilterControls.vue は `{ value, text }` 形式（MultiSelect コンポーネント用）、
+  // CrossTabConditionPanel.vue は `{ value, label }` 形式を使うため、
+  // ここでは生形（code + 表示名）のみを提供する。ラベル整形は呼び出し側で行う。
+  //
+  // **重要**: 既存の export を変更しないこと（他ページの FilterControls が依存）。
+  // 新規追加のみで対応する。
+  // ============================================================
+
+  /** 部門・季節区分の `{ value, label }` ペアリスト（'コード: 名称' 形式）。 */
+  function formatCodeNameOptions(
+    items: ReadonlyArray<{ code: string; name: string | null }> | undefined,
+  ): { value: string; label: string }[] {
+    return (items ?? []).map((item) => ({
+      value: item.code,
+      label: item.name ? `${item.code}: ${item.name}` : item.code,
+    }))
+  }
+
+  /** 業態の `{ value, label }` ペアリスト（'コード: 名称 (略称)' 形式）。 */
+  function formatBusinessTypeOptions(
+    items: ReadonlyArray<{ code: string; name: string | null; shortName: string | null }> | undefined,
+  ): { value: string; label: string }[] {
+    return (items ?? []).map((item) => ({
+      value: item.code,
+      label: item.name
+        ? item.shortName
+          ? `${item.code}: ${item.name} (${item.shortName})`
+          : `${item.code}: ${item.name}`
+        : item.code,
+    }))
+  }
+
+  /** チップ式マルチセレクト用：部門の選択肢。 */
+  const departmentChipOptions = computed(() =>
+    formatCodeNameOptions(options.value?.departments),
+  )
+
+  /** チップ式マルチセレクト用：業態の選択肢。 */
+  const businessTypeChipOptions = computed(() =>
+    formatBusinessTypeOptions(options.value?.businessTypes),
+  )
+
+  /** チップ式マルチセレクト用：季節区分の選択肢。 */
+  const seasonChipOptions = computed(() =>
+    formatCodeNameOptions(options.value?.seasons),
+  )
+
+  return {
+    filter,
+    options,
+    optionsError,
+    loadOptions,
+    toQuery,
+    reset,
+    years,
+    addToFilter,
+    departmentChipOptions,
+    businessTypeChipOptions,
+    seasonChipOptions,
+  }
 }
