@@ -122,7 +122,11 @@ function handleProductDrill(row: ProductRow): void {
     return
   }
   addToFilter('hinbans', row.hinbanCode)
-  void navigateTo({ path: '/crosstab', query: { dimension: 'product' } })
+  // 新クロス集計仕様: 行=単品、列=年。
+  void navigateTo({
+    path: '/crosstab',
+    query: { rowDimension: 'category:product', columnDimension: 'time:year' },
+  })
 }
 
 onMounted(async () => {

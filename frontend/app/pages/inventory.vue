@@ -104,12 +104,20 @@ async function load(): Promise<void> {
 }
 
 function handleKpiDrill(): void {
-  navigateTo({ path: '/crosstab', query: { dimension: 'department' } })
+  // 新クロス集計仕様: 行=部門、列=年。
+  navigateTo({
+    path: '/crosstab',
+    query: { rowDimension: 'category:department', columnDimension: 'time:year' },
+  })
 }
 
 function handleDepartmentDrill(row: InventoryBreakdownRow): void {
   addToFilter('departments', row.key)
-  navigateTo({ path: '/crosstab', query: { dimension: 'hinban' } })
+  // 部門ドリル後は品番3桁 × 年で深掘り。
+  navigateTo({
+    path: '/crosstab',
+    query: { rowDimension: 'category:hinban', columnDimension: 'time:year' },
+  })
 }
 
 onMounted(async () => {

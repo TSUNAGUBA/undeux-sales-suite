@@ -185,41 +185,109 @@ export interface SalesFilterState {
   hinbans: string[]
 }
 
-/** クロス集計の基本項目（単品レベル時のみ非null）。商品マスタが解決できれば商品名・画像も含む。 */
-export interface CrosstabBasicItems {
-  hinban: string
-  tanpin: string
-  hinmei: string
-  shohinKigo: string
-  color: string
-  size: string
-  kisetsu: string
-  masterProductId: string | null
-  productName: string | null
-  brand: string | null
-  primaryImageUrl: string | null
-}
+// ============================================================
+// クロス集計（行×列マトリクス）
+// ============================================================
 
-/** クロス集計の1行。 */
-export interface CrosstabRow {
-  key: string
+/**
+ * クロス集計のディメンションキー。
+ * - 時間軸: `time:year`, `time:quarter`, `time:month`
+ * - カテゴリ軸: `category:department`, `category:businessType`, `category:season`,
+ *   `category:hinban`, `category:product`, `category:color`, `category:size`,
+ *   `category:chohyoKubun`, `category:tanawari1`, `category:tanawari2`, `category:shohinKigo`
+ */
+export type CrosstabDimensionKey =
+  | 'time:year'
+  | 'time:quarter'
+  | 'time:month'
+  | 'category:department'
+  | 'category:businessType'
+  | 'category:season'
+  | 'category:hinban'
+  | 'category:product'
+  | 'category:color'
+  | 'category:size'
+  | 'category:chohyoKubun'
+  | 'category:tanawari1'
+  | 'category:tanawari2'
+  | 'category:shohinKigo'
+
+/** クロス集計のメトリクスキー。 */
+export type CrosstabMetricKey =
+  | 'amount'
+  | 'quantity'
+  | 'grossProfit'
+  | 'sharePercent'
+  | 'stockDays'
+  | 'sellThroughRate'
+  | 'stock'
+
+/** ディメンションの表示情報。バックエンドが返す行・列メタ情報。 */
+export interface CrosstabDimensionInfo {
+  key: CrosstabDimensionKey
+  /** 'time' または 'category'。 */
+  category: 'time' | 'category'
   label: string
-  basicItems: CrosstabBasicItems | null
-  quantity: number
-  amount: number
-  grossProfit: number
-  sharePercent: number
-  stock: number
-  stockDays: number
-  sellThroughRate: number
+  /**
+   * 時間軸ディメンション（年・四半期・月）かどうか。
+   * 在庫系メトリクスの利用可否判定は本フィールドを SoT とし、
+   * フロント側の文字列前方一致判定（`key.startsWith('time:')`）は使わない。
+   */
+  isTimeAxis: boolean
 }
 
-/** クロス集計のレスポンス（売上金額の降順）。 */
-export interface CrosstabResponse {
-  dimension: string
-  rows: CrosstabRow[]
-  latestWeek: string | null
+/** メトリクスのカタログ情報（フロント側で定義）。 */
+export interface CrosstabMetricInfo {
+  key: CrosstabMetricKey
+  label: string
+  /** セル値のフォーマット種別。 */
+  format: 'currency' | 'number' | 'decimal' | 'percent'
 }
+
+/** 1セルの値（在庫系は時間軸絡みの場合 null）。 */
+export interface CrosstabCellValues {
+  amount: number | null
+  quantity: number | null
+  grossProfit: number | null
+  sharePercent: number | null
+  stockDays: number | null
+  sellThroughRate: number | null
+  stock: number | null
+}
+
+/** 1セル。 */
+export interface CrosstabCell {
+  values: CrosstabCellValues
+}
+
+/** クロス集計マトリクスのレスポンス。 */
+export interface CrosstabMatrixResponse {
+  rowDimension: CrosstabDimensionInfo
+  columnDimension: CrosstabDimensionInfo
+  /** 行ラベルの順序付きリスト（最大100件）。 */
+  rowLabels: string[]
+  /** 列ラベルの順序付きリスト（最大100件）。 */
+  columnLabels: string[]
+  /** [行ラベル][列ラベル] = CrosstabCell。空セルは省略。 */
+  cells: Record<string, Record<string, CrosstabCell>>
+  /** 行ごとの合計（最終列）。表示行の和と一致する。 */
+  rowTotals: Record<string, CrosstabCell>
+  /** 列ごとの合計（最終行）。表示列の和と一致する。 */
+  columnTotals: Record<string, CrosstabCell>
+  /** 総計（右下セル）。切り詰め後でも rowTotals/columnTotals/cells の和と完全に整合する。 */
+  grandTotal: CrosstabCell
+  /** 在庫スナップショット基準週（時間軸絡みでない場合）。 */
+  latestWeek: string | null
+  /** 利用可能なメトリクスキー一覧。時間軸絡みなら在庫系は除外される。 */
+  availableMetrics: CrosstabMetricKey[]
+  /** 行ラベルが 100 件で切り詰められたか。 */
+  rowTruncated: boolean
+  /** 列ラベルが 100 件で切り詰められたか。 */
+  columnTruncated: boolean
+}
+
+/** 複数メトリクスのセル表示モード。 */
+export type MetricDisplayMode = 'stacked' | 'inlineColumns'
 
 // ============================================================
 // 商品マスタ（m_product / m_product_sku）

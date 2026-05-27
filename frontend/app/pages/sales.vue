@@ -105,7 +105,8 @@ async function load(): Promise<void> {
 
 function handleBreakdownDrill(row: BreakdownRow): void {
   const currentDim = dimension.value
-  let targetDim = 'hinban'
+  // 新クロス集計仕様: 行=対応するカテゴリ軸、列=年（時間軸との組合せでトレンドを併覧）。
+  let targetRow = 'category:hinban'
 
   if (currentDim === 'department') {
     addToFilter('departments', row.key)
@@ -121,16 +122,19 @@ function handleBreakdownDrill(row: BreakdownRow): void {
     if (hinban) {
       addToFilter('hinbans', hinban)
     }
-    targetDim = 'product'
+    targetRow = 'category:product'
   }
   // color / size はフィルター追加対象がないため、対応する集計単位のまま遷移
   if (currentDim === 'color') {
-    targetDim = 'color'
+    targetRow = 'category:color'
   } else if (currentDim === 'size') {
-    targetDim = 'size'
+    targetRow = 'category:size'
   }
 
-  navigateTo({ path: '/crosstab', query: { dimension: targetDim } })
+  navigateTo({
+    path: '/crosstab',
+    query: { rowDimension: targetRow, columnDimension: 'time:year' },
+  })
 }
 
 onMounted(async () => {

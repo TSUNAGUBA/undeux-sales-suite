@@ -95,7 +95,11 @@ async function load(): Promise<void> {
 }
 
 function handleKpiDrill(): void {
-  navigateTo({ path: '/crosstab', query: { dimension: 'department' } })
+  // 新クロス集計仕様: 行=部門、列=年（カテゴリ × 時間軸の代表組合せ）。
+  navigateTo({
+    path: '/crosstab',
+    query: { rowDimension: 'category:department', columnDimension: 'time:year' },
+  })
 }
 
 onMounted(async () => {
