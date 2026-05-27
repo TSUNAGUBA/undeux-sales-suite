@@ -237,114 +237,6 @@ const summaryText = computed(() => {
       class="border-t border-slate-100 px-4 pb-4 pt-3"
     >
       <div class="grid grid-cols-1 gap-4 lg:grid-cols-3">
-        <!-- 集計単位 -->
-        <div class="lg:col-span-1">
-          <h3 class="mb-2 text-xs uppercase tracking-wider text-slate-500">
-            集計単位（行・列）
-          </h3>
-          <p class="mb-2 text-xs text-slate-400">
-            変更すると即座に再集計されます。
-          </p>
-          <div class="space-y-2">
-            <div>
-              <label class="mb-1 block text-xs font-medium text-slate-500">行（縦軸）</label>
-              <select
-                :value="rowDimensionKey"
-                class="w-full rounded-lg border border-slate-300 bg-white px-3 py-2 text-sm"
-                :disabled="loading"
-                @change="setRow(($event.target as HTMLSelectElement).value)"
-              >
-                <option v-for="d in rowChoices" :key="d.key" :value="d.key">
-                  {{ d.label }}
-                </option>
-              </select>
-            </div>
-            <div>
-              <label class="mb-1 block text-xs font-medium text-slate-500">列（横軸）</label>
-              <select
-                :value="columnDimensionKey"
-                class="w-full rounded-lg border border-slate-300 bg-white px-3 py-2 text-sm"
-                :disabled="loading"
-                @change="setCol(($event.target as HTMLSelectElement).value)"
-              >
-                <option v-for="d in colChoices" :key="d.key" :value="d.key">
-                  {{ d.label }}
-                </option>
-              </select>
-            </div>
-            <button
-              type="button"
-              class="inline-flex items-center gap-1.5 rounded-lg border border-slate-300 px-3 py-1.5 text-xs text-slate-700 hover:bg-slate-50"
-              :disabled="loading"
-              @click="emit('swapDimensions')"
-            >
-              <ArrowLeftRight class="h-3.5 w-3.5" />
-              行 ⇄ 列 を入替
-            </button>
-          </div>
-        </div>
-
-        <!-- 集計値（メトリクス） -->
-        <div class="lg:col-span-1">
-          <h3 class="mb-2 text-xs uppercase tracking-wider text-slate-500">
-            表示する集計値
-          </h3>
-          <div class="flex flex-col gap-1.5">
-            <label
-              v-for="m in metrics"
-              :key="m.key"
-              class="flex items-center gap-2 text-sm"
-              :class="
-                isMetricDisabled(m.key)
-                  ? 'cursor-not-allowed text-slate-300'
-                  : 'cursor-pointer text-slate-700'
-              "
-            >
-              <input
-                type="checkbox"
-                :checked="selectedMetrics.includes(m.key)"
-                :disabled="isMetricDisabled(m.key)"
-                class="accent-indigo-600 disabled:opacity-40"
-                @change="toggleMetric(m.key)"
-              >
-              {{ m.label }}
-              <span v-if="isMetricDisabled(m.key)" class="text-xs text-slate-400">
-                （時間軸では利用不可）
-              </span>
-            </label>
-          </div>
-
-          <div v-if="selectedMetrics.length >= 2" class="mt-3">
-            <label class="mb-1 block text-xs font-medium text-slate-500">複数集計値の表示方法</label>
-            <div class="flex gap-2">
-              <button
-                type="button"
-                class="rounded-lg border px-3 py-1.5 text-xs"
-                :class="
-                  metricDisplayMode === 'stacked'
-                    ? 'border-indigo-500 bg-indigo-50 text-indigo-700'
-                    : 'border-slate-300 bg-white text-slate-600 hover:bg-slate-50'
-                "
-                @click="setDisplayMode('stacked')"
-              >
-                セル内で縦並び
-              </button>
-              <button
-                type="button"
-                class="rounded-lg border px-3 py-1.5 text-xs"
-                :class="
-                  metricDisplayMode === 'inlineColumns'
-                    ? 'border-indigo-500 bg-indigo-50 text-indigo-700'
-                    : 'border-slate-300 bg-white text-slate-600 hover:bg-slate-50'
-                "
-                @click="setDisplayMode('inlineColumns')"
-              >
-                列を増やして横並び
-              </button>
-            </div>
-          </div>
-        </div>
-
         <!-- フィルター（主要 + 詳細） -->
         <div class="lg:col-span-1">
           <h3 class="mb-2 text-xs uppercase tracking-wider text-slate-500">
@@ -475,6 +367,114 @@ const summaryText = computed(() => {
             </div>
           </div>
         </div>
+        <!-- 集計単位 -->
+        <div class="lg:col-span-1">
+          <h3 class="mb-2 text-xs uppercase tracking-wider text-slate-500">
+            集計単位（行・列）
+          </h3>
+          <p class="mb-2 text-xs text-slate-400">
+            変更すると即座に再集計されます。
+          </p>
+          <div class="space-y-2">
+            <div>
+              <label class="mb-1 block text-xs font-medium text-slate-500">行（縦軸）</label>
+              <select
+                :value="rowDimensionKey"
+                class="w-full rounded-lg border border-slate-300 bg-white px-3 py-2 text-sm"
+                :disabled="loading"
+                @change="setRow(($event.target as HTMLSelectElement).value)"
+              >
+                <option v-for="d in rowChoices" :key="d.key" :value="d.key">
+                  {{ d.label }}
+                </option>
+              </select>
+            </div>
+            <div>
+              <label class="mb-1 block text-xs font-medium text-slate-500">列（横軸）</label>
+              <select
+                :value="columnDimensionKey"
+                class="w-full rounded-lg border border-slate-300 bg-white px-3 py-2 text-sm"
+                :disabled="loading"
+                @change="setCol(($event.target as HTMLSelectElement).value)"
+              >
+                <option v-for="d in colChoices" :key="d.key" :value="d.key">
+                  {{ d.label }}
+                </option>
+              </select>
+            </div>
+            <button
+              type="button"
+              class="inline-flex items-center gap-1.5 rounded-lg border border-slate-300 px-3 py-1.5 text-xs text-slate-700 hover:bg-slate-50"
+              :disabled="loading"
+              @click="emit('swapDimensions')"
+            >
+              <ArrowLeftRight class="h-3.5 w-3.5" />
+              行 ⇄ 列 を入替
+            </button>
+          </div>
+        </div>
+
+        <!-- 集計値（メトリクス） -->
+        <div class="lg:col-span-1">
+          <h3 class="mb-2 text-xs uppercase tracking-wider text-slate-500">
+            表示する集計値
+          </h3>
+          <div class="flex flex-col gap-1.5">
+            <label
+              v-for="m in metrics"
+              :key="m.key"
+              class="flex items-center gap-2 text-sm"
+              :class="
+                isMetricDisabled(m.key)
+                  ? 'cursor-not-allowed text-slate-300'
+                  : 'cursor-pointer text-slate-700'
+              "
+            >
+              <input
+                type="checkbox"
+                :checked="selectedMetrics.includes(m.key)"
+                :disabled="isMetricDisabled(m.key)"
+                class="accent-indigo-600 disabled:opacity-40"
+                @change="toggleMetric(m.key)"
+              >
+              {{ m.label }}
+              <span v-if="isMetricDisabled(m.key)" class="text-xs text-slate-400">
+                （時間軸では利用不可）
+              </span>
+            </label>
+          </div>
+
+          <div v-if="selectedMetrics.length >= 2" class="mt-3">
+            <label class="mb-1 block text-xs font-medium text-slate-500">複数集計値の表示方法</label>
+            <div class="flex gap-2">
+              <button
+                type="button"
+                class="rounded-lg border px-3 py-1.5 text-xs"
+                :class="
+                  metricDisplayMode === 'stacked'
+                    ? 'border-indigo-500 bg-indigo-50 text-indigo-700'
+                    : 'border-slate-300 bg-white text-slate-600 hover:bg-slate-50'
+                "
+                @click="setDisplayMode('stacked')"
+              >
+                セル内で縦並び
+              </button>
+              <button
+                type="button"
+                class="rounded-lg border px-3 py-1.5 text-xs"
+                :class="
+                  metricDisplayMode === 'inlineColumns'
+                    ? 'border-indigo-500 bg-indigo-50 text-indigo-700'
+                    : 'border-slate-300 bg-white text-slate-600 hover:bg-slate-50'
+                "
+                @click="setDisplayMode('inlineColumns')"
+              >
+                列を増やして横並び
+              </button>
+            </div>
+          </div>
+        </div>
+
       </div>
 
       <!-- 操作ボタン -->
