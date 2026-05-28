@@ -2,11 +2,16 @@
 // コロン区切りでスコープを表現する。useState キーはハイフン区切り（Nuxt のキー慣習）。
 const STORAGE_KEY = 'undeuxsales:sidebar:collapsed'
 
-// サイドバー幅クラスを 1 箇所に集約（SoT）。
-// 将来サイズを変えるときはここだけ書き換える。Tailwind JIT 検出のため
-// 完全なクラス名リテラルを保持する。
-const WIDTH_CLASS_EXPANDED = 'w-64'
-const WIDTH_CLASS_COLLAPSED = 'w-16'
+/**
+ * サイドバー幅クラスの SoT。AppSidebar 側はこの定数を import して
+ * `:class` に流す。将来サイズを変えるときはここだけ書き換える。
+ * Tailwind JIT 検出のため完全なクラス名リテラルを保持する。
+ */
+export const SIDEBAR_WIDTH_EXPANDED = 'w-64'
+export const SIDEBAR_WIDTH_COLLAPSED = 'w-16'
+
+// メイン領域のパディングクラスの SoT。サイドバー幅と必ず対応させる
+// （変更時は両方を同時に更新すること）。
 const LG_MAIN_PADDING_EXPANDED = 'lg:pl-64'
 const LG_MAIN_PADDING_COLLAPSED = 'lg:pl-16'
 
@@ -51,9 +56,10 @@ function removeStoredCollapsed(): void {
  * - `transitionsEnabled`: 初回マウント完了後に true。永続化された collapsed=true の
  *   ユーザーが、最初の paint で展開→折りたたみのアニメーションを見ない（FOUC 抑止）。
  *
- * 派生クラス（SoT を 1 箇所に集約）:
- * - `sidebarWidthClass`: サイドバー本体の幅クラス（`w-16` / `w-64`）
- * - `mainPaddingClass`: メイン領域の左パディングクラス（`lg:pl-16` / `lg:pl-64`）
+ * 派生クラス（PC レイアウト専用、`lg:` プレフィックス付きのためモバイル時は効かない）:
+ * - `mainPaddingClass`: メイン領域の左パディングクラス（`lg:pl-16` / `lg:pl-64`）。
+ *   サイドバー本体の幅は AppSidebar 側で `SIDEBAR_WIDTH_*` 定数を import して
+ *   切替える。両者は同じ SoT（本ファイルの定数）から派生する。
  *
  * 副作用フック（呼び出し側が onMounted で start、onBeforeUnmount で cleanup を呼ぶ）:
  * - `subscribeStorageSync`: 他タブとの開閉状態同期
@@ -67,9 +73,10 @@ export function useSidebar() {
   const mobileOpen = useState<boolean>('sidebar-mobile-open', () => false)
   const transitionsEnabled = useState<boolean>('sidebar-transitions-enabled', () => false)
 
-  const sidebarWidthClass = computed(() =>
-    collapsed.value ? WIDTH_CLASS_COLLAPSED : WIDTH_CLASS_EXPANDED,
-  )
+  /**
+   * メイン領域のパディングクラス。`lg:` プレフィックス付きのため PC 時のみ有効。
+   * モバイル時は値が変動してもレイアウトには影響しない（クラスが効かないため）。
+   */
   const mainPaddingClass = computed(() =>
     collapsed.value ? LG_MAIN_PADDING_COLLAPSED : LG_MAIN_PADDING_EXPANDED,
   )
@@ -91,10 +98,15 @@ export function useSidebar() {
     transitionsEnabled.value = true
   }
 
-  /** ログアウト時に呼び出し、別ユーザーへ設定が引き継がれないようにする。 */
+  /**
+   * ログアウト時に呼び出し、別ユーザーへ設定が引き継がれないようにする。
+   * `transitionsEnabled` も false に戻すことで、再ログイン後の初回描画でも
+   * FOUC 抑止のフローを再走させる。
+   */
   function clearStored(): void {
     removeStoredCollapsed()
     collapsed.value = false
+    transitionsEnabled.value = false
   }
 
   /**
@@ -129,7 +141,9 @@ export function useSidebar() {
         mobileOpen.value = false
       }
     }
-    // 初期判定: PC 幅にいる場合は念のため閉じる。
+    // 初期状態のサニタイズ: PC 幅ロード時に mobileOpen が（HMR や将来の永続化等で）
+    // true で復元される可能性に備えて閉じておく。useState 初期値 false の現状では
+    // no-op になる防御層。
     if (mql.matches) {
       mobileOpen.value = false
     }
@@ -141,7 +155,6 @@ export function useSidebar() {
     collapsed,
     mobileOpen,
     transitionsEnabled,
-    sidebarWidthClass,
     mainPaddingClass,
     toggleCollapsed,
     closeMobile,

@@ -54,7 +54,8 @@ const mainPaddingTransitionClass = computed(() =>
       これによりメインコンテンツの高さ・スクロールの影響を一切受けない。
     - メイン領域は overflow-hidden + main の overflow-y-auto により、
       ページ全体ではなく main 内部だけがスクロールする。
-    - サイドバーの幅は useSidebar の sidebarWidthClass で AppSidebar 側に一本化。
+    - サイドバー幅とメイン領域パディングは useSidebar の SIDEBAR_WIDTH_* 定数を
+      SoT として AppSidebar / useSidebar.mainPaddingClass がそれぞれ参照する。
       外側の固定ラッパーは位置（fixed inset-y-0）のみを担当する。
   -->
   <div class="flex h-screen overflow-hidden">
@@ -80,6 +81,7 @@ const mainPaddingTransitionClass = computed(() =>
         <AppSidebar
           :sidebar-id="SIDEBAR_MOBILE_DOM_ID"
           :show-close-button="true"
+          :transitions-enabled="transitionsEnabled"
           @navigate="closeMobile"
           @close="closeMobile"
         />

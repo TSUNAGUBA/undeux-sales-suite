@@ -12,18 +12,28 @@ import {
   ChevronRight,
   X,
 } from 'lucide-vue-next'
+import { SIDEBAR_WIDTH_EXPANDED, SIDEBAR_WIDTH_COLLAPSED } from '~/composables/useSidebar'
 
 const props = withDefaults(
   defineProps<{
     /** 折りたたみ（アイコンのみ）表示するか。PC（lg+）でのみ意味を持つ。 */
     collapsed?: boolean
-    /** PC 用の折りたたみトグルボタンを表示するか。 */
+    /**
+     * PC 用の折りたたみトグルボタンを表示するか。
+     * `showCloseButton` と排他。両方 true を指定した場合は本ボタンが優先される。
+     */
     showCollapseToggle?: boolean
-    /** モバイル用のドロワー閉じるボタンを表示するか。 */
+    /**
+     * モバイル用のドロワー閉じるボタンを表示するか。
+     * `showCollapseToggle` と排他。両方 true を指定した場合は表示されない。
+     */
     showCloseButton?: boolean
     /** aria-controls の参照先 ID。トグルボタンとの関連付けに使う。 */
     sidebarId?: string
-    /** 初回マウント完了までトランジションを抑止するか。FOUC 防止のため。 */
+    /**
+     * 初回マウント完了までトランジションを抑止するか。FOUC 防止のため、
+     * デフォルトは false。利用者は親レイアウトの onMounted 後に true を渡すこと。
+     */
     transitionsEnabled?: boolean
   }>(),
   {
@@ -31,7 +41,7 @@ const props = withDefaults(
     showCollapseToggle: false,
     showCloseButton: false,
     sidebarId: undefined,
-    transitionsEnabled: true,
+    transitionsEnabled: false,
   },
 )
 
@@ -74,7 +84,11 @@ async function handleLogout(): Promise<void> {
 }
 
 // テンプレートを薄くするため class 切替は computed に集約する。
-const asideWidthClass = computed(() => (props.collapsed ? 'w-16' : 'w-64'))
+// 幅クラスは useSidebar の定数（SoT）を参照することで、useSidebar 側の
+// mainPaddingClass と必ず対応するサイズに揃える。
+const asideWidthClass = computed(() =>
+  props.collapsed ? SIDEBAR_WIDTH_COLLAPSED : SIDEBAR_WIDTH_EXPANDED,
+)
 const asideTransitionClass = computed(() =>
   props.transitionsEnabled ? 'transition-[width] duration-200 ease-out' : '',
 )

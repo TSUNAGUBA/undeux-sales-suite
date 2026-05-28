@@ -37,6 +37,8 @@ export function useAuth() {
       await signOut($firebaseAuth)
     }
     // 共有端末で前ユーザーのサイドバー開閉設定が引き継がれないようにクリアする。
+    // signOut 失敗時は例外で抜けるためここに到達しない（=実際にログアウトしていない
+    // ときは UI 設定を維持する）。これは意図的な挙動。
     useSidebar().clearStored()
   }
 
