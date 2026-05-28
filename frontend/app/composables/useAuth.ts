@@ -36,6 +36,8 @@ export function useAuth() {
     if ($firebaseAuth) {
       await signOut($firebaseAuth)
     }
+    // 共有端末で前ユーザーのサイドバー開閉設定が引き継がれないようにクリアする。
+    useSidebar().clearStored()
   }
 
   /** APIリクエスト用のFirebase IDトークンを取得する。未認証時は null。 */

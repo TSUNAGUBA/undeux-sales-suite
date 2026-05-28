@@ -1,15 +1,49 @@
 <script setup lang="ts">
-import { Menu, X } from 'lucide-vue-next'
+import { Menu } from 'lucide-vue-next'
 
-// サイドバーの開閉状態（PC: 折りたたみ / モバイル: ドロワー）は composable に集約。
-// PC の折りたたみ状態は localStorage で永続化される。
+// サイドバーの開閉状態（PC: 折りたたみ / モバイル: ドロワー）と派生クラスは
+// 全て useSidebar に集約されている。幅・パディング値は composable 側を SoT とする。
 const {
   collapsed,
   mobileOpen,
+  transitionsEnabled,
+  mainPaddingClass,
   toggleCollapsed,
   closeMobile,
   toggleMobile,
+  enableTransitions,
+  subscribeStorageSync,
+  subscribeBreakpoint,
 } = useSidebar()
+
+let detachStorageSync: (() => void) | null = null
+let detachBreakpointSync: (() => void) | null = null
+
+onMounted(() => {
+  // 初期マウントが完了したフレームでトランジションを有効化する。
+  // 永続化された collapsed=true で再描画されるユーザーが、最初の paint で
+  // 展開→折りたたみのアニメーションを見ないようにする（FOUC 抑止）。
+  nextTick(() => {
+    enableTransitions()
+  })
+
+  detachStorageSync = subscribeStorageSync()
+  detachBreakpointSync = subscribeBreakpoint()
+})
+
+onBeforeUnmount(() => {
+  detachStorageSync?.()
+  detachStorageSync = null
+  detachBreakpointSync?.()
+  detachBreakpointSync = null
+})
+
+const SIDEBAR_DOM_ID = 'app-sidebar'
+const SIDEBAR_MOBILE_DOM_ID = 'app-sidebar-mobile-drawer'
+
+const mainPaddingTransitionClass = computed(() =>
+  transitionsEnabled.value ? 'transition-[padding] duration-200 ease-out' : '',
+)
 </script>
 
 <template>
@@ -20,16 +54,17 @@ const {
       これによりメインコンテンツの高さ・スクロールの影響を一切受けない。
     - メイン領域は overflow-hidden + main の overflow-y-auto により、
       ページ全体ではなく main 内部だけがスクロールする。
+    - サイドバーの幅は useSidebar の sidebarWidthClass で AppSidebar 側に一本化。
+      外側の固定ラッパーは位置（fixed inset-y-0）のみを担当する。
   -->
   <div class="flex h-screen overflow-hidden">
-    <!-- デスクトップ: 画面に固定するサイドバー（fixed） -->
-    <div
-      class="hidden lg:fixed lg:inset-y-0 lg:left-0 lg:z-30 lg:block"
-      :class="collapsed ? 'lg:w-16' : 'lg:w-64'"
-    >
+    <!-- デスクトップ: ビューポート左端に固定するサイドバー（fixed） -->
+    <div class="hidden lg:fixed lg:inset-y-0 lg:left-0 lg:z-30 lg:block">
       <AppSidebar
+        :sidebar-id="SIDEBAR_DOM_ID"
         :collapsed="collapsed"
         :show-collapse-toggle="true"
+        :transitions-enabled="transitionsEnabled"
         @toggle-collapsed="toggleCollapsed"
       />
     </div>
@@ -42,30 +77,35 @@ const {
         @click="closeMobile"
       />
       <div class="absolute inset-y-0 left-0 z-50">
-        <AppSidebar @navigate="closeMobile" />
+        <AppSidebar
+          :sidebar-id="SIDEBAR_MOBILE_DOM_ID"
+          :show-close-button="true"
+          @navigate="closeMobile"
+          @close="closeMobile"
+        />
       </div>
     </div>
 
     <!--
-      メインコンテンツ。PC ではサイドバーが fixed なので、サイドバー幅分のパディング
-      で本文の開始位置をずらす。折りたたみ状態に応じて pl-16 / pl-64 を切替える。
+      メインコンテンツ。PC ではサイドバーが fixed なので、サイドバー幅分のパディングで
+      本文の開始位置をずらす。パディング値は useSidebar.mainPaddingClass に一本化。
     -->
     <div
-      class="flex min-w-0 flex-1 flex-col transition-[padding] duration-200 ease-out"
-      :class="collapsed ? 'lg:pl-16' : 'lg:pl-64'"
+      class="flex min-w-0 flex-1 flex-col"
+      :class="[mainPaddingClass, mainPaddingTransitionClass]"
     >
       <header
         class="flex items-center gap-3 border-b border-slate-200 bg-white px-4 py-3 lg:hidden"
       >
         <button
           type="button"
-          class="rounded-lg p-2 text-slate-600 hover:bg-slate-100"
-          :aria-label="mobileOpen ? 'メニューを閉じる' : 'メニューを開く'"
+          class="flex h-11 w-11 items-center justify-center rounded-lg text-slate-600 hover:bg-slate-100"
+          aria-label="メニューを開く"
           :aria-expanded="mobileOpen"
+          :aria-controls="SIDEBAR_MOBILE_DOM_ID"
           @click="toggleMobile"
         >
-          <X v-if="mobileOpen" class="h-5 w-5" />
-          <Menu v-else class="h-5 w-5" />
+          <Menu class="h-5 w-5" />
         </button>
         <span class="font-bold text-slate-800">UndeuxSales</span>
       </header>
