@@ -138,6 +138,266 @@ public sealed class SalesAnalyticsRepository
         return new BreakdownResponse(dimension.ToString(), metric.ToString(), rows);
     }
 
+    // ------------------------------------------------------------
+    // ランキング分析（単軸ランキング + 期間比較。順位・複合スコア・ABC はフロント射影）
+    // ------------------------------------------------------------
+
+    /// <summary>ランキングで返却する最大行数。単軸のためクロス集計より大きめに取る。</summary>
+    private const int MaxRankingRows = 1000;
+
+    /// <summary>ランキング分析クエリの遅さを警告するしきい値（ms）。比較ありは最大2期間ぶん走る。</summary>
+    private const int RankingSlowQueryWarningThresholdMs = 1500;
+
+    /// <summary>
+    /// 単軸ランキングの集計素材を取得する。主期間と任意の比較期間について、ディメンション別の
+    /// フロー指標（数量・金額・粗利）と最新週スナップショット指標（在庫・消化率・在日）を集計する。
+    /// </summary>
+    /// <remarks>
+    /// 順位・複合スコア・累積構成比・ABC ランクは、ユーザーが対話的に選ぶ並び替え指標・重みに依存する
+    /// 表示射影であるため、フロント側で本素材から算出する（クロス集計の表示モード切替と同じ思想）。
+    /// 集計の SoT は <c>sales_weekly</c>。返却順は顕著性（主／比較の売上金額の大きい方）降順で、
+    /// フロントはそこから選択指標・複合スコアで再ソートして順位を確定する。
+    /// </remarks>
+    /// <param name="primaryFilter">主期間フィルタ。</param>
+    /// <param name="comparisonFilter">比較期間フィルタ。<c>null</c> のとき比較なし。</param>
+    /// <param name="dimension">集計軸。</param>
+    /// <param name="maxRows">返却する最大行数（1..<see cref="MaxRankingRows"/> にクランプ）。</param>
+    /// <param name="cancellationToken">キャンセル用トークン。</param>
+    public async Task<RankingResponse> GetRankingAsync(
+        SalesQueryFilter primaryFilter,
+        SalesQueryFilter? comparisonFilter,
+        BreakdownDimension dimension,
+        int maxRows,
+        CancellationToken cancellationToken = default)
+    {
+        primaryFilter.EnsureValid();
+        comparisonFilter?.EnsureValid();
+        maxRows = Math.Clamp(maxRows, 1, MaxRankingRows);
+
+        // 実行時間計測（しきい値超過時に警告ログ）。try/finally で例外パスでも必ず計測する。
+        var stopwatch = Stopwatch.StartNew();
+        RankingResponse? response = null;
+        try
+        {
+            var (groupBy, keyExpr, labelExpr) = ResolveDimension(dimension);
+
+            // 主期間・比較期間を1接続で逐次集計する（接続プール消費を1本に抑える）。
+            await using var connection = await _connectionFactory.OpenConnectionAsync(cancellationToken);
+
+            var primary = await QueryRankingPeriodAsync(
+                connection, primaryFilter, groupBy, keyExpr, labelExpr, cancellationToken);
+
+            RankingPeriodResult? comparison = null;
+            if (comparisonFilter != null)
+            {
+                comparison = await QueryRankingPeriodAsync(
+                    connection, comparisonFilter, groupBy, keyExpr, labelExpr, cancellationToken);
+            }
+
+            response = BuildRankingResponse(dimension, primary, comparison, maxRows);
+            return response;
+        }
+        finally
+        {
+            LogIfRankingSlow(stopwatch, dimension, primaryFilter,
+                hasComparison: comparisonFilter != null,
+                rowsCount: response?.Rows.Count ?? -1);
+        }
+    }
+
+    /// <summary>1期間ぶんのランキング集計（キー別のフロー + 最新週スナップショット）を取得する。</summary>
+    private static async Task<RankingPeriodResult> QueryRankingPeriodAsync(
+        NpgsqlConnection connection,
+        SalesQueryFilter filter,
+        string groupBy,
+        string keyExpr,
+        string labelExpr,
+        CancellationToken cancellationToken)
+    {
+        var parameters = new DynamicParameters();
+        SalesFilterSql.AddParameters(filter, parameters);
+
+        var byKey = new Dictionary<string, RankingAccumulator>(StringComparer.Ordinal);
+
+        // フロー集計（期間内）。null/空ラベルは未設定として置換（クロス集計と同一表記）。
+        var labelSql = $"COALESCE(NULLIF({labelExpr}, ''), '{UnsetLabel}')";
+        var flowSql = $"""
+            SELECT {keyExpr} AS key,
+                   {labelSql} AS label,
+                   COALESCE(SUM({SalesMetricSql.WeekQuantity}), 0)::bigint    AS quantity,
+                   COALESCE(SUM({SalesMetricSql.WeekAmount}), 0)::bigint      AS amount,
+                   COALESCE(SUM({SalesMetricSql.WeekGrossProfit}), 0)::bigint AS gross_profit
+            FROM sales_weekly sw
+            {SalesFilterSql.WhereClause(filter, "sw")}
+            GROUP BY {groupBy};
+            """;
+        var flowRows = await connection.QueryAsync<RankingFlowRow>(
+            new CommandDefinition(flowSql, parameters, cancellationToken: cancellationToken));
+        foreach (var row in flowRows)
+        {
+            byKey[row.Key] = new RankingAccumulator
+            {
+                Label = row.Label,
+                Quantity = row.Quantity,
+                Amount = row.Amount,
+                GrossProfit = row.GrossProfit,
+            };
+        }
+
+        // 在庫スナップショット（その期間の最新取込週基準）。最新週が無ければスナップショットは付与しない。
+        var latestWeek = await QueryLatestWeekAsync(connection, filter, parameters, cancellationToken);
+        if (latestWeek.HasValue)
+        {
+            parameters.Add("latestWeek", latestWeek.Value);
+            var snapshotSql = $"""
+                SELECT {keyExpr} AS key,
+                       COALESCE(SUM(sw.zaikosu), 0)::bigint             AS stock,
+                       COALESCE(SUM(sw.ruikei_uriage_count), 0)::bigint AS cumulative_sales,
+                       COALESCE(SUM(sw.ruikei_nohin_count), 0)::bigint  AS cumulative_delivery,
+                       COALESCE(AVG(sw.zainiti), 0)::float8             AS stock_days
+                FROM sales_weekly sw
+                WHERE sw.import_date = @latestWeek{SalesFilterSql.AndClause(filter, "sw")}
+                GROUP BY {groupBy};
+                """;
+            var snapshotRows = await connection.QueryAsync<RankingSnapshotRow>(
+                new CommandDefinition(snapshotSql, parameters, cancellationToken: cancellationToken));
+            foreach (var row in snapshotRows)
+            {
+                // スナップショットは同一フィルタ・同一期間内の最新週なのでフロー集合の部分集合。
+                // 理論上フロー側に必ず存在するが、防御的に欠落時はキーをラベル代替で生成する。
+                if (!byKey.TryGetValue(row.Key, out var acc))
+                {
+                    acc = new RankingAccumulator { Label = row.Key };
+                    byKey[row.Key] = acc;
+                }
+                acc.HasSnapshot = true;
+                acc.Stock = row.Stock;
+                acc.CumulativeSales = row.CumulativeSales;
+                acc.CumulativeDelivery = row.CumulativeDelivery;
+                acc.StockDays = row.StockDays;
+            }
+        }
+
+        return new RankingPeriodResult(byKey, latestWeek);
+    }
+
+    /// <summary>主期間・比較期間の集計からレスポンスを構築する（和集合・顕著性ソート・切り詰め）。</summary>
+    private static RankingResponse BuildRankingResponse(
+        BreakdownDimension dimension,
+        RankingPeriodResult primary,
+        RankingPeriodResult? comparison,
+        int maxRows)
+    {
+        // 行キーの和集合（比較なしのときは主期間のキーのみ。比較ありは圏外転落キーも含める）。
+        var keys = new HashSet<string>(primary.ByKey.Keys, StringComparer.Ordinal);
+        if (comparison != null)
+        {
+            foreach (var k in comparison.ByKey.Keys)
+            {
+                keys.Add(k);
+            }
+        }
+
+        // 顕著性 = 主期間と比較期間の売上金額の大きい方。切り詰め時に重要キーを優先的に残す。
+        long Salience(string key)
+        {
+            long salience = 0;
+            if (primary.ByKey.TryGetValue(key, out var p))
+            {
+                salience = p.Amount;
+            }
+            if (comparison != null
+                && comparison.ByKey.TryGetValue(key, out var c)
+                && c.Amount > salience)
+            {
+                salience = c.Amount;
+            }
+            return salience;
+        }
+
+        var orderedKeys = keys
+            .OrderByDescending(Salience)
+            .ThenBy(k => k, StringComparer.Ordinal)
+            .ToList();
+        var truncated = orderedKeys.Count > maxRows;
+        if (truncated)
+        {
+            orderedKeys = orderedKeys.Take(maxRows).ToList();
+        }
+
+        var rows = new List<RankingRow>(orderedKeys.Count);
+        foreach (var key in orderedKeys)
+        {
+            primary.ByKey.TryGetValue(key, out var p);
+            RankingAccumulator? c = null;
+            comparison?.ByKey.TryGetValue(key, out c);
+
+            var label = p?.Label ?? c?.Label ?? key;
+            rows.Add(new RankingRow(
+                key,
+                label,
+                p != null ? ToValues(p) : null,
+                c != null ? ToValues(c) : null));
+        }
+
+        // 並び替え・複合スコアに使える指標。スナップショット系は主期間に最新週がある場合のみ。
+        var availableMetrics = new List<string> { "amount", "quantity", "grossProfit", "grossProfitRate" };
+        if (primary.LatestWeek.HasValue)
+        {
+            availableMetrics.Add("sellThroughRate");
+            availableMetrics.Add("stockDays");
+            availableMetrics.Add("stock");
+        }
+
+        return new RankingResponse(
+            dimension.ToString(),
+            rows,
+            primary.LatestWeek.HasValue ? primary.LatestWeek.Value.ToString("yyyy-MM-dd") : null,
+            comparison?.LatestWeek is { } cw ? cw.ToString("yyyy-MM-dd") : null,
+            availableMetrics,
+            truncated);
+    }
+
+    /// <summary>集計累計を API 返却値に変換する（スナップショット無しは在庫系を null）。</summary>
+    private static RankingMetricValues ToValues(RankingAccumulator a)
+    {
+        long? stock = a.HasSnapshot ? a.Stock : (long?)null;
+        double? sellThroughRate = a.HasSnapshot && a.CumulativeDelivery != 0
+            ? (double)a.CumulativeSales / a.CumulativeDelivery * 100.0
+            : (double?)null;
+        double? stockDays = a.HasSnapshot ? a.StockDays : (double?)null;
+        return new RankingMetricValues(a.Quantity, a.Amount, a.GrossProfit, stock, sellThroughRate, stockDays);
+    }
+
+    /// <summary>ランキング分析クエリの実行時間がしきい値を超えたら警告ログを出す。</summary>
+    private void LogIfRankingSlow(
+        Stopwatch stopwatch,
+        BreakdownDimension dimension,
+        SalesQueryFilter filter,
+        bool hasComparison,
+        int rowsCount)
+    {
+        stopwatch.Stop();
+        var elapsedMs = stopwatch.ElapsedMilliseconds;
+        if (elapsedMs <= RankingSlowQueryWarningThresholdMs)
+        {
+            return;
+        }
+        _logger.LogWarning(
+            "Ranking query slow: {ElapsedMs}ms dimension={Dimension} comparison={HasComparison} rows={Rows} "
+            + "from={From} to={To} depts={DeptCount} biz={BizCount} seasons={SeasonCount} hinbans={HinbanCount}",
+            elapsedMs,
+            dimension,
+            hasComparison,
+            rowsCount,
+            filter.From,
+            filter.To,
+            filter.Departments?.Length ?? 0,
+            filter.BusinessTypes?.Length ?? 0,
+            filter.Seasons?.Length ?? 0,
+            filter.Hinbans?.Length ?? 0);
+    }
+
     /// <summary>在庫・発注分析（最新週スナップショット基準）を取得する。</summary>
     public async Task<InventoryResponse> GetInventoryAsync(
         SalesQueryFilter filter, CancellationToken cancellationToken = default)
@@ -1254,5 +1514,38 @@ public sealed class SalesAnalyticsRepository
             => _hasData
                 ? new CrosstabSnapshotRow(rowKey, colKey, _stock, _sales, _delivery)
                 : null;
+    }
+
+    // ------------------------------------------------------------
+    // ランキング分析の内部レコード／集計
+    // ------------------------------------------------------------
+
+    private sealed record RankingFlowRow(
+        string Key, string Label, long Quantity, long Amount, long GrossProfit);
+
+    private sealed record RankingSnapshotRow(
+        string Key, long Stock, long CumulativeSales, long CumulativeDelivery, double StockDays);
+
+    /// <summary>1期間ぶんのランキング集計結果（キー別の集計累計 + 最新取込週）。</summary>
+    private sealed record RankingPeriodResult(
+        IReadOnlyDictionary<string, RankingAccumulator> ByKey,
+        DateOnly? LatestWeek);
+
+    /// <summary>
+    /// ランキング1キーの可変集計。フロー（数量・金額・粗利）に加え、最新週スナップショット
+    /// （在庫・累計売上数・累計納品数・在日）を保持する。<see cref="HasSnapshot"/> が false の場合、
+    /// 在庫系指標は未取得（時間外／在庫行なし）として API では null に変換される。
+    /// </summary>
+    private sealed class RankingAccumulator
+    {
+        public string Label { get; set; } = string.Empty;
+        public long Quantity { get; set; }
+        public long Amount { get; set; }
+        public long GrossProfit { get; set; }
+        public bool HasSnapshot { get; set; }
+        public long Stock { get; set; }
+        public long CumulativeSales { get; set; }
+        public long CumulativeDelivery { get; set; }
+        public double StockDays { get; set; }
     }
 }

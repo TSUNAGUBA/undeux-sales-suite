@@ -316,3 +316,68 @@ public sealed record ProductAnalyticsResponse(
     IReadOnlyList<TrendPoint> WeeklyTrend,
     IReadOnlyList<ProductSkuPerformance> BySku,
     IReadOnlyList<ProductBusinessTypePerformance> ByBusinessType);
+
+// ============================================================
+// ランキング分析（単軸ランキング + 期間比較 + ABC/複合スコアの素材提供）
+// ============================================================
+
+/// <summary>
+/// ランキング1件・1期間ぶんの集計値。
+/// <para>
+/// フロー指標（数量・金額・粗利）は期間内集計。在庫スナップショット指標（在庫数・消化率・在日）は
+/// その期間の最新取込週基準であり、対象キーがその週に存在しない場合は <c>null</c>。
+/// </para>
+/// <para>
+/// 粗利率・構成比・複合スコア・累積構成比・ABC ランク・順位は、ユーザーが対話的に選ぶ
+/// 並び替え指標／重みに依存する「表示射影」であるため、フロント側で本値から算出する
+/// （クロス集計の表示モード切替と同じ思想。SoT は本集計値、順位等はその射影）。
+/// </para>
+/// </summary>
+public sealed record RankingMetricValues(
+    long Quantity,
+    long Amount,
+    long GrossProfit,
+    long? Stock,
+    double? SellThroughRate,
+    double? StockDays);
+
+/// <summary>
+/// ランキング1行。<see cref="Current"/> が主期間、<see cref="Comparison"/> が比較期間。
+/// </summary>
+/// <param name="Key">集計キー（ディメンションのユニーク識別子。商品は業態|記号|品番|単品の連結）。</param>
+/// <param name="Label">表示ラベル（未設定値は "(未設定)"）。</param>
+/// <param name="Current">
+/// 主期間の集計値。主期間に存在しないキー（比較期間にのみ存在＝圏外転落）では <c>null</c>。
+/// </param>
+/// <param name="Comparison">
+/// 比較期間の集計値。比較未指定、または比較期間に存在しないキー（＝新規）では <c>null</c>。
+/// </param>
+public sealed record RankingRow(
+    string Key,
+    string Label,
+    RankingMetricValues? Current,
+    RankingMetricValues? Comparison);
+
+/// <summary>
+/// ランキング分析のレスポンス。順位・累積構成比・ABC・複合スコアはフロント側で算出するため、
+/// 本レスポンスは集計素材（行ごとの主期間／比較期間の指標）と利用可能指標のメタ情報を返す。
+/// </summary>
+/// <param name="Dimension">集計軸（<see cref="UndeuxSales.Core.Models.BreakdownDimension"/> の名前）。</param>
+/// <param name="Rows">
+/// 集計行。主期間の売上金額（比較時は主／比較の大きい方）の降順で、最大件数まで返す。
+/// フロントは選択された指標・複合スコアで再ソートして順位を確定する。
+/// </param>
+/// <param name="LatestWeek">主期間の在庫スナップショット基準週（データなしは null）。</param>
+/// <param name="ComparisonLatestWeek">比較期間の在庫スナップショット基準週（比較未指定／データなしは null）。</param>
+/// <param name="AvailableMetrics">
+/// 並び替え・複合スコアに利用可能な指標キー一覧。スナップショット指標（stock / sellThroughRate /
+/// stockDays）は主期間に最新週が存在する場合のみ含む。
+/// </param>
+/// <param name="Truncated">対象キー数が上限を超え、件数が切り詰められた場合 true。</param>
+public sealed record RankingResponse(
+    string Dimension,
+    IReadOnlyList<RankingRow> Rows,
+    string? LatestWeek,
+    string? ComparisonLatestWeek,
+    IReadOnlyList<string> AvailableMetrics,
+    bool Truncated);

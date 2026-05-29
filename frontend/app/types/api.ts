@@ -290,6 +290,79 @@ export interface CrosstabMatrixResponse {
 export type MetricDisplayMode = 'stacked' | 'inlineColumns'
 
 // ============================================================
+// ランキング分析（単軸ランキング + 期間比較 + ABC/複合スコア）
+// ============================================================
+
+/**
+ * ランキングの集計軸キー（バックエンドの BreakdownDimension に対応）。
+ * クエリには小文字始まりのこのキーをそのまま渡す（RequestParsing.Dimension が大小無視で解釈）。
+ */
+export type RankingDimensionKey =
+  | 'department'
+  | 'businessType'
+  | 'season'
+  | 'product'
+  | 'color'
+  | 'size'
+  | 'hinban'
+  | 'chohyoKubun'
+  | 'tanawari1'
+  | 'tanawari2'
+  | 'shohinKigo'
+
+/** ランキングで並び替え・複合スコアに使える指標キー。 */
+export type RankingMetricKey =
+  | 'amount'
+  | 'quantity'
+  | 'grossProfit'
+  | 'grossProfitRate'
+  | 'sellThroughRate'
+  | 'stockDays'
+  | 'stock'
+
+/**
+ * 1行・1期間ぶんの集計値。在庫系（stock / sellThroughRate / stockDays）は
+ * その期間の最新週スナップショットが無い場合 null。粗利率・構成比はこの値から導出する。
+ */
+export interface RankingMetricValues {
+  quantity: number
+  amount: number
+  grossProfit: number
+  stock: number | null
+  sellThroughRate: number | null
+  stockDays: number | null
+}
+
+/** ランキング1行（主期間 current・比較期間 comparison）。 */
+export interface RankingRow {
+  key: string
+  label: string
+  /** 主期間の集計値。主期間に存在しない（比較期間のみ＝圏外転落）の場合 null。 */
+  current: RankingMetricValues | null
+  /** 比較期間の集計値。比較未指定／比較期間に存在しない（＝新規）の場合 null。 */
+  comparison: RankingMetricValues | null
+}
+
+/**
+ * ランキング分析 API のレスポンス。
+ * 順位・複合スコア・累積構成比・ABC ランクはフロント側で本素材から算出する（表示射影）。
+ */
+export interface RankingResponse {
+  /** 集計軸（BreakdownDimension の名前。例 "Department"）。 */
+  dimension: string
+  /** 集計行（主期間/比較期間の売上金額の大きい方の降順、最大件数で切り詰め）。 */
+  rows: RankingRow[]
+  /** 主期間の在庫スナップショット基準週（データなしは null）。 */
+  latestWeek: string | null
+  /** 比較期間の在庫スナップショット基準週（比較未指定／データなしは null）。 */
+  comparisonLatestWeek: string | null
+  /** 並び替え・複合スコアに利用可能な指標キー一覧（在庫系は最新週がある場合のみ）。 */
+  availableMetrics: RankingMetricKey[]
+  /** 対象キー数が上限を超え切り詰められた場合 true。 */
+  truncated: boolean
+}
+
+// ============================================================
 // 商品マスタ（m_product / m_product_sku）
 // ============================================================
 
