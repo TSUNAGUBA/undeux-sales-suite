@@ -232,11 +232,10 @@ const contributionMetric = computed<RankingMetricKey>(() => {
   return 'amount'
 })
 
-/** 成長率の基準指標（複合スコア時は売上金額）。 */
-const growthMetric = computed<RankingMetricKey>(() => {
-  const sortKey = controls.value.sortKey
-  return sortKey === 'composite' ? 'amount' : sortKey
-})
+// 成長率の基準指標は構成比・ABC と同じ「基準指標」に統一する。
+// 率系（粗利率・消化率・在日）や複合スコアで並べた場合も売上金額などの合算可能指標を基準にし、
+// 「率の変化率」という不自然な値を避ける（構成比/累積/ABC と同じ土台に揃える）。
+const growthMetric = contributionMetric
 
 const abc = computed(() =>
   computeAbc(
@@ -319,10 +318,14 @@ const paretoBars = computed<ParetoBar[]>(() => {
     }))
 })
 
-/** 順位変動スロープのアイテム（比較有効時のみ。表示中の上位 N から）。 */
+/**
+ * 順位変動スロープのアイテム（比較有効時のみ）。
+ * テーブルの表示件数（topN）ではなく全件（順位昇順）から渡し、チャート側が上位を抽出する。
+ * これにより KPI「最大上昇」（全件母集団）とスロープの母集団を一致させる。
+ */
 const moverItems = computed<MoverItem[]>(() =>
   comparisonActive.value
-    ? displayRows.value.map((r) => ({
+    ? allViewRows.value.map((r) => ({
       key: r.key,
       label: r.label,
       rank: r.rank,
@@ -420,8 +423,9 @@ function handleRowClick(row: RankingViewRow): void {
   } else if (dim === 'hinban') {
     addToFilter('hinbans', row.key)
   } else if (dim === 'product') {
-    // product のラベルは "品番-単品"。品番3桁をフィルタに加える。
-    const hinban = row.label.split('-')[0]
+    // product のキーは "業態|記号|品番|単品"。構造化キーから品番3桁を取り出す
+    // （表示ラベル "品番-単品" の分割より堅牢）。
+    const hinban = row.key.split('|')[2]
     if (hinban) {
       addToFilter('hinbans', hinban)
     }

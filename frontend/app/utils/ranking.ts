@@ -224,8 +224,9 @@ export function compositeScores(
       if (v === null) {
         norm = 0
       } else if (!Number.isFinite(range.min) || range.max <= range.min) {
-        // 母集団に有効値が無い、または全行同値（範囲ゼロ）は最高評価で揃える。
-        norm = 1
+        // 全行同値（範囲ゼロ）でその指標が差を生まない場合は中立(0.5)に揃える。
+        // 最高評価(1)にすると、有効値が1件だけ（他は null）のときその1件を過大評価してしまうため。
+        norm = 0.5
       } else {
         const ratio = (v - range.min) / (range.max - range.min)
         norm = info.direction === 'lower' ? 1 - ratio : ratio
