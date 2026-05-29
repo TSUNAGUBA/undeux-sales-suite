@@ -136,6 +136,99 @@ public sealed class ApiIntegrationTests
     }
 
     [Fact]
+    public async Task Ranking_ByDepartment_ReturnsRows()
+    {
+        var client = CreateAuthedClient();
+
+        var ranking = await client.GetFromJsonAsync<RankingResponse>(
+            "/api/ranking?dimension=department&from=2026-05-04&to=2026-05-11");
+
+        Assert.NotNull(ranking);
+        Assert.Equal("Department", ranking!.Dimension);
+        // 部門は 01, 02 の 2 種類。
+        Assert.Equal(2, ranking.Rows.Count);
+        // 期間内集計（2週合算）: 部門01 = 7000+4000+6000 = 17000、部門02 = 4500+15000 = 19500。
+        var dept01 = ranking.Rows.Single(r => r.Key == "01");
+        var dept02 = ranking.Rows.Single(r => r.Key == "02");
+        Assert.NotNull(dept01.Current);
+        Assert.NotNull(dept02.Current);
+        Assert.Equal(17000, dept01.Current!.Amount);
+        Assert.Equal(19500, dept02.Current!.Amount);
+        // 比較未指定なので Comparison は null。
+        Assert.Null(dept01.Comparison);
+        Assert.Null(dept02.Comparison);
+        // 最新週スナップショットが取れるので在庫系メトリクスも利用可能。
+        Assert.Contains("amount", ranking.AvailableMetrics);
+        Assert.Contains("grossProfitRate", ranking.AvailableMetrics);
+        Assert.Contains("stock", ranking.AvailableMetrics);
+        Assert.Contains("sellThroughRate", ranking.AvailableMetrics);
+        Assert.NotNull(ranking.LatestWeek);
+        Assert.Null(ranking.ComparisonLatestWeek);
+        Assert.False(ranking.Truncated);
+    }
+
+    [Fact]
+    public async Task Ranking_WithComparison_PopulatesPreviousPeriod()
+    {
+        var client = CreateAuthedClient();
+
+        // 主期間 = 2週目（05-11）、比較期間 = 1週目（05-04）。順位変動の素材を検証する。
+        var ranking = await client.GetFromJsonAsync<RankingResponse>(
+            "/api/ranking?dimension=department&from=2026-05-11&to=2026-05-11"
+            + "&compareFrom=2026-05-04&compareTo=2026-05-04");
+
+        Assert.NotNull(ranking);
+        Assert.Equal(2, ranking!.Rows.Count);
+
+        var dept01 = ranking.Rows.Single(r => r.Key == "01");
+        Assert.NotNull(dept01.Current);
+        Assert.NotNull(dept01.Comparison);
+        // 部門01: 当期(05-11)=6000、前期(05-04)=7000+4000=11000。
+        Assert.Equal(6000, dept01.Current!.Amount);
+        Assert.Equal(11000, dept01.Comparison!.Amount);
+
+        var dept02 = ranking.Rows.Single(r => r.Key == "02");
+        Assert.NotNull(dept02.Current);
+        Assert.NotNull(dept02.Comparison);
+        // 部門02: 当期(05-11)=15000、前期(05-04)=4500。
+        Assert.Equal(15000, dept02.Current!.Amount);
+        Assert.Equal(4500, dept02.Comparison!.Amount);
+
+        Assert.NotNull(ranking.LatestWeek);
+        Assert.NotNull(ranking.ComparisonLatestWeek);
+    }
+
+    [Fact]
+    public async Task Ranking_InvalidDimension_ReturnsBadRequest()
+    {
+        var client = CreateAuthedClient();
+
+        var response = await client.GetAsync("/api/ranking?dimension=unknown");
+
+        Assert.Equal(HttpStatusCode.BadRequest, response.StatusCode);
+        var error = await response.Content.ReadFromJsonAsync<ApiError>();
+        Assert.Equal(ErrorCodes.UnknownDimension.Code, error!.ErrorCode);
+    }
+
+    [Fact]
+    public async Task Ranking_EmptyData_ReturnsEmptyWithoutSnapshotMetrics()
+    {
+        var client = CreateAuthedClient();
+
+        // シードに含まれない期間。空行・最新週 null・在庫系メトリクス除外を確認する。
+        var ranking = await client.GetFromJsonAsync<RankingResponse>(
+            "/api/ranking?dimension=department&from=2099-01-01&to=2099-12-31");
+
+        Assert.NotNull(ranking);
+        Assert.Empty(ranking!.Rows);
+        Assert.Null(ranking.LatestWeek);
+        Assert.False(ranking.Truncated);
+        // 最新週が無いのでフロー系のみ利用可能、在庫系は availableMetrics から除外。
+        Assert.Contains("amount", ranking.AvailableMetrics);
+        Assert.DoesNotContain("stock", ranking.AvailableMetrics);
+    }
+
+    [Fact]
     public async Task CrosstabMatrix_DepartmentByHinban_ReturnsMatrix()
     {
         var client = CreateAuthedClient();
