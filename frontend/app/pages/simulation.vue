@@ -139,11 +139,12 @@ function simulate(temp: number, prevQty: number, markdownPct: number): {
 const prediction = computed(() => simulate(inputTemp.value, inputPrevQty.value, markdownRate.value))
 const baseline = computed(() => simulate(inputTemp.value, inputPrevQty.value, 0))
 
-// 粗利が最大化する値引き率（0..70% を 1% 刻みで走査）。
+// 粗利が最大化する値引き率（0..70% をスライダー・カーブと同じ 5% 刻みで走査し、
+// 提示値が必ず選択可能な点になるようにする）。
 const optimalMarkdown = computed(() => {
   let best = 0
   let bestProfit = -Infinity
-  for (let m = 0; m <= 70; m++) {
+  for (let m = 0; m <= 70; m += 5) {
     const profit = simulate(inputTemp.value, inputPrevQty.value, m).grossProfit
     if (profit > bestProfit) {
       bestProfit = profit
@@ -209,8 +210,15 @@ const coefNote = computed(() => {
 const profitDelta = computed(() => prediction.value.grossProfit - baseline.value.grossProfit)
 
 const initialized = ref(false)
-watch([area, tempMeasure], () => {
+// エリア変更はバックエンドの気温が変わるため再取得する。
+watch(area, () => {
   if (initialized.value) void load()
+})
+// 気温種別はフロント射影（同じ週次データから avg/max/min を選ぶだけ）なので再取得しない。
+// 回帰・予測は computed が自動再計算する。スライダーの現在値は維持しつつ新しい範囲にクランプする。
+watch(tempMeasure, () => {
+  const { min, max } = tempRange.value
+  inputTemp.value = Math.min(Math.max(inputTemp.value, min), max)
 })
 
 onMounted(async () => {
@@ -255,7 +263,7 @@ onMounted(async () => {
       empty-message="該当するデータがありません。フィルタや期間を見直してください。"
     >
       <div v-if="!regression" class="rounded-xl border border-amber-200 bg-amber-50 p-4 text-sm text-amber-700">
-        重回帰モデルの学習に必要な週数が不足しています（最低3週、かつ説明変数に変化が必要）。期間やフィルタを広げてください。
+        重回帰モデルの学習に必要な週数が不足しています（最低4週、かつ説明変数に変化が必要）。期間やフィルタを広げてください。
       </div>
       <div v-else class="space-y-4">
         <p class="rounded-lg bg-slate-50 px-3 py-2 text-xs text-slate-600">{{ coefNote }}</p>
