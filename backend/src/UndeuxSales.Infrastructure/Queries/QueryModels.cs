@@ -15,7 +15,8 @@ public sealed record FilterOptions(
     IReadOnlyList<CodeName> Departments,
     IReadOnlyList<BusinessTypeOption> BusinessTypes,
     IReadOnlyList<CodeName> Seasons,
-    IReadOnlyList<DateOnly> Weeks);
+    IReadOnlyList<DateOnly> Weeks,
+    IReadOnlyList<string> Tanawari1);
 
 /// <summary>全社サマリーの主要KPI。</summary>
 public sealed record SalesKpi(
@@ -160,9 +161,15 @@ public enum CrosstabDimension
 public sealed record CrosstabDimensionInfo(string Key, string Category, string Label, bool IsTimeAxis);
 
 /// <summary>
-/// クロス集計の1セルの値。7メトリクスを保持する。在庫系（stockDays / stock / sellThroughRate）は
-/// 時間軸を含む組合せでは <c>null</c> になる（最新週スナップショットに基づくため）。
+/// クロス集計の1セルの値。在庫系（stockDays / stock / sellThroughRate）は時間軸を含む組合せでは
+/// <c>null</c>（最新週スナップショットに基づくため）。気温系（tempAvg / tempMax / tempMin）は
+/// 逆に時間軸とエリア種別が指定された場合のみ設定され、それ以外は <c>null</c>。
 /// </summary>
+/// <remarks>
+/// 気温は売上行の集計ではなく、時間軸バケット（年/四半期/月）の期間に対する標準気候
+/// （<see cref="UndeuxSales.Core.ClimateModel"/>）から決まる。時間軸が行の場合は行ラベル、
+/// 列の場合は列ラベルの期間から算出し、同一時間バケット内の全セルで同じ値になる。
+/// </remarks>
 public sealed record CrosstabCellValues(
     long? Amount,
     long? Quantity,
@@ -170,7 +177,10 @@ public sealed record CrosstabCellValues(
     double? SharePercent,
     double? StockDays,
     double? SellThroughRate,
-    long? Stock);
+    long? Stock,
+    double? TempAvg = null,
+    double? TempMax = null,
+    double? TempMin = null);
 
 /// <summary>クロス集計の1セル。</summary>
 public sealed record CrosstabCell(CrosstabCellValues Values);
@@ -209,6 +219,12 @@ public sealed record CrosstabMatrixResponse(
 // ============================================================
 
 /// <summary>商品マスタの代表画像情報（SKU+image_index の代表1枚）。</summary>
+/// <remarks>
+/// 末尾の集計フィールド（売上数量・平均在庫日数・季節・店頭在庫数）は sales_weekly を
+/// 自然キー（業態×商品記号×品番）で結合した実績値。売上数量は全期間合計、店頭在庫数（zaikosu）と
+/// 平均在庫日数（在日 zainiti の平均）は最新取込週スナップショット基準。マスタにのみ存在し
+/// 売上実績が無い商品は 0 / 空文字となる。倉庫在庫は売上参照データに店頭/倉庫の区分が無いため提供しない。
+/// </remarks>
 public sealed record MasterProductSummary(
     Guid ProductId,
     string BusinessCategoryCd,
@@ -225,7 +241,11 @@ public sealed record MasterProductSummary(
     int SizeCount,
     int? MinSalesPrice,
     int? MaxSalesPrice,
-    string? PrimaryImageUrl);
+    string? PrimaryImageUrl,
+    long SalesQuantity,
+    double AverageStockDays,
+    string Kisetsu,
+    long StoreStock);
 
 /// <summary>商品マスタの SKU 1件（同一 SKU の画像は IReadOnlyList で持つ）。</summary>
 public sealed record MasterProductSku(
@@ -381,3 +401,65 @@ public sealed record RankingResponse(
     string? ComparisonLatestWeek,
     IReadOnlyList<string> AvailableMetrics,
     bool Truncated);
+
+// ============================================================
+// 分析（散布図・回帰／重回帰シミュレーション）の素材
+//
+// 順位・複合スコア（ランキング）と同様、回帰係数・予測・象限分類は
+// ユーザーが対話的に変える「表示射影」であるため、バックエンドは集計素材
+// （週次系列・SKU別消化率/値引き率）のみを返し、回帰・予測はフロント（utils/regression）で算出する。
+// 気温は売上行の集計ではなく標準気候（ClimateModel）から決まる派生値。
+// ============================================================
+
+/// <summary>週次系列の1点（売上フロー指標 + その週・エリアの標準気温）。</summary>
+/// <param name="Week">取込日（月曜）。表す週は前週 月〜日。</param>
+/// <param name="Quantity">当週売上数量。</param>
+/// <param name="Amount">当週売上金額。</param>
+/// <param name="GrossProfit">当週粗利。</param>
+/// <param name="TempAvg">週平均気温（℃）。</param>
+/// <param name="TempMax">週最高気温（℃）。</param>
+/// <param name="TempMin">週最低気温（℃）。</param>
+public sealed record WeeklySeriesPoint(
+    DateOnly Week,
+    long Quantity,
+    long Amount,
+    long GrossProfit,
+    double TempAvg,
+    double TempMax,
+    double TempMin);
+
+/// <summary>
+/// 週次系列のレスポンス。散布図（気温×売上数量）と重回帰シミュレーションの素材。
+/// </summary>
+/// <param name="Area">エリア種別（"standard"/"cold"/"warm"）。</param>
+/// <param name="AreaCity">参照観測地点名（"東京"/"札幌"/"那覇"）。</param>
+/// <param name="Points">週次の系列（取込日昇順）。</param>
+public sealed record WeeklySeriesResponse(
+    string Area,
+    string AreaCity,
+    IReadOnlyList<WeeklySeriesPoint> Points);
+
+/// <summary>消化率×値引き率 散布図の1点（型番＝業態×記号×品番 単位）。</summary>
+/// <param name="Key">一意キー（業態|記号|品番）。</param>
+/// <param name="Label">表示ラベル（品番3桁）。</param>
+/// <param name="BusinessType">業態コード。</param>
+/// <param name="SellThroughRate">消化率（%、最新週: 累計売上数 ÷ 累計納品数）。</param>
+/// <param name="MarkdownRate">値引き率（%、1 − 平均売価 ÷ マスタ定価。0..100 にクランプ）。</param>
+/// <param name="Quantity">期間内売上数量（バブルサイズ用）。</param>
+public sealed record MarkdownScatterPoint(
+    string Key,
+    string Label,
+    string BusinessType,
+    double SellThroughRate,
+    double MarkdownRate,
+    long Quantity);
+
+/// <summary>
+/// 消化率×値引き率 散布図のレスポンス。値引き率はマスタ定価（m_product_sku.sales_price）が
+/// 必要なため、マスタ未登録の型番は対象外。象限分類はフロントで行う表示射影。
+/// </summary>
+/// <param name="LatestWeek">消化率の基準週（データなしは null）。</param>
+/// <param name="Points">型番単位の点。</param>
+public sealed record MarkdownScatterResponse(
+    string? LatestWeek,
+    IReadOnlyList<MarkdownScatterPoint> Points);

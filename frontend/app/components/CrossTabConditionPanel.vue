@@ -14,13 +14,14 @@
  * 共有 state（useFilters）のみ流用して UI を再構築している。
  */
 
-import { ArrowLeftRight, ChevronDown, Filter, RotateCcw, Search } from 'lucide-vue-next'
+import { ArrowLeftRight, ChevronDown, Filter, RotateCcw, Search, Thermometer } from 'lucide-vue-next'
 import type {
   CrosstabDimensionInfo,
   CrosstabMetricInfo,
   CrosstabMetricKey,
   MetricDisplayMode,
   SalesFilterState,
+  TemperatureArea,
 } from '~/types/api'
 
 // useFilters の共通ヘルパーから整形済みの選択肢を取得する。
@@ -31,7 +32,11 @@ const {
   departmentChipOptions,
   businessTypeChipOptions,
   seasonChipOptions,
+  tanawari1ChipOptions,
 } = useFilters()
+
+// 平均在庫日数バケットのチップ選択肢（共通カタログ＝SoT）。
+const stockDaysChipOptions = STOCK_DAYS_BUCKETS.map((b) => ({ value: b.value, label: b.label }))
 
 const props = defineProps<{
   /** 利用可能な全ディメンション。 */
@@ -50,6 +55,10 @@ const props = defineProps<{
   availableMetrics: CrosstabMetricKey[]
   /** 全社共通フィルタ state（useFilters の filter）。 */
   filterState: SalesFilterState
+  /** 気温メトリクスのエリア種別（null=気温なし）。 */
+  temperatureArea: TemperatureArea | null
+  /** 行・列のいずれかが時間軸か（気温メトリクスの可否案内に使う）。 */
+  hasTimeAxis: boolean
   /** フィルタ選択肢の取得エラー（useFilters の optionsError）。null はエラー無し。 */
   optionsError: string | null
   /** 利用可能な年度の一覧（useFilters.years）。 */
@@ -64,11 +73,20 @@ const emit = defineEmits<{
   'update:selectedMetrics': [CrosstabMetricKey[]]
   'update:metricDisplayMode': [MetricDisplayMode]
   'update:filterState': [SalesFilterState]
+  'update:temperatureArea': [TemperatureArea | null]
   swapDimensions: []
   apply: []
   reset: []
   removeHinban: [string]
 }>()
+
+// 気温エリア種別セレクト（共通カタログ＝SoT）。
+const temperatureAreaOptions = TEMPERATURE_AREAS
+
+function onTemperatureAreaSelect(event: Event): void {
+  const value = (event.target as HTMLSelectElement).value
+  emit('update:temperatureArea', value === '' ? null : (value as TemperatureArea))
+}
 
 // モバイル幅判定（〈768px）。初期判定はマウント前は PC 想定（SSR 安全）。
 // onMounted のクロージャに mql と listener を閉じ込め、onBeforeUnmount で確実に
@@ -174,6 +192,8 @@ const activeFilterCount = computed(() => {
   n += props.filterState.businessTypes.length
   n += props.filterState.seasons.length
   n += props.filterState.hinbans.length
+  n += props.filterState.tanawari1.length
+  n += props.filterState.stockDaysBuckets.length
   return n
 })
 
@@ -319,6 +339,42 @@ const summaryText = computed(() => {
             </div>
           </details>
 
+          <!-- 棚割1 -->
+          <details class="mb-2">
+            <summary class="cursor-pointer text-sm text-slate-700">
+              棚割1
+              <span v-if="filterState.tanawari1.length > 0" class="ml-2 text-xs text-indigo-600">
+                ●{{ filterState.tanawari1.length }}
+              </span>
+            </summary>
+            <div class="mt-2">
+              <CrossTabMultiSelectChips
+                :options="tanawari1ChipOptions"
+                :model-value="filterState.tanawari1"
+                empty-label="棚割1候補がありません"
+                @update:model-value="(v: string[]) => updateFilter('tanawari1', v)"
+              />
+            </div>
+          </details>
+
+          <!-- 平均在庫日数 -->
+          <details class="mb-2">
+            <summary class="cursor-pointer text-sm text-slate-700">
+              平均在庫日数
+              <span v-if="filterState.stockDaysBuckets.length > 0" class="ml-2 text-xs text-indigo-600">
+                ●{{ filterState.stockDaysBuckets.length }}
+              </span>
+            </summary>
+            <div class="mt-2">
+              <CrossTabMultiSelectChips
+                :options="stockDaysChipOptions"
+                :model-value="filterState.stockDaysBuckets"
+                empty-label="候補がありません"
+                @update:model-value="(v: string[]) => updateFilter('stockDaysBuckets', v)"
+              />
+            </div>
+          </details>
+
           <!-- 詳細（品番フィルタ等） -->
           <div class="mt-3 border-t border-dashed border-slate-200 pt-3">
             <button
@@ -419,6 +475,31 @@ const summaryText = computed(() => {
           <h3 class="mb-2 text-xs uppercase tracking-wider text-slate-500">
             表示する集計値
           </h3>
+
+          <!-- 気温エリア種別。時間軸（年/四半期/月）と組み合わせると気温メトリクスが選択可能になる。 -->
+          <div class="mb-2 rounded-lg border border-sky-100 bg-sky-50/40 p-2">
+            <label class="mb-1 flex items-center gap-1.5 text-xs font-medium text-sky-700">
+              <Thermometer class="h-3.5 w-3.5" />
+              気温エリア（標準気候）
+            </label>
+            <select
+              :value="temperatureArea ?? ''"
+              class="w-full rounded-lg border border-slate-300 bg-white px-3 py-1.5 text-sm"
+              @change="onTemperatureAreaSelect"
+            >
+              <option value="">気温を表示しない</option>
+              <option v-for="a in temperatureAreaOptions" :key="a.value" :value="a.value">
+                {{ a.label }}
+              </option>
+            </select>
+            <p v-if="temperatureArea && !hasTimeAxis" class="mt-1 text-xs text-amber-600">
+              気温は時間軸（年・四半期・月）を行または列に設定すると表示できます。
+            </p>
+            <p v-else-if="temperatureArea" class="mt-1 text-xs text-slate-400">
+              週平均/最高/最低気温を集計値として選べます。
+            </p>
+          </div>
+
           <div class="flex flex-col gap-1.5">
             <label
               v-for="m in metrics"

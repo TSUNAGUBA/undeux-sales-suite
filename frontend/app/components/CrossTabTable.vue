@@ -56,6 +56,8 @@ function formatMetric(value: number | null | undefined, info: CrosstabMetricInfo
       return formatCurrency(value)
     case 'percent':
       return formatPercent(value)
+    case 'temperature':
+      return `${formatDecimal(value, 1)}℃`
     case 'decimal':
       return formatDecimal(value, 1)
     case 'number':

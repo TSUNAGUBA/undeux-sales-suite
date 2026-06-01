@@ -7,6 +7,8 @@ import {
   BarElement,
   BarController,
   LineController,
+  ScatterController,
+  BubbleController,
   Title,
   Tooltip,
   Legend,
@@ -18,6 +20,7 @@ import {
 // 棒（構成比）と折れ線（累積構成比）を1つのチャートに混在させる複合チャートのため。
 // 単体の Bar/Line だけなら vue-chartjs が各コントローラを登録するが、混在チャートでは
 // マウント順に依存せず両コントローラが必要になるため、プラグインで一括登録して保証する。
+// ScatterController / BubbleController は散布図・回帰分析ページ（気温×売上、消化率×値引き率）で使う。
 export default defineNuxtPlugin(() => {
   ChartJS.register(
     CategoryScale,
@@ -27,6 +30,8 @@ export default defineNuxtPlugin(() => {
     BarElement,
     BarController,
     LineController,
+    ScatterController,
+    BubbleController,
     Title,
     Tooltip,
     Legend,

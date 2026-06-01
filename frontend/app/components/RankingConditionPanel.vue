@@ -17,7 +17,15 @@ import { ChevronDown, Filter, RotateCcw, Scale, Search } from 'lucide-vue-next'
 import type { RankingMetricKey, SalesFilterState } from '~/types/api'
 import type { RankingControls, RankingSortKey } from '~/utils/ranking'
 
-const { departmentChipOptions, businessTypeChipOptions, seasonChipOptions } = useFilters()
+const {
+  departmentChipOptions,
+  businessTypeChipOptions,
+  seasonChipOptions,
+  tanawari1ChipOptions,
+} = useFilters()
+
+// 平均在庫日数バケットのチップ選択肢（共通カタログ＝SoT）。
+const stockDaysChipOptions = STOCK_DAYS_BUCKETS.map((b) => ({ value: b.value, label: b.label }))
 
 const props = defineProps<{
   controls: RankingControls
@@ -183,6 +191,8 @@ const activeFilterCount = computed(() => {
   n += props.filterState.businessTypes.length
   n += props.filterState.seasons.length
   n += props.filterState.hinbans.length
+  n += props.filterState.tanawari1.length
+  n += props.filterState.stockDaysBuckets.length
   return n
 })
 
@@ -306,6 +316,36 @@ const summaryText = computed(() =>
                 :model-value="filterState.seasons"
                 empty-label="季節区分候補がありません"
                 @update:model-value="(v: string[]) => updateFilter('seasons', v)"
+              />
+            </div>
+          </details>
+
+          <details class="mb-2">
+            <summary class="cursor-pointer text-sm text-slate-700">
+              棚割1
+              <span v-if="filterState.tanawari1.length > 0" class="ml-2 text-xs text-indigo-600">●{{ filterState.tanawari1.length }}</span>
+            </summary>
+            <div class="mt-2">
+              <CrossTabMultiSelectChips
+                :options="tanawari1ChipOptions"
+                :model-value="filterState.tanawari1"
+                empty-label="棚割1候補がありません"
+                @update:model-value="(v: string[]) => updateFilter('tanawari1', v)"
+              />
+            </div>
+          </details>
+
+          <details class="mb-2">
+            <summary class="cursor-pointer text-sm text-slate-700">
+              平均在庫日数
+              <span v-if="filterState.stockDaysBuckets.length > 0" class="ml-2 text-xs text-indigo-600">●{{ filterState.stockDaysBuckets.length }}</span>
+            </summary>
+            <div class="mt-2">
+              <CrossTabMultiSelectChips
+                :options="stockDaysChipOptions"
+                :model-value="filterState.stockDaysBuckets"
+                empty-label="候補がありません"
+                @update:model-value="(v: string[]) => updateFilter('stockDaysBuckets', v)"
               />
             </div>
           </details>

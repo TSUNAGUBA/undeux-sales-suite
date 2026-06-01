@@ -17,10 +17,14 @@ export interface RankingDimensionInfo {
   label: string
 }
 
-/** 集計軸カタログ（SoT）。バックエンドの BreakdownDimension に対応する。 */
+/**
+ * 集計軸カタログ（SoT）。バックエンドの BreakdownDimension に対応する。
+ * 並び順は要件に従い 商品記号 → 単品 → 品番3桁 を先頭に置き、以降は属性軸を続ける。
+ */
 export const RANKING_DIMENSIONS: readonly RankingDimensionInfo[] = [
-  { key: 'hinban', label: '品番3桁' },
+  { key: 'shohinKigo', label: '商品記号' },
   { key: 'product', label: '単品（品番-単品）' },
+  { key: 'hinban', label: '品番3桁' },
   { key: 'businessType', label: '業態' },
   { key: 'department', label: '部門' },
   { key: 'season', label: '季節区分' },
@@ -29,7 +33,6 @@ export const RANKING_DIMENSIONS: readonly RankingDimensionInfo[] = [
   { key: 'chohyoKubun', label: '帳票区分' },
   { key: 'tanawari1', label: '棚割1' },
   { key: 'tanawari2', label: '棚割2' },
-  { key: 'shohinKigo', label: '商品記号' },
 ]
 
 const DIMENSION_BY_KEY: ReadonlyMap<RankingDimensionKey, RankingDimensionInfo> = new Map(

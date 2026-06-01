@@ -6,6 +6,8 @@ import {
   Boxes,
   LayoutGrid,
   ListOrdered,
+  ScatterChart,
+  SlidersHorizontal,
   Upload,
   LogOut,
   Shirt,
@@ -65,6 +67,8 @@ const navItems = [
   { to: '/inventory', label: '在庫・発注分析', icon: Boxes },
   { to: '/crosstab', label: 'クロス集計', icon: LayoutGrid },
   { to: '/ranking', label: 'ランキング分析', icon: ListOrdered },
+  { to: '/scatter', label: '散布図・回帰分析', icon: ScatterChart },
+  { to: '/simulation', label: '重回帰シミュレーター', icon: SlidersHorizontal },
   { to: '/product-master', label: '商品マスタ', icon: Shirt },
   { to: '/imports', label: '週次取込', icon: Upload },
 ]

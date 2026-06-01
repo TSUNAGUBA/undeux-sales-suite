@@ -23,6 +23,7 @@ public static class ServiceCollectionExtensions
         services.AddScoped<MasterRepository>();
         services.AddScoped<ProductMasterRepository>();
         services.AddScoped<ProductAnalyticsRepository>();
+        services.AddScoped<AnalysisRepository>();
 
         return services;
     }

@@ -77,7 +77,10 @@ public sealed class ProductMasterRepository
         parameters.Add("limit", pageSize);
         parameters.Add("offset", (page - 1) * pageSize);
 
-        // SKU 統計と代表画像（最小 image_index）を 1 商品 1 行に集約する。
+        // SKU 統計・代表画像・売上実績（sales_weekly）を 1 商品 1 行に集約する。
+        // 売上実績は自然キー（業態×商品記号×品番）で結合する。売上数量は全期間合計、
+        // 店頭在庫数（zaikosu）と平均在庫日数（在日 zainiti の平均）は最新取込週スナップショット基準、
+        // 季節は最頻値（mode）。マスタにのみ存在し売上実績の無い商品は 0 / 空文字になる。
         var sql = $"""
             WITH sku_stats AS (
                 SELECT product_id,
@@ -88,6 +91,20 @@ public sealed class ProductMasterRepository
                        MAX(sales_price) FILTER (WHERE sales_price > 0)  AS max_sales_price
                 FROM m_product_sku
                 GROUP BY product_id
+            ),
+            sales_latest AS (
+                SELECT MAX(import_date) AS w FROM sales_weekly
+            ),
+            sales_agg AS (
+                SELECT sw.gyotai_code,
+                       sw.shohin_kigou,
+                       sw.hinban_code,
+                       COALESCE(SUM({SalesMetricSql.WeekQuantity}), 0)::bigint AS sales_quantity,
+                       COALESCE(SUM(sw.zaikosu) FILTER (WHERE sw.import_date = (SELECT w FROM sales_latest)), 0)::bigint AS store_stock,
+                       COALESCE(AVG(sw.zainiti) FILTER (WHERE sw.import_date = (SELECT w FROM sales_latest)), 0)::float8 AS average_stock_days,
+                       COALESCE(mode() WITHIN GROUP (ORDER BY sw.kisetsu), '') AS kisetsu
+                FROM sales_weekly sw
+                GROUP BY sw.gyotai_code, sw.shohin_kigou, sw.hinban_code
             )
             SELECT mp.product_id,
                    mp.business_category_cd,
@@ -105,9 +122,17 @@ public sealed class ProductMasterRepository
                    ss.min_sales_price,
                    ss.max_sales_price,
                    img.image_url                    AS primary_image_url,
+                   COALESCE(sa.sales_quantity, 0)::bigint    AS sales_quantity,
+                   COALESCE(sa.average_stock_days, 0)::float8 AS average_stock_days,
+                   COALESCE(sa.kisetsu, '')                   AS kisetsu,
+                   COALESCE(sa.store_stock, 0)::bigint        AS store_stock,
                    (COUNT(*) OVER ())::int          AS total_count
             FROM m_product mp
             LEFT JOIN sku_stats ss ON ss.product_id = mp.product_id
+            LEFT JOIN sales_agg sa
+                ON sa.gyotai_code  = mp.business_category_cd
+               AND sa.shohin_kigou = mp.product_sign
+               AND sa.hinban_code  = mp.product_type_crd
             LEFT JOIN LATERAL (
                 SELECT image_url
                 FROM m_product_sku
@@ -157,7 +182,7 @@ public sealed class ProductMasterRepository
         var parameters = new DynamicParameters();
         parameters.Add("productId", productId);
 
-        var headSql = """
+        var headSql = $"""
             WITH sku_stats AS (
                 SELECT product_id,
                        COUNT(DISTINCT unit_cd)                          AS sku_count,
@@ -168,6 +193,9 @@ public sealed class ProductMasterRepository
                 FROM m_product_sku
                 WHERE product_id = @productId
                 GROUP BY product_id
+            ),
+            sales_latest AS (
+                SELECT MAX(import_date) AS w FROM sales_weekly
             )
             SELECT mp.product_id,
                    mp.business_category_cd,
@@ -185,9 +213,23 @@ public sealed class ProductMasterRepository
                    ss.min_sales_price,
                    ss.max_sales_price,
                    img.image_url                    AS primary_image_url,
+                   COALESCE(sa.sales_quantity, 0)::bigint     AS sales_quantity,
+                   COALESCE(sa.average_stock_days, 0)::float8 AS average_stock_days,
+                   COALESCE(sa.kisetsu, '')                   AS kisetsu,
+                   COALESCE(sa.store_stock, 0)::bigint        AS store_stock,
                    0::int                           AS total_count
             FROM m_product mp
             LEFT JOIN sku_stats ss ON ss.product_id = mp.product_id
+            LEFT JOIN LATERAL (
+                SELECT COALESCE(SUM({SalesMetricSql.WeekQuantity}), 0)::bigint AS sales_quantity,
+                       COALESCE(SUM(sw.zaikosu) FILTER (WHERE sw.import_date = (SELECT w FROM sales_latest)), 0)::bigint AS store_stock,
+                       COALESCE(AVG(sw.zainiti) FILTER (WHERE sw.import_date = (SELECT w FROM sales_latest)), 0)::float8 AS average_stock_days,
+                       COALESCE(mode() WITHIN GROUP (ORDER BY sw.kisetsu), '') AS kisetsu
+                FROM sales_weekly sw
+                WHERE sw.gyotai_code  = mp.business_category_cd
+                  AND sw.shohin_kigou = mp.product_sign
+                  AND sw.hinban_code  = mp.product_type_crd
+            ) AS sa ON true
             LEFT JOIN LATERAL (
                 SELECT image_url
                 FROM m_product_sku
@@ -266,7 +308,11 @@ public sealed class ProductMasterRepository
         row.SizeCount,
         row.MinSalesPrice,
         row.MaxSalesPrice,
-        row.PrimaryImageUrl);
+        row.PrimaryImageUrl,
+        row.SalesQuantity,
+        row.AverageStockDays,
+        row.Kisetsu,
+        row.StoreStock);
 
     private sealed record DivisionRow(string Code, string? Name);
 
@@ -287,6 +333,10 @@ public sealed class ProductMasterRepository
         int? MinSalesPrice,
         int? MaxSalesPrice,
         string? PrimaryImageUrl,
+        long SalesQuantity,
+        double AverageStockDays,
+        string Kisetsu,
+        long StoreStock,
         int TotalCount);
 
     private sealed record MasterProductSkuRawRow(

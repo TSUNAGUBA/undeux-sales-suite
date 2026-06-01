@@ -655,6 +655,15 @@ public sealed class SalesAnalyticsRepository
         "stockDays", "sellThroughRate", "stock",
     };
 
+    /// <summary>
+    /// 気温系メトリクス。時間軸（年/四半期/月）とエリア種別が指定された場合のみ利用可能。
+    /// 在庫系とは逆に時間バケットの期間に対する標準気候から決まる（売上行の集計ではない）。
+    /// </summary>
+    private static readonly IReadOnlyList<string> TemperatureMetrics = new[]
+    {
+        "tempAvg", "tempMax", "tempMin",
+    };
+
     /// <summary>未設定（NULL/空文字）のラベル代替表記。</summary>
     private const string UnsetLabel = "(未設定)";
 
@@ -692,6 +701,7 @@ public sealed class SalesAnalyticsRepository
         SalesQueryFilter filter,
         CrosstabDimension rowDim,
         CrosstabDimension colDim,
+        TemperatureArea? temperatureArea = null,
         CancellationToken cancellationToken = default)
     {
         filter.EnsureValid();
@@ -711,9 +721,24 @@ public sealed class SalesAnalyticsRepository
             var rowInfo = ToInfo(rowDim);
             var colInfo = ToInfo(colDim);
             var hasTimeAxis = TimeDimensions.Contains(rowDim) || TimeDimensions.Contains(colDim);
-            var availableMetrics = hasTimeAxis
-                ? AllMetricKeys.Where(m => !StockMetrics.Contains(m)).ToList()
-                : AllMetricKeys.ToList();
+
+            // メトリクス可否:
+            //  - 時間軸あり → 在庫系を除外。エリア種別が指定されていれば気温系を追加。
+            //  - 時間軸なし → 在庫系を含む全メトリクス（気温は時間バケットが無いため対象外）。
+            var temperatureActive = hasTimeAxis && temperatureArea.HasValue;
+            List<string> availableMetrics;
+            if (hasTimeAxis)
+            {
+                availableMetrics = AllMetricKeys.Where(m => !StockMetrics.Contains(m)).ToList();
+                if (temperatureActive)
+                {
+                    availableMetrics.AddRange(TemperatureMetrics);
+                }
+            }
+            else
+            {
+                availableMetrics = AllMetricKeys.ToList();
+            }
 
             await using var connection = await _connectionFactory.OpenConnectionAsync(cancellationToken);
 
@@ -799,7 +824,10 @@ public sealed class SalesAnalyticsRepository
                 colInfo,
                 hasTimeAxis,
                 availableMetrics,
-                latestWeek);
+                latestWeek,
+                rowDim,
+                colDim,
+                temperatureActive ? temperatureArea : null);
 
             return response;
         }
@@ -880,7 +908,10 @@ public sealed class SalesAnalyticsRepository
         CrosstabDimensionInfo colInfo,
         bool hasTimeAxis,
         IReadOnlyList<string> availableMetrics,
-        DateOnly? latestWeek)
+        DateOnly? latestWeek,
+        CrosstabDimension rowDim,
+        CrosstabDimension colDim,
+        TemperatureArea? temperatureArea)
     {
         // 1) ラベル順序確定用の暫定集計（全データ）。amount 降順でラベル順を決めるためにだけ使う。
         var initialRowAggregates = new Dictionary<string, FlowAggregate>();
@@ -919,6 +950,54 @@ public sealed class SalesAnalyticsRepository
         }
         var rowSet = new HashSet<string>(rowLabels);
         var colSet = new HashSet<string>(columnLabels);
+
+        // 3.5) 気温オーバーレイ。時間軸（行 or 列）の各ラベルが表す期間に対する標準気候を算出する。
+        //      気温は売上行の集計ではなく時間バケットの期間だけで決まるため、同一時間ラベルの
+        //      全セルで同じ値になる。時間軸を跨いだ合計（全体合計・非時間軸方向の小計）は全体平均
+        //      （平均=各ラベル平均の平均、最高=最高の最大、最低=最低の最小）を用いる。
+        var temperatureActive = temperatureArea.HasValue && hasTimeAxis;
+        var temperatureByLabel = new Dictionary<string, TemperatureReading>(StringComparer.Ordinal);
+        TemperatureReading? temperatureOverall = null;
+        var tempAxisIsRow = false;
+        if (temperatureActive)
+        {
+            tempAxisIsRow = string.Equals(rowInfo.Category, "time", StringComparison.Ordinal);
+            var timeDim = tempAxisIsRow ? rowDim : colDim;
+            var timeLabels = tempAxisIsRow ? rowLabels : columnLabels;
+            double sumAvg = 0;
+            var maxOut = double.NegativeInfinity;
+            var minOut = double.PositiveInfinity;
+            var count = 0;
+            foreach (var label in timeLabels)
+            {
+                var range = TimeLabelRange(timeDim, label);
+                if (range is null)
+                {
+                    continue;
+                }
+                var reading = ClimateModel.Range(temperatureArea!.Value, range.Value.Start, range.Value.End);
+                temperatureByLabel[label] = reading;
+                sumAvg += reading.Average;
+                if (reading.Maximum > maxOut) maxOut = reading.Maximum;
+                if (reading.Minimum < minOut) minOut = reading.Minimum;
+                count++;
+            }
+            if (count > 0)
+            {
+                temperatureOverall = new TemperatureReading(sumAvg / count, maxOut, minOut);
+            }
+        }
+
+        // セル（rowLabel × colLabel）の気温。時間軸ラベル側の値を引く（非時間軸の値には依存しない）。
+        TemperatureReading? CellTemperature(string rowLabel, string colLabel)
+        {
+            if (!temperatureActive)
+            {
+                return null;
+            }
+            var key = tempAxisIsRow ? rowLabel : colLabel;
+            return temperatureByLabel.TryGetValue(key, out var reading) ? reading : (TemperatureReading?)null;
+        }
 
         // 4) 切り詰め後の集計を再構築。表示対象セル（rowSet × colSet）のみを対象に
         //    rowAggregates / colAggregates / grand / cells を構築することで、
@@ -1012,7 +1091,8 @@ public sealed class SalesAnalyticsRepository
                 row.StockDays,
                 snap,
                 grandAmount,
-                hasTimeAxis);
+                hasTimeAxis,
+                CellTemperature(row.RowKey, row.ColKey));
         }
 
         // 6) 行合計セル / 列合計セル / 総計セル
@@ -1027,9 +1107,15 @@ public sealed class SalesAnalyticsRepository
             {
                 rowSnap = rs.ToRow(label, string.Empty);
             }
+            // 行が時間軸ならその行ラベルの気温、そうでなければ（列が時間軸）全体平均。
+            var rowTemp = !temperatureActive
+                ? (TemperatureReading?)null
+                : tempAxisIsRow
+                    ? (temperatureByLabel.TryGetValue(label, out var rt) ? rt : (TemperatureReading?)null)
+                    : temperatureOverall;
             rowTotals[label] = BuildCell(
                 agg.Amount, agg.Quantity, agg.GrossProfit, agg.AverageStockDays(),
-                rowSnap, grandAmount, hasTimeAxis);
+                rowSnap, grandAmount, hasTimeAxis, rowTemp);
         }
 
         var columnTotals = new Dictionary<string, CrosstabCell>();
@@ -1043,15 +1129,21 @@ public sealed class SalesAnalyticsRepository
             {
                 colSnap = cs.ToRow(string.Empty, label);
             }
+            // 列が時間軸ならその列ラベルの気温、そうでなければ（行が時間軸）全体平均。
+            var colTemp = !temperatureActive
+                ? (TemperatureReading?)null
+                : !tempAxisIsRow
+                    ? (temperatureByLabel.TryGetValue(label, out var ct) ? ct : (TemperatureReading?)null)
+                    : temperatureOverall;
             columnTotals[label] = BuildCell(
                 agg.Amount, agg.Quantity, agg.GrossProfit, agg.AverageStockDays(),
-                colSnap, grandAmount, hasTimeAxis);
+                colSnap, grandAmount, hasTimeAxis, colTemp);
         }
 
         var grandSnap = grandSnapshot?.ToRow(string.Empty, string.Empty);
         var grandTotal = BuildCell(
             grand.Amount, grand.Quantity, grand.GrossProfit, grand.AverageStockDays(),
-            grandSnap, grandAmount, hasTimeAxis);
+            grandSnap, grandAmount, hasTimeAxis, temperatureOverall);
 
         return new CrosstabMatrixResponse(
             rowInfo,
@@ -1107,7 +1199,10 @@ public sealed class SalesAnalyticsRepository
         return labels;
     }
 
-    /// <summary>セル値を構築する。在庫系は時間軸絡みなら null、構成比率は amount/grandAmount × 100。</summary>
+    /// <summary>
+    /// セル値を構築する。在庫系は時間軸絡みなら null、構成比率は amount/grandAmount × 100。
+    /// 気温は時間軸＋エリア種別が指定された場合のみ <paramref name="temperature"/> から設定する。
+    /// </summary>
     private static CrosstabCell BuildCell(
         long amount,
         long quantity,
@@ -1115,7 +1210,8 @@ public sealed class SalesAnalyticsRepository
         double? stockDays,
         CrosstabSnapshotRow? snap,
         long grandAmount,
-        bool hasTimeAxis)
+        bool hasTimeAxis,
+        TemperatureReading? temperature)
     {
         var sharePercent = grandAmount == 0
             ? (double?)null
@@ -1146,7 +1242,60 @@ public sealed class SalesAnalyticsRepository
             sharePercent,
             stockDaysOut,
             sellThroughRate,
-            stock));
+            stock,
+            temperature?.Average,
+            temperature?.Maximum,
+            temperature?.Minimum));
+    }
+
+    /// <summary>
+    /// 時間軸ラベル（"2024" / "2024-Q2" / "2024-05"）が表す暦上の期間を返す。
+    /// 気温オーバーレイの期間気候算出に用いる。未設定ラベルや解析不能なラベルは <c>null</c>。
+    /// </summary>
+    private static (DateOnly Start, DateOnly End)? TimeLabelRange(CrosstabDimension dim, string label)
+    {
+        if (string.Equals(label, UnsetLabel, StringComparison.Ordinal))
+        {
+            return null;
+        }
+
+        switch (dim)
+        {
+            case CrosstabDimension.TimeYear:
+            {
+                if (!int.TryParse(label, out var year) || year is < 1 or > 9999)
+                {
+                    return null;
+                }
+                return (new DateOnly(year, 1, 1), new DateOnly(year, 12, 31));
+            }
+            case CrosstabDimension.TimeQuarter:
+            {
+                var parts = label.Split("-Q", StringSplitOptions.None);
+                if (parts.Length != 2
+                    || !int.TryParse(parts[0], out var year) || year is < 1 or > 9999
+                    || !int.TryParse(parts[1], out var quarter) || quarter is < 1 or > 4)
+                {
+                    return null;
+                }
+                var start = new DateOnly(year, (quarter - 1) * 3 + 1, 1);
+                return (start, start.AddMonths(3).AddDays(-1));
+            }
+            case CrosstabDimension.TimeMonth:
+            {
+                var parts = label.Split('-', StringSplitOptions.None);
+                if (parts.Length != 2
+                    || !int.TryParse(parts[0], out var year) || year is < 1 or > 9999
+                    || !int.TryParse(parts[1], out var month) || month is < 1 or > 12)
+                {
+                    return null;
+                }
+                var start = new DateOnly(year, month, 1);
+                return (start, start.AddMonths(1).AddDays(-1));
+            }
+            default:
+                return null;
+        }
     }
 
     /// <summary>

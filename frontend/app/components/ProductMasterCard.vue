@@ -127,6 +127,22 @@ const priceLabel = computed(() => {
           <dt class="text-slate-400">サイズ</dt>
           <dd class="font-semibold text-slate-900">{{ formatNumber(product.sizeCount) }}</dd>
         </div>
+        <div class="flex flex-col gap-0.5">
+          <dt class="text-slate-400">売上数量</dt>
+          <dd class="font-semibold text-slate-900">{{ formatNumber(product.salesQuantity) }}</dd>
+        </div>
+        <div class="flex flex-col gap-0.5">
+          <dt class="text-slate-400">平均在庫日数</dt>
+          <dd class="font-semibold text-slate-900">{{ formatDecimal(product.averageStockDays, 1) }} 日</dd>
+        </div>
+        <div class="flex flex-col gap-0.5">
+          <dt class="text-slate-400">季節（季節コード）</dt>
+          <dd class="font-semibold text-slate-900">{{ product.kisetsu || '—' }}</dd>
+        </div>
+        <div class="flex flex-col gap-0.5">
+          <dt class="text-slate-400">店頭在庫数</dt>
+          <dd class="font-semibold text-slate-900">{{ formatNumber(product.storeStock) }}</dd>
+        </div>
       </dl>
     </div>
   </NuxtLink>
@@ -204,6 +220,22 @@ const priceLabel = computed(() => {
         <div class="flex flex-col gap-0.5">
           <dt class="text-slate-400">サイズ</dt>
           <dd class="font-semibold text-slate-900">{{ formatNumber(product.sizeCount) }}</dd>
+        </div>
+        <div class="flex flex-col gap-0.5">
+          <dt class="text-slate-400">売上数量</dt>
+          <dd class="font-semibold text-slate-900">{{ formatNumber(product.salesQuantity) }}</dd>
+        </div>
+        <div class="flex flex-col gap-0.5">
+          <dt class="text-slate-400">平均在庫日数</dt>
+          <dd class="font-semibold text-slate-900">{{ formatDecimal(product.averageStockDays, 1) }} 日</dd>
+        </div>
+        <div class="flex flex-col gap-0.5">
+          <dt class="text-slate-400">季節（季節コード）</dt>
+          <dd class="font-semibold text-slate-900">{{ product.kisetsu || '—' }}</dd>
+        </div>
+        <div class="flex flex-col gap-0.5">
+          <dt class="text-slate-400">店頭在庫数</dt>
+          <dd class="font-semibold text-slate-900">{{ formatNumber(product.storeStock) }}</dd>
         </div>
       </dl>
     </div>

@@ -84,6 +84,22 @@ public enum SalesMetric
     GrossProfit,
 }
 
+/// <summary>
+/// 気温分析のエリア種別。括弧内は参照する観測地点。
+/// クロス集計の気温メトリクスや散布図・重回帰の説明変数に用いる。
+/// </summary>
+public enum TemperatureArea
+{
+    /// <summary>標準（東京）。</summary>
+    Standard,
+
+    /// <summary>寒冷（札幌）。</summary>
+    Cold,
+
+    /// <summary>温暖（那覇）。</summary>
+    Warm,
+}
+
 /// <summary>商品別分析の並び替えキー。</summary>
 public enum ProductSortKey
 {
