@@ -13,6 +13,7 @@
  * undeux 既存の DataTable.vue とは仕様が大きく異なるため独立コンポーネントとして提供する。
  */
 
+import { Check, Copy } from 'lucide-vue-next'
 import type {
   CrosstabCell,
   CrosstabMatrixResponse,
@@ -69,13 +70,209 @@ function formatMetric(value: number | null | undefined, info: CrosstabMetricInfo
 function cellAt(row: string, col: string): CrosstabCell | undefined {
   return props.data.cells[row]?.[col]
 }
+
+// ============================================================
+// クリップボードへのコピー（Excel への貼り付け用）
+//
+// Excel はクリップボードの text/html（インライン CSS 付き <table>）を解釈し、フォント・文字色・
+// セル背景色・罫線・配置を再現する。そこで、描画済みテーブルの「計算済みスタイル」をインライン化した
+// HTML を生成して text/html で書き込み、併せて TSV を text/plain で書き込む（他アプリ・素のペースト用）。
+// Clipboard API（要セキュアコンテキスト）が使えない場合は execCommand へフォールバックする。
+// ============================================================
+
+const tableRef = ref<HTMLTableElement | null>(null)
+const copied = ref(false)
+const copyFailed = ref(false)
+let feedbackTimer: ReturnType<typeof setTimeout> | null = null
+
+const canCopy = computed(() => props.data.rowLabels.length > 0)
+
+/** Excel 再現に必要な計算済みスタイルを clone 要素へインライン化し、class 等は除去する。 */
+function inlineComputedStyle(source: Element, target: HTMLElement): void {
+  const cs = getComputedStyle(source)
+  const parts: string[] = []
+  if (cs.color) parts.push(`color:${cs.color}`)
+  const bg = cs.backgroundColor
+  if (bg && bg !== 'rgba(0, 0, 0, 0)' && bg !== 'transparent') {
+    parts.push(`background-color:${bg}`)
+  }
+  parts.push(`font-family:${cs.fontFamily}`)
+  parts.push(`font-size:${cs.fontSize}`)
+  parts.push(`font-weight:${cs.fontWeight}`)
+  if (cs.fontStyle && cs.fontStyle !== 'normal') parts.push(`font-style:${cs.fontStyle}`)
+  if (cs.textAlign && cs.textAlign !== 'start' && cs.textAlign !== 'normal') {
+    parts.push(`text-align:${cs.textAlign}`)
+  }
+  if (cs.verticalAlign && cs.verticalAlign !== 'baseline') {
+    parts.push(`vertical-align:${cs.verticalAlign}`)
+  }
+  // 罫線・余白はセル（td/th）にのみ付与する。画面は「片側のみ罫線 ＋ border-spacing:0」の
+  // スキームだが、Excel 向けクリップボードは border-collapse:collapse で結合するため、片側だけだと
+  // 外周や接合部の罫線が欠ける。そこで全辺を均一の 1px 罫線にし、画面と同じ完全な格子を再現する。
+  const tag = source.tagName.toLowerCase()
+  if (tag === 'td' || tag === 'th') {
+    let gridColor = ''
+    for (const side of ['bottom', 'right', 'top', 'left']) {
+      if (cs.getPropertyValue(`border-${side}-width`) !== '0px') {
+        gridColor = cs.getPropertyValue(`border-${side}-color`)
+        break
+      }
+    }
+    parts.push(`border:1px solid ${gridColor || 'rgb(226, 232, 240)'}`)
+    parts.push(`padding:${cs.paddingTop} ${cs.paddingRight} ${cs.paddingBottom} ${cs.paddingLeft}`)
+  }
+  target.setAttribute('style', parts.join(';'))
+  target.removeAttribute('class')
+}
+
+/** 描画済みテーブルから、計算済みスタイルをインライン化した Excel 貼り付け用 HTML を生成する。 */
+function buildStyledHtml(source: HTMLTableElement): string {
+  const clone = source.cloneNode(true) as HTMLTableElement
+  inlineComputedStyle(source, clone)
+  // Excel では罫線をセル間で結合させたいので collapse にする（描画は separate のまま）。
+  clone.style.borderCollapse = 'collapse'
+  clone.style.borderSpacing = '0'
+
+  const srcEls = source.querySelectorAll<HTMLElement>('*')
+  const dstEls = clone.querySelectorAll<HTMLElement>('*')
+  for (let i = 0; i < srcEls.length; i++) {
+    const s = srcEls[i]
+    const d = dstEls[i]
+    if (s && d) inlineComputedStyle(s, d)
+  }
+  return `<meta charset="utf-8">${clone.outerHTML}`
+}
+
+/**
+ * セル内テキストを抽出する。縦積み（stacked）メトリクスのセルは
+ * "ラベル 値 / ラベル 値" の形に整形し、TSV で読めるようにする（素の textContent は
+ * ラベルと値が連結して潰れるため）。インライン列・単一メトリクスは textContent をそのまま使う。
+ */
+function extractCellText(cell: HTMLTableCellElement): string {
+  const stackedRows = cell.querySelectorAll(':scope > div > div')
+  if (stackedRows.length > 0) {
+    return Array.from(stackedRows)
+      .map((row) =>
+        Array.from(row.children)
+          .map((child) => (child.textContent ?? '').trim())
+          .filter(Boolean)
+          .join(' '),
+      )
+      .filter(Boolean)
+      .join(' / ')
+  }
+  return (cell.textContent ?? '').replace(/\s+/g, ' ').trim()
+}
+
+/** 素のペースト用に TSV（タブ区切り）を生成する。 */
+function buildPlainText(source: HTMLTableElement): string {
+  return Array.from(source.rows)
+    .map((tr) => Array.from(tr.cells).map(extractCellText).join('\t'))
+    .join('\n')
+}
+
+/** execCommand によるフォールバックコピー（Clipboard API 非対応・非セキュアコンテキスト用）。 */
+function fallbackCopy(html: string): boolean {
+  const container = document.createElement('div')
+  container.setAttribute('contenteditable', 'true')
+  container.style.position = 'fixed'
+  container.style.left = '-9999px'
+  container.style.top = '0'
+  container.innerHTML = html
+  document.body.appendChild(container)
+
+  const selection = window.getSelection()
+  // ユーザーが既に持っている選択範囲を退避し、コピー後に復元する。
+  const savedRanges: Range[] = selection
+    ? Array.from({ length: selection.rangeCount }, (_, i) => selection.getRangeAt(i))
+    : []
+  const range = document.createRange()
+  range.selectNodeContents(container)
+  selection?.removeAllRanges()
+  selection?.addRange(range)
+
+  let ok = false
+  try {
+    ok = document.execCommand('copy')
+  } catch {
+    ok = false
+  }
+  selection?.removeAllRanges()
+  for (const saved of savedRanges) selection?.addRange(saved)
+  document.body.removeChild(container)
+  return ok
+}
+
+function showFeedback(success: boolean): void {
+  if (feedbackTimer) clearTimeout(feedbackTimer)
+  copied.value = success
+  copyFailed.value = !success
+  feedbackTimer = setTimeout(() => {
+    copied.value = false
+    copyFailed.value = false
+  }, success ? 2000 : 3000)
+}
+
+/** テーブルをクリップボードへコピーする（text/html ＋ text/plain）。 */
+async function copyForExcel(): Promise<void> {
+  const table = tableRef.value
+  if (!table || !canCopy.value) return
+
+  const html = buildStyledHtml(table)
+  const text = buildPlainText(table)
+
+  let ok = false
+  try {
+    if (navigator.clipboard?.write && typeof ClipboardItem !== 'undefined') {
+      await navigator.clipboard.write([
+        new ClipboardItem({
+          'text/html': new Blob([html], { type: 'text/html' }),
+          'text/plain': new Blob([text], { type: 'text/plain' }),
+        }),
+      ])
+      ok = true
+    }
+  } catch {
+    ok = false
+  }
+  // 主要パスが失敗（権限・非対応・非セキュア）したら execCommand へフォールバック。
+  if (!ok) ok = fallbackCopy(html)
+  showFeedback(ok)
+}
+
+onBeforeUnmount(() => {
+  if (feedbackTimer) clearTimeout(feedbackTimer)
+})
+
 </script>
 
 <template>
-  <div
-    class="min-h-0 flex-1 w-full overflow-auto rounded-lg border border-slate-200 bg-white"
-  >
-    <table class="text-xs md:text-sm" style="border-collapse: separate; border-spacing: 0; min-width: 100%">
+  <div class="flex min-h-0 flex-1 flex-col gap-1.5">
+    <!-- コピーツールバー（テーブル直上・右寄せ。邪魔にならない位置に配置） -->
+    <div class="flex shrink-0 items-center justify-end">
+      <button
+        type="button"
+        class="inline-flex items-center gap-1.5 rounded-lg border px-2.5 py-1 text-xs transition-colors disabled:cursor-not-allowed disabled:opacity-40"
+        :class="
+          copied
+            ? 'border-emerald-300 bg-emerald-50 text-emerald-700'
+            : copyFailed
+              ? 'border-rose-300 bg-rose-50 text-rose-700'
+              : 'border-slate-300 bg-white text-slate-600 hover:bg-slate-50'
+        "
+        :disabled="!canCopy"
+        aria-label="テーブルをExcel貼り付け用にクリップボードへコピー"
+        title="スタイル付きでクリップボードへコピー（Excel に貼り付け可）"
+        @click="copyForExcel"
+      >
+        <Check v-if="copied" class="h-3.5 w-3.5" aria-hidden="true" />
+        <Copy v-else class="h-3.5 w-3.5" aria-hidden="true" />
+        {{ copied ? 'コピーしました' : copyFailed ? 'コピーに失敗しました' : 'コピー' }}
+      </button>
+    </div>
+
+    <div class="min-h-0 flex-1 w-full overflow-auto rounded-lg border border-slate-200 bg-white">
+      <table ref="tableRef" class="text-xs md:text-sm" style="border-collapse: separate; border-spacing: 0; min-width: 100%">
       <thead>
         <!-- メイン列ヘッダ -->
         <tr>
@@ -287,6 +484,7 @@ function cellAt(row: string, col: string): CrosstabCell | undefined {
           </td>
         </tr>
       </tbody>
-    </table>
+      </table>
+    </div>
   </div>
 </template>
