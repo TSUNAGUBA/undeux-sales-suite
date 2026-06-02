@@ -26,6 +26,7 @@ import type {
   CrosstabMetricKey,
   MetricDisplayMode,
   SalesFilterState,
+  TemperatureArea,
 } from '~/types/api'
 
 useHead({ title: 'クロス集計 | UndeuxSales' })
@@ -94,7 +95,13 @@ const METRICS: CrosstabMetricInfo[] = [
   { key: 'stockDays', label: '在日（平均）', format: 'decimal' },
   { key: 'sellThroughRate', label: '消化率', format: 'percent' },
   { key: 'stock', label: '在庫数', format: 'number' },
+  { key: 'tempAvg', label: '週平均気温', format: 'temperature' },
+  { key: 'tempMax', label: '週最高気温', format: 'temperature' },
+  { key: 'tempMin', label: '週最低気温', format: 'temperature' },
 ]
+
+/** 気温系メトリクス（時間軸＋エリア種別指定時のみ利用可能。在庫系とは排他）。 */
+const TEMP_METRICS: CrosstabMetricKey[] = ['tempAvg', 'tempMax', 'tempMin']
 
 const DEFAULT_ROW: CrosstabDimensionKey = 'category:businessType'
 const DEFAULT_COL: CrosstabDimensionKey = 'time:year'
@@ -108,6 +115,8 @@ const rowDimensionKey = ref<CrosstabDimensionKey>(DEFAULT_ROW)
 const columnDimensionKey = ref<CrosstabDimensionKey>(DEFAULT_COL)
 const selectedMetrics = ref<CrosstabMetricKey[]>([...DEFAULT_METRICS])
 const metricDisplayMode = ref<MetricDisplayMode>('stacked')
+// 気温メトリクスのエリア種別（null=気温なし）。時間軸との組合せで気温系が利用可能になる。
+const temperatureArea = ref<TemperatureArea | null>(null)
 
 const data = ref<CrosstabMatrixResponse | null>(null)
 const loading = ref(true)
@@ -156,19 +165,24 @@ const availableMetrics = computed<CrosstabMetricKey[]>(() => {
   if (d) {
     return d.availableMetrics
   }
+  // API 未取得時のフォールバック（バックエンドの可否ロジックと一致させる）。
+  //  - 時間軸あり → 在庫系を除外。エリア選択中なら気温系を追加。
+  //  - 時間軸なし → 在庫系を含む全メトリクス（気温は時間バケットが無いため対象外）。
   if (hasTimeAxis.value) {
-    return METRICS.filter((m) => !STOCK_METRICS.includes(m.key)).map((m) => m.key)
+    const base = METRICS
+      .filter((m) => !STOCK_METRICS.includes(m.key) && !TEMP_METRICS.includes(m.key))
+      .map((m) => m.key)
+    return temperatureArea.value ? [...base, ...TEMP_METRICS] : base
   }
-  return METRICS.map((m) => m.key)
+  return METRICS.filter((m) => !TEMP_METRICS.includes(m.key)).map((m) => m.key)
 })
 
-// 時間軸を含む組合せに切り替わったら、selectedMetrics から在庫系を自動的に外す。
-watch(hasTimeAxis, (timeAxis) => {
-  if (!timeAxis) return
+// 選択中メトリクスを利用可能集合へ健全化する（時間軸で在庫系、エリア未選択/時間軸なしで気温系を自動除外）。
+// 全て消えるケース（万一）は amount を残す。ranking.vue の availableMetrics 健全化と同じ思想。
+watch(availableMetrics, (avail) => {
   const before = selectedMetrics.value
-  const after = before.filter((m) => !STOCK_METRICS.includes(m))
+  const after = before.filter((m) => avail.includes(m))
   if (after.length === before.length) return
-  // 全部消えてしまうケース（万一）は amount を残す。
   selectedMetrics.value = after.length > 0 ? after : ['amount']
 })
 
@@ -184,6 +198,7 @@ async function load(): Promise<void> {
       ...toQuery(),
       rowDimension: rowDimensionKey.value,
       columnDimension: columnDimensionKey.value,
+      ...(temperatureArea.value ? { temperatureArea: temperatureArea.value } : {}),
     })
   } catch (error) {
     errorMessage.value = apiErrorMessage(error)
@@ -198,11 +213,12 @@ async function applyAndLoad(): Promise<void> {
 
 function resetAndLoad(): void {
   reset()
-  // row/col が既定値と異なる場合のみ watch が発火する。そのときだけ
+  // row/col/気温エリア が既定値と異なる場合のみ watch が発火する。そのときだけ
   // 自動 fetch を 1 回スキップし、明示的 load() に集約する。
   if (
     rowDimensionKey.value !== DEFAULT_ROW
     || columnDimensionKey.value !== DEFAULT_COL
+    || temperatureArea.value !== null
   ) {
     skipNextDimensionWatch = true
   }
@@ -210,6 +226,7 @@ function resetAndLoad(): void {
   columnDimensionKey.value = DEFAULT_COL
   selectedMetrics.value = [...DEFAULT_METRICS]
   metricDisplayMode.value = 'stacked'
+  temperatureArea.value = null
   void load()
 }
 
@@ -269,11 +286,9 @@ const cellCountWarning = computed(() => {
  * 初期化中（initialized=false）は抑止し、onMounted の明示的 load() のみ実行する。
  * resetAndLoad など、明示的 load() と watch が衝突するケースは skipNextDimensionWatch で抑止する。
  */
-watch([rowDimensionKey, columnDimensionKey], (next, prev) => {
+watch([rowDimensionKey, columnDimensionKey, temperatureArea], (next, prev) => {
   if (!initialized.value) return
-  const [r, c] = next
-  const [pr, pc] = prev
-  if (r === pr && c === pc) return
+  if (next[0] === prev[0] && next[1] === prev[1] && next[2] === prev[2]) return
   if (skipNextDimensionWatch) {
     skipNextDimensionWatch = false
     return
@@ -317,6 +332,8 @@ onMounted(async () => {
       :metric-display-mode="metricDisplayMode"
       :available-metrics="availableMetrics"
       :filter-state="filter"
+      :temperature-area="temperatureArea"
+      :has-time-axis="hasTimeAxis"
       :options-error="optionsError"
       :available-years="years"
       :loading="loading"
@@ -325,6 +342,7 @@ onMounted(async () => {
       @update:selected-metrics="onUpdateSelectedMetrics"
       @update:metric-display-mode="(v) => (metricDisplayMode = v)"
       @update:filter-state="(v) => assignFilter(v)"
+      @update:temperature-area="(v) => (temperatureArea = v)"
       @swap-dimensions="swapDimensions"
       @apply="applyAndLoad"
       @reset="resetAndLoad"

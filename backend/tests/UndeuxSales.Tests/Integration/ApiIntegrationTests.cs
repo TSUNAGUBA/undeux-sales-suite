@@ -577,6 +577,152 @@ public sealed class ApiIntegrationTests
         Assert.Equal(ErrorCodes.ImportFileMissing.Code, error!.ErrorCode);
     }
 
+    // ------------------------------------------------------------
+    // 追加フィルタ（棚割1 / 平均在庫日数）・気温メトリクス・分析エンドポイント
+    // ------------------------------------------------------------
+
+    [Fact]
+    public async Task Filters_IncludesTanawari1Field()
+    {
+        var client = CreateAuthedClient();
+
+        var filters = await client.GetFromJsonAsync<FilterOptions>("/api/filters");
+
+        Assert.NotNull(filters);
+        // シードの tanawari1 は NULL のため選択肢は空だが、フィールド自体は存在する。
+        Assert.NotNull(filters!.Tanawari1);
+    }
+
+    [Fact]
+    public async Task Summary_StockDaysBucketGe61_ExcludesAll()
+    {
+        var client = CreateAuthedClient();
+
+        // シードの在日(zainiti)は全行 30 → 61日以上バケットには該当せず売上 0。
+        var summary = await client.GetFromJsonAsync<SummaryResponse>(
+            "/api/summary?from=2026-05-04&to=2026-05-11&stockDaysBuckets=ge61");
+
+        Assert.NotNull(summary);
+        Assert.Equal(0, summary!.Kpi.Quantity);
+    }
+
+    [Fact]
+    public async Task Summary_StockDaysBucketLe30_IncludesAll()
+    {
+        var client = CreateAuthedClient();
+
+        // 在日 30 は「30日以内」バケットに該当 → 全シードが対象（売上数量 28）。
+        var summary = await client.GetFromJsonAsync<SummaryResponse>(
+            "/api/summary?from=2026-05-04&to=2026-05-11&stockDaysBuckets=le30");
+
+        Assert.NotNull(summary);
+        Assert.Equal(28, summary!.Kpi.Quantity);
+    }
+
+    [Fact]
+    public async Task Summary_Tanawari1Filter_NonExistentValue_ReturnsZero()
+    {
+        var client = CreateAuthedClient();
+
+        // シードの tanawari1 は NULL のため、任意の値で絞ると 0 件。
+        var summary = await client.GetFromJsonAsync<SummaryResponse>(
+            "/api/summary?from=2026-05-04&to=2026-05-11&tanawari1=NOPE");
+
+        Assert.NotNull(summary);
+        Assert.Equal(0, summary!.Kpi.Quantity);
+    }
+
+    [Fact]
+    public async Task Crosstab_Temperature_AvailableWithTimeAxisAndArea()
+    {
+        var client = CreateAuthedClient();
+
+        var response = await client.GetFromJsonAsync<CrosstabMatrixResponse>(
+            "/api/crosstab?rowDimension=category:department&columnDimension=time:month"
+            + "&temperatureArea=standard&from=2026-05-04&to=2026-05-11");
+
+        Assert.NotNull(response);
+        // 時間軸＋エリア指定 → 気温系メトリクスが利用可能、在庫系は除外。
+        Assert.Contains("tempAvg", response!.AvailableMetrics);
+        Assert.Contains("tempMax", response.AvailableMetrics);
+        Assert.Contains("tempMin", response.AvailableMetrics);
+        Assert.DoesNotContain("stock", response.AvailableMetrics);
+
+        // 列は 2026-05 のみ。セルの気温が標準気候（東京5月）として設定されている。
+        Assert.Equal("2026-05", response.ColumnLabels[0]);
+        var firstRow = response.RowLabels[0];
+        var cell = response.Cells[firstRow]["2026-05"];
+        Assert.NotNull(cell.Values.TempAvg);
+        Assert.NotNull(cell.Values.TempMax);
+        Assert.NotNull(cell.Values.TempMin);
+        Assert.True(cell.Values.TempMax >= cell.Values.TempAvg);
+        Assert.True(cell.Values.TempAvg >= cell.Values.TempMin);
+        Assert.InRange(cell.Values.TempAvg!.Value, 10.0, 30.0); // 東京5月の妥当域
+    }
+
+    [Fact]
+    public async Task Crosstab_Temperature_RequiresArea()
+    {
+        var client = CreateAuthedClient();
+
+        // エリア未指定 → 時間軸があっても気温メトリクスは提供しない。
+        var response = await client.GetFromJsonAsync<CrosstabMatrixResponse>(
+            "/api/crosstab?rowDimension=category:department&columnDimension=time:month"
+            + "&from=2026-05-04&to=2026-05-11");
+
+        Assert.NotNull(response);
+        Assert.DoesNotContain("tempAvg", response!.AvailableMetrics);
+    }
+
+    [Fact]
+    public async Task Crosstab_Temperature_RequiresTimeAxis()
+    {
+        var client = CreateAuthedClient();
+
+        // 時間軸が無い（カテゴリ×カテゴリ）→ エリア指定でも気温メトリクスは提供しない。
+        var response = await client.GetFromJsonAsync<CrosstabMatrixResponse>(
+            "/api/crosstab?rowDimension=category:department&columnDimension=category:hinban"
+            + "&temperatureArea=standard&from=2026-05-04&to=2026-05-11");
+
+        Assert.NotNull(response);
+        Assert.DoesNotContain("tempAvg", response!.AvailableMetrics);
+        // 時間軸が無いので在庫系は引き続き利用可能。
+        Assert.Contains("stock", response.AvailableMetrics);
+    }
+
+    [Fact]
+    public async Task Analysis_WeeklySeries_ReturnsPointsWithTemperature()
+    {
+        var client = CreateAuthedClient();
+
+        var series = await client.GetFromJsonAsync<WeeklySeriesResponse>(
+            "/api/analysis/weekly-series?from=2026-05-04&to=2026-05-11&area=standard");
+
+        Assert.NotNull(series);
+        Assert.Equal("standard", series!.Area);
+        Assert.Equal("東京", series.AreaCity);
+        Assert.Equal(2, series.Points.Count);
+        foreach (var point in series.Points)
+        {
+            Assert.True(point.TempMax >= point.TempAvg);
+            Assert.True(point.TempAvg >= point.TempMin);
+            Assert.InRange(point.TempAvg, 8.0, 26.0); // 東京・5月上中旬の妥当域
+        }
+    }
+
+    [Fact]
+    public async Task Analysis_Markdown_ReturnsOk()
+    {
+        var client = CreateAuthedClient();
+
+        // マスタ未シードのため点は空だが、200 で空配列を返す（値引き率はマスタ定価が必要）。
+        var response = await client.GetFromJsonAsync<MarkdownScatterResponse>(
+            "/api/analysis/markdown?from=2026-05-04&to=2026-05-11");
+
+        Assert.NotNull(response);
+        Assert.NotNull(response!.Points);
+    }
+
     private static string ValidCsvRow(string importDate)
         => $"{importDate},C900,G9,売発注,09,900,9001,テスト商品,S900,色,M,"
            + "1,0,0,0,0,0,0,0,0,0,0,5,3,5,1.0,20250101,10,500,1200,通季,0";

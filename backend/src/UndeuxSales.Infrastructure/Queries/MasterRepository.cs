@@ -32,7 +32,15 @@ public sealed class MasterRepository
             ORDER BY import_date;
             """, cancellationToken: cancellationToken))).ToList();
 
-        return new FilterOptions(departments, businessTypes, seasons, weeks);
+        // 棚割1 フィルタの選択肢。NULL/空は未設定として除外し、実値のみを昇順で返す。
+        var tanawari1 = (await connection.QueryAsync<string>(new CommandDefinition("""
+            SELECT DISTINCT tanawari1
+            FROM sales_weekly
+            WHERE tanawari1 IS NOT NULL AND tanawari1 <> ''
+            ORDER BY tanawari1;
+            """, cancellationToken: cancellationToken))).ToList();
+
+        return new FilterOptions(departments, businessTypes, seasons, weeks, tanawari1);
     }
 
     private static async Task<IReadOnlyList<CodeName>> QueryCodeNamesAsync(

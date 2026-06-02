@@ -7,6 +7,8 @@ function emptyFilter(): SalesFilterState {
     businessTypes: [],
     seasons: [],
     hinbans: [],
+    tanawari1: [],
+    stockDaysBuckets: [],
   }
 }
 
@@ -83,6 +85,12 @@ export function useFilters(scopeKey: string = 'sales-filter') {
     if (current.hinbans.length > 0) {
       query.hinbans = current.hinbans
     }
+    if (current.tanawari1.length > 0) {
+      query.tanawari1 = current.tanawari1
+    }
+    if (current.stockDaysBuckets.length > 0) {
+      query.stockDaysBuckets = current.stockDaysBuckets
+    }
     return query
   }
 
@@ -150,6 +158,11 @@ export function useFilters(scopeKey: string = 'sales-filter') {
     formatCodeNameOptions(options.value?.seasons),
   )
 
+  /** チップ式マルチセレクト用：棚割1 の選択肢（value=label=実値）。 */
+  const tanawari1ChipOptions = computed(() =>
+    (options.value?.tanawari1 ?? []).map((value) => ({ value, label: value })),
+  )
+
   return {
     filter,
     options,
@@ -162,5 +175,6 @@ export function useFilters(scopeKey: string = 'sales-filter') {
     departmentChipOptions,
     businessTypeChipOptions,
     seasonChipOptions,
+    tanawari1ChipOptions,
   }
 }

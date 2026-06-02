@@ -36,6 +36,8 @@ export interface FilterOptions {
   businessTypes: BusinessTypeOption[]
   seasons: CodeName[]
   weeks: string[]
+  /** 棚割1 の実値（NULL/空は除外、昇順）。フィルタ選択肢に用いる。 */
+  tanawari1: string[]
 }
 
 export interface SalesKpi {
@@ -183,7 +185,20 @@ export interface SalesFilterState {
   seasons: string[]
   /** 品番コード。ドリルダウンで追加される（UIには直接の入力枠は無い）。 */
   hinbans: string[]
+  /** 棚割1（複数選択）。 */
+  tanawari1: string[]
+  /**
+   * 平均在庫日数（在日）のバケット（複数選択＝OR）。値は {@link StockDaysBucket}
+   * （'le30' / 'd31to60' / 'ge61'）。UI は STOCK_DAYS_BUCKETS カタログで制約する。
+   */
+  stockDaysBuckets: string[]
 }
+
+/** 平均在庫日数バケットのキー。 */
+export type StockDaysBucket = 'le30' | 'd31to60' | 'ge61'
+
+/** 気温分析のエリア種別（括弧内は参照観測地点）。 */
+export type TemperatureArea = 'standard' | 'cold' | 'warm'
 
 // ============================================================
 // クロス集計（行×列マトリクス）
@@ -212,7 +227,7 @@ export type CrosstabDimensionKey =
   | 'category:tanawari2'
   | 'category:shohinKigo'
 
-/** クロス集計のメトリクスキー。 */
+/** クロス集計のメトリクスキー。気温系（temp*）は時間軸＋エリア種別指定時のみ利用可能。 */
 export type CrosstabMetricKey =
   | 'amount'
   | 'quantity'
@@ -221,6 +236,9 @@ export type CrosstabMetricKey =
   | 'stockDays'
   | 'sellThroughRate'
   | 'stock'
+  | 'tempAvg'
+  | 'tempMax'
+  | 'tempMin'
 
 /** ディメンションの表示情報。バックエンドが返す行・列メタ情報。 */
 export interface CrosstabDimensionInfo {
@@ -241,10 +259,10 @@ export interface CrosstabMetricInfo {
   key: CrosstabMetricKey
   label: string
   /** セル値のフォーマット種別。 */
-  format: 'currency' | 'number' | 'decimal' | 'percent'
+  format: 'currency' | 'number' | 'decimal' | 'percent' | 'temperature'
 }
 
-/** 1セルの値（在庫系は時間軸絡みの場合 null）。 */
+/** 1セルの値（在庫系は時間軸絡みの場合 null。気温系は時間軸＋エリア指定時のみ設定）。 */
 export interface CrosstabCellValues {
   amount: number | null
   quantity: number | null
@@ -253,6 +271,9 @@ export interface CrosstabCellValues {
   stockDays: number | null
   sellThroughRate: number | null
   stock: number | null
+  tempAvg: number | null
+  tempMax: number | null
+  tempMin: number | null
 }
 
 /** 1セル。 */
@@ -384,6 +405,14 @@ export interface MasterProductSummary {
   minSalesPrice: number | null
   maxSalesPrice: number | null
   primaryImageUrl: string | null
+  /** 全期間の売上数量（sales_weekly 自然キー結合の実績。マスタのみ存在は 0）。 */
+  salesQuantity: number
+  /** 平均在庫日数（在日 zainiti の平均、最新取込週基準）。 */
+  averageStockDays: number
+  /** 季節区分（最頻値。実績が無ければ空文字）。 */
+  kisetsu: string
+  /** 店頭在庫数（zaikosu、最新取込週基準）。 */
+  storeStock: number
 }
 
 /** 商品マスタの SKU 画像（1枚）。 */
@@ -484,4 +513,49 @@ export interface ProductAnalyticsResponse {
   weeklyTrend: TrendPoint[]
   bySku: ProductSkuPerformance[]
   byBusinessType: ProductBusinessTypePerformance[]
+}
+
+// ============================================================
+// 分析（散布図・単回帰 / 重回帰シミュレーション）
+// バックエンドは集計素材のみ返し、回帰・予測・象限分類はフロント（utils/regression）で算出する。
+// ============================================================
+
+/** 週次系列の1点（売上フロー指標 + その週・エリアの標準気温）。 */
+export interface WeeklySeriesPoint {
+  /** 取込日（月曜）。表す週は前週 月〜日。 */
+  week: string
+  quantity: number
+  amount: number
+  grossProfit: number
+  tempAvg: number
+  tempMax: number
+  tempMin: number
+}
+
+/** 週次系列レスポンス（散布図 気温×売上 と重回帰シミュレーションの素材）。 */
+export interface WeeklySeriesResponse {
+  /** エリア種別。 */
+  area: TemperatureArea
+  /** 参照観測地点名（"東京"/"札幌"/"那覇"）。 */
+  areaCity: string
+  points: WeeklySeriesPoint[]
+}
+
+/** 消化率×値引き率 散布図の1点（型番＝業態×記号×品番 単位）。 */
+export interface MarkdownScatterPoint {
+  key: string
+  label: string
+  businessType: string
+  /** 消化率（%）。 */
+  sellThroughRate: number
+  /** 値引き率（%）。 */
+  markdownRate: number
+  /** 期間内売上数量（バブルサイズ用）。 */
+  quantity: number
+}
+
+/** 消化率×値引き率 散布図のレスポンス。 */
+export interface MarkdownScatterResponse {
+  latestWeek: string | null
+  points: MarkdownScatterPoint[]
 }

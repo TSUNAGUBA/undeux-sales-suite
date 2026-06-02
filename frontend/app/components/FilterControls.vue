@@ -33,6 +33,10 @@ const businessTypeOptions = computed(() =>
   })),
 )
 const seasonOptions = computed(() => toSelectOptions(options.value?.seasons ?? []))
+const tanawari1Options = computed(() =>
+  (options.value?.tanawari1 ?? []).map((t) => ({ value: t, text: t })),
+)
+const stockDaysOptions = STOCK_DAYS_BUCKETS.map((b) => ({ value: b.value, text: b.label }))
 
 function removeHinban(value: string): void {
   filter.value.hinbans = filter.value.hinbans.filter((h) => h !== value)
@@ -76,6 +80,16 @@ function removeHinban(value: string): void {
         v-model="filter.seasons"
         label="季節区分"
         :options="seasonOptions"
+      />
+      <MultiSelect
+        v-model="filter.tanawari1"
+        label="棚割1"
+        :options="tanawari1Options"
+      />
+      <MultiSelect
+        v-model="filter.stockDaysBuckets"
+        label="平均在庫日数"
+        :options="stockDaysOptions"
       />
     </div>
 
