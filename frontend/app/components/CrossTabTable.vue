@@ -106,16 +106,19 @@ function inlineComputedStyle(source: Element, target: HTMLElement): void {
   if (cs.verticalAlign && cs.verticalAlign !== 'baseline') {
     parts.push(`vertical-align:${cs.verticalAlign}`)
   }
-  for (const side of ['top', 'right', 'bottom', 'left']) {
-    const width = cs.getPropertyValue(`border-${side}-width`)
-    if (width && width !== '0px') {
-      const style = cs.getPropertyValue(`border-${side}-style`)
-      const color = cs.getPropertyValue(`border-${side}-color`)
-      parts.push(`border-${side}:${width} ${style} ${color}`)
-    }
-  }
+  // 罫線・余白はセル（td/th）にのみ付与する。画面は「片側のみ罫線 ＋ border-spacing:0」の
+  // スキームだが、Excel 向けクリップボードは border-collapse:collapse で結合するため、片側だけだと
+  // 外周や接合部の罫線が欠ける。そこで全辺を均一の 1px 罫線にし、画面と同じ完全な格子を再現する。
   const tag = source.tagName.toLowerCase()
   if (tag === 'td' || tag === 'th') {
+    let gridColor = ''
+    for (const side of ['bottom', 'right', 'top', 'left']) {
+      if (cs.getPropertyValue(`border-${side}-width`) !== '0px') {
+        gridColor = cs.getPropertyValue(`border-${side}-color`)
+        break
+      }
+    }
+    parts.push(`border:1px solid ${gridColor || 'rgb(226, 232, 240)'}`)
     parts.push(`padding:${cs.paddingTop} ${cs.paddingRight} ${cs.paddingBottom} ${cs.paddingLeft}`)
   }
   target.setAttribute('style', parts.join(';'))
@@ -140,14 +143,31 @@ function buildStyledHtml(source: HTMLTableElement): string {
   return `<meta charset="utf-8">${clone.outerHTML}`
 }
 
+/**
+ * セル内テキストを抽出する。縦積み（stacked）メトリクスのセルは
+ * "ラベル 値 / ラベル 値" の形に整形し、TSV で読めるようにする（素の textContent は
+ * ラベルと値が連結して潰れるため）。インライン列・単一メトリクスは textContent をそのまま使う。
+ */
+function extractCellText(cell: HTMLTableCellElement): string {
+  const stackedRows = cell.querySelectorAll(':scope > div > div')
+  if (stackedRows.length > 0) {
+    return Array.from(stackedRows)
+      .map((row) =>
+        Array.from(row.children)
+          .map((child) => (child.textContent ?? '').trim())
+          .filter(Boolean)
+          .join(' '),
+      )
+      .filter(Boolean)
+      .join(' / ')
+  }
+  return (cell.textContent ?? '').replace(/\s+/g, ' ').trim()
+}
+
 /** 素のペースト用に TSV（タブ区切り）を生成する。 */
 function buildPlainText(source: HTMLTableElement): string {
   return Array.from(source.rows)
-    .map((tr) =>
-      Array.from(tr.cells)
-        .map((cell) => (cell.textContent ?? '').replace(/\s+/g, ' ').trim())
-        .join('\t'),
-    )
+    .map((tr) => Array.from(tr.cells).map(extractCellText).join('\t'))
     .join('\n')
 }
 
@@ -162,6 +182,10 @@ function fallbackCopy(html: string): boolean {
   document.body.appendChild(container)
 
   const selection = window.getSelection()
+  // ユーザーが既に持っている選択範囲を退避し、コピー後に復元する。
+  const savedRanges: Range[] = selection
+    ? Array.from({ length: selection.rangeCount }, (_, i) => selection.getRangeAt(i))
+    : []
   const range = document.createRange()
   range.selectNodeContents(container)
   selection?.removeAllRanges()
@@ -174,6 +198,7 @@ function fallbackCopy(html: string): boolean {
     ok = false
   }
   selection?.removeAllRanges()
+  for (const saved of savedRanges) selection?.addRange(saved)
   document.body.removeChild(container)
   return ok
 }
