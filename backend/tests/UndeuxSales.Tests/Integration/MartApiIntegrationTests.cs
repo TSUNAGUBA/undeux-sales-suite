@@ -70,6 +70,27 @@ public sealed class MartApiIntegrationTests
     }
 
     [Fact]
+    public async Task Mart_Summary_RatesAreFractions_MatchingSales()
+    {
+        await RebuildMartAsync();
+        var client = CreateAuthedClient();
+
+        var mart = await client.GetFromJsonAsync<MartSummaryResponse>($"/api/mart/summary?{SeedRange}");
+        var sales = await client.GetFromJsonAsync<SummaryResponse>($"/api/summary?{SeedRange}");
+
+        Assert.NotNull(mart);
+        Assert.NotNull(sales);
+        // 粗利率・消化率は比率（0..1）。共有レスポンス型は formatRatioAsPercent（×100）で描画されるため、
+        // mart 側が ×100 して返すと二重スケール（"3500.0%"）になる。fraction 契約を回帰で固定する。
+        // 粗利率 = 21900/36500 = 0.6。
+        Assert.Equal(0.6, mart!.Kpi.GrossProfitRate, 3);
+        Assert.InRange(mart.Kpi.SellThroughRate, 0.0, 1.0);
+        // sales 系サマリーと同一データの派生のため、比率は一致する（fraction 同士）。
+        Assert.Equal(sales!.Kpi.GrossProfitRate, mart.Kpi.GrossProfitRate, 6);
+        Assert.Equal(sales.Kpi.SellThroughRate, mart.Kpi.SellThroughRate, 6);
+    }
+
+    [Fact]
     public async Task Mart_Inventory_ReturnsLatestWeekSnapshot()
     {
         await RebuildMartAsync();

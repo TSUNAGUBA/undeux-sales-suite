@@ -971,7 +971,12 @@ public sealed class MartAnalyticsRepository
             info.SourceRows, info.FactRows, info.EarliestWeek, info.LatestWeek);
     }
 
-    /// <summary>集計軸の文字列を mart 次元のSQL式（キー・ラベル・正規名）に解決する。ホワイトリスト照合。</summary>
+    /// <summary>
+    /// 集計軸の文字列を mart 次元のSQL式（キー・ラベル・正規名）に解決する。ホワイトリスト照合。
+    /// breakdown 専用（売上分析・全社サマリーの集計軸別ランキング）。<c>brand</c> はここだけが対応し、
+    /// ランキング/クロス集計（<see cref="ResolveMartRankingDimension"/>/<see cref="ResolveMartCrosstabDimensionSql"/>）
+    /// の軸ではない。
+    /// </summary>
     private static (string KeyExpr, string LabelExpr, string Name) ResolveMartDimension(string? dimension)
     {
         var key = (dimension ?? "department").Trim().ToLowerInvariant();
@@ -1013,15 +1018,21 @@ public sealed class MartAnalyticsRepository
         return total == 0 ? 0 : (double)value / total * 100.0;
     }
 
-    /// <summary>分子÷分母×100（分母0は0）。粗利率・消化率の共通式。</summary>
+    /// <summary>
+    /// 分子÷分母の比率（0..1、分母0は0）。粗利率・消化率の共通式。
+    /// 返却モデル（<see cref="MartKpi"/>/<see cref="InventoryKpi"/>/<see cref="ProductRow"/> 等）は sales 系と
+    /// 共有され、フロントは比率（0..1）を受け取る <c>formatRatioAsPercent</c> で描画するため、
+    /// ここでは ×100 せず比率のまま返す（sales 系 <c>SalesAnalyticsRepository.Ratio</c> と同一契約）。
+    /// </summary>
     private static double Ratio(long numerator, long denominator)
-        => denominator == 0 ? 0 : (double)numerator / denominator * 100.0;
+        => denominator == 0 ? 0 : (double)numerator / denominator;
 }
 
 /// <summary><see cref="SalesQueryFilter"/> から mart 次元に対する WHERE 条件を組み立てる。</summary>
 /// <remarks>
-/// 在庫日数バケット・棚割1は本イテレーションの mart では未対応のため無視する
-/// （グレースフルデグラデーション。後続で在庫スナップショット導入時に追加）。
+/// 棚割1（mart 未保持）・平均在庫日数バケット（在庫は別ファクトで期間フローには適用しない）は
+/// mart では未対応のため無視する（グレースフルデグラデーション）。フロントは mart スコープで
+/// 当該フィルタUIを非表示にし、「効かない」UXの罠を避ける（FilterControls.vue の isMartScope）。
 /// </remarks>
 internal static class MartFilterSql
 {

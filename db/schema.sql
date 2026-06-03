@@ -313,10 +313,11 @@ CREATE INDEX IF NOT EXISTS ix_m_product_sku_unit_cd
 --  本スキーマは派生（キャッシュ）であり、SoT は sales_weekly。
 --  mart.rebuild() で sales_weekly + 商品マスタから全再構築する。
 --
---  本イテレーションの範囲（縦スライス）:
---   * 次元: dim_date / dim_retailer / dim_product / dim_sku（全て SCD1）
---   * ファクト: fact_sales_weekly（週次フロー。グレイン=週×SKU×小売）
---   * 在庫スナップショット・日次派生ファクト・テナント別スキーマ分離は後続。
+--  範囲:
+--   * 次元: dim_date / dim_retailer / dim_product / dim_sku（全て SCD1）／ dim_climate（気温日次・CSV由来）
+--   * ファクト: fact_sales_weekly（週次フロー）／ fact_inventory_snapshot（在庫スナップショット）
+--     （グレインはいずれも 週×小売×SKU）
+--   * 日次派生ファクト・テナント別スキーマ分離・集約マテビューは後続。
 -- ============================================================
 CREATE SCHEMA IF NOT EXISTS mart;
 
