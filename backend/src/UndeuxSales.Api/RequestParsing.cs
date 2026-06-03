@@ -1,11 +1,53 @@
 using UndeuxSales.Core;
 using UndeuxSales.Core.Models;
+using UndeuxSales.Infrastructure.Queries;
 
 namespace UndeuxSales.Api;
 
 /// <summary>クエリ文字列のenum値を厳密に解析する。不正値は <see cref="AppException"/> を送出する。</summary>
 public static class RequestParsing
 {
+    /// <summary>
+    /// クロス集計のディメンション表現（"time:year" / "category:department" 等）を
+    /// <see cref="CrosstabDimension"/> に解析する。未指定・不正値は <see cref="AppException"/>（HTTP 400）。
+    /// sales 系・mart 系のクロス集計コントローラで共有する。
+    /// </summary>
+    public static CrosstabDimension ParseCrosstabDimension(string? value, string parameterName)
+    {
+        if (string.IsNullOrWhiteSpace(value))
+        {
+            throw new AppException(ErrorCodes.UnknownDimension, 400,
+                $"{parameterName} が指定されていません。");
+        }
+
+        CrosstabDimension? dim = value switch
+        {
+            "time:year" => CrosstabDimension.TimeYear,
+            "time:quarter" => CrosstabDimension.TimeQuarter,
+            "time:month" => CrosstabDimension.TimeMonth,
+            "category:department" => CrosstabDimension.CategoryDepartment,
+            "category:businessType" => CrosstabDimension.CategoryBusinessType,
+            "category:season" => CrosstabDimension.CategorySeason,
+            "category:hinban" => CrosstabDimension.CategoryHinban,
+            "category:product" => CrosstabDimension.CategoryProduct,
+            "category:color" => CrosstabDimension.CategoryColor,
+            "category:size" => CrosstabDimension.CategorySize,
+            "category:chohyoKubun" => CrosstabDimension.CategoryChohyoKubun,
+            "category:tanawari1" => CrosstabDimension.CategoryTanawari1,
+            "category:tanawari2" => CrosstabDimension.CategoryTanawari2,
+            "category:shohinKigo" => CrosstabDimension.CategoryShohinKigo,
+            _ => null,
+        };
+
+        if (dim.HasValue)
+        {
+            return dim.Value;
+        }
+
+        throw new AppException(ErrorCodes.UnknownDimension, 400,
+            $"{parameterName} '{value}' は不正です。");
+    }
+
     /// <summary>集計軸を解析する。</summary>
     public static BreakdownDimension Dimension(string? value)
     {

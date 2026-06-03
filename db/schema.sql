@@ -425,6 +425,46 @@ EXCEPTION WHEN duplicate_object THEN NULL;
 END
 $$;
 
+-- 在庫スナップショットファクト（ピリオディック・スナップショット。グレイン=週×小売×SKU）
+--  設計 §3.3。在庫・累計は時点値（時間方向に非加算／SKU・小売方向に加算可）、在日は平均で集計。
+--  SKU は単一商品に属する（dim_sku.product_key）ため product_key も保持し、部門等の絞り込みを
+--  dim_product 経由で fact_sales_weekly と対称に行えるようにする（グレインは週×小売×SKU のまま）。
+--  これにより約20箇所に散在する「期間内最新 import_date で在庫取得」ロジックが本テーブル参照に一元化される。
+CREATE TABLE IF NOT EXISTS mart.fact_inventory_snapshot (
+    date_key     integer NOT NULL REFERENCES mart.dim_date(date_key),
+    retailer_key integer NOT NULL REFERENCES mart.dim_retailer(retailer_key),
+    product_key  integer NOT NULL REFERENCES mart.dim_product(product_key),
+    sku_key      integer NOT NULL REFERENCES mart.dim_sku(sku_key),
+    stock        bigint           NOT NULL,
+    cum_sales    bigint           NOT NULL,
+    cum_delivery bigint           NOT NULL,
+    order_qty    numeric(14,1)    NOT NULL,
+    advance_qty  bigint           NOT NULL,
+    stock_days   double precision NOT NULL,
+    PRIMARY KEY (date_key, retailer_key, product_key, sku_key)
+);
+COMMENT ON TABLE mart.fact_inventory_snapshot IS
+    '在庫スナップショット（週次・セミ加算）。stock/cum_sales/cum_delivery は時点値、stock_days は在日（平均集計）';
+CREATE INDEX IF NOT EXISTS ix_fact_inv_date     ON mart.fact_inventory_snapshot (date_key);
+CREATE INDEX IF NOT EXISTS ix_fact_inv_product  ON mart.fact_inventory_snapshot (product_key);
+CREATE INDEX IF NOT EXISTS ix_fact_inv_retailer ON mart.fact_inventory_snapshot (retailer_key);
+
+-- 気温次元（日次・エリア別）。db/climate_daily.csv を DataLoader が投入する（sales 非依存）。
+--  area_code: standard=東京 / cold=札幌 / warm=那覇（ClimateModel のエリア種別と一致）。
+--  売上週への結合は the_date の範囲結合（FK は張らず疎結合に保つ）。mart.rebuild() では触らない
+--  （sales_weekly 由来ではないため、再構築の TRUNCATE/CASCADE 対象に含めない）。
+CREATE TABLE IF NOT EXISTS mart.dim_climate (
+    area_code text NOT NULL,
+    the_date  date NOT NULL,
+    temp_avg  double precision NOT NULL,
+    temp_max  double precision NOT NULL,
+    temp_min  double precision NOT NULL,
+    PRIMARY KEY (area_code, the_date)
+);
+COMMENT ON TABLE mart.dim_climate IS
+    '気温次元（日次・エリア別）。出典 db/climate_daily.csv。standard=東京/cold=札幌/warm=那覇';
+CREATE INDEX IF NOT EXISTS ix_dim_climate_date ON mart.dim_climate (the_date);
+
 -- ------------------------------------------------------------
 --  mart 全再構築（sales_weekly + 商品マスタ → 次元・ファクト）
 --  冪等: 何度呼んでも同じ結果。advisory lock で再構築を直列化する。
@@ -439,7 +479,10 @@ BEGIN
     -- 'MART'(0x4D415254) を鍵に再構築を直列化する。
     PERFORM pg_advisory_xact_lock(1296913492);
 
-    TRUNCATE mart.fact_sales_weekly, mart.dim_sku, mart.dim_product,
+    -- dim_climate は sales 非依存（CSV 由来）のため TRUNCATE 対象に含めない。
+    -- dim_* への CASCADE は両ファクト（売上・在庫）に波及するが、明示して意図を残す。
+    TRUNCATE mart.fact_sales_weekly, mart.fact_inventory_snapshot,
+             mart.dim_sku, mart.dim_product,
              mart.dim_retailer, mart.dim_date RESTART IDENTITY CASCADE;
 
     -- 日付次元
@@ -542,6 +585,29 @@ BEGIN
     CROSS JOIN LATERAL (SELECT (sw.toshu_uriage_count1 + sw.toshu_uriage_count2
            + sw.toshu_uriage_count3 + sw.toshu_uriage_count4 + sw.toshu_uriage_count5
            + sw.toshu_uriage_count6 + sw.toshu_uriage_count7) AS qty) q
+    JOIN mart.dim_date     dd ON dd.week_monday   = sw.import_date
+    JOIN mart.dim_retailer dr ON dr.retailer_code = sw.customer_code
+                             AND dr.channel_code  = sw.gyotai_code
+    JOIN mart.dim_product  dp ON dp.channel_code  = sw.gyotai_code
+                             AND dp.product_sign  = sw.shohin_kigou
+                             AND dp.product_code  = sw.hinban_code
+    JOIN mart.dim_sku      ds ON ds.product_key   = dp.product_key
+                             AND ds.unit_code     = sw.tanpin_code
+    GROUP BY dd.date_key, dr.retailer_key, dp.product_key, ds.sku_key;
+
+    -- 在庫スナップショット（週×小売×SKU に集約。在庫・累計・発注・先付は SUM、在日は AVG）。
+    -- 売上ファクトと同一の次元結合で対称に構築する。
+    INSERT INTO mart.fact_inventory_snapshot
+        (date_key, retailer_key, product_key, sku_key,
+         stock, cum_sales, cum_delivery, order_qty, advance_qty, stock_days)
+    SELECT dd.date_key, dr.retailer_key, dp.product_key, ds.sku_key,
+           SUM(sw.zaikosu)::bigint,
+           SUM(sw.ruikei_uriage_count)::bigint,
+           SUM(sw.ruikei_nohin_count)::bigint,
+           SUM(sw.hatchu_count),
+           SUM(sw.sakizuke_count)::bigint,
+           COALESCE(AVG(sw.zainiti), 0)::float8
+    FROM sales_weekly sw
     JOIN mart.dim_date     dd ON dd.week_monday   = sw.import_date
     JOIN mart.dim_retailer dr ON dr.retailer_code = sw.customer_code
                              AND dr.channel_code  = sw.gyotai_code

@@ -64,6 +64,21 @@ public static class ClimateModel
         _ => null,
     };
 
+    /// <summary>エリア種別の API/DB 表現（"standard"/"cold"/"warm"）。<see cref="ParseArea"/> の逆。</summary>
+    public static string AreaCode(TemperatureArea area) => area.ToString().ToLowerInvariant();
+
+    /// <summary>
+    /// 観測地点名（"東京"/"札幌"/"那覇"）からエリア種別を解釈する（<see cref="CityName"/> の逆）。
+    /// 気温CSV（db/climate_daily.csv のエリア列）をエリア種別へ対応付けるのに使う。未知の地点は <c>null</c>。
+    /// </summary>
+    public static TemperatureArea? AreaForCity(string? city) => city?.Trim() switch
+    {
+        "東京" => TemperatureArea.Standard,
+        "札幌" => TemperatureArea.Cold,
+        "那覇" => TemperatureArea.Warm,
+        _ => null,
+    };
+
     /// <summary>指定日の気温（月別平年値を日単位に線形補間）。</summary>
     public static TemperatureReading Daily(TemperatureArea area, DateOnly date)
     {

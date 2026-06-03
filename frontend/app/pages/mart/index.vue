@@ -6,6 +6,8 @@ import {
   Percent,
   Package,
   Layers,
+  Boxes,
+  Gauge,
   Database,
   RefreshCw,
 } from 'lucide-vue-next'
@@ -13,24 +15,21 @@ import type {
   KpiCardItem,
   MartSummaryResponse,
   MartBreakdownResponse,
-  MartStatus,
   BreakdownRow,
 } from '~/types/api'
 
-useHead({ title: 'Mart分析（スタースキーマ） | UndeuxSales' })
+useHead({ title: '全社サマリー（スタースキーマ） | UndeuxSales' })
 
-// 既存フィルタUI（部門・業態・季節・期間）を sales 系と共有する。
-// mart 未対応の棚割1・在庫日数バケットは API 側で無視される（グレースフル）。
-const { toQuery, loadOptions } = useFilters()
-const { get, post } = useApi()
+// mart 専用のフィルタスコープ。既存 sales 系（'sales-filter'）とは分離する。
+const MART_SCOPE = 'mart-filter'
+const { toQuery, loadOptions } = useFilters(MART_SCOPE)
+const { get } = useApi()
+const { status, isBuilt, rebuilding, rebuildMessage, refreshStatus, rebuild } = useMart()
 
 const summary = ref<MartSummaryResponse | null>(null)
 const breakdown = ref<MartBreakdownResponse | null>(null)
-const status = ref<MartStatus | null>(null)
 const loading = ref(true)
 const errorMessage = ref<string | null>(null)
-const rebuilding = ref(false)
-const rebuildMessage = ref<string | null>(null)
 
 const dimension = ref('department')
 const metric = ref('amount')
@@ -58,10 +57,6 @@ function metricValue(row: BreakdownRow): number {
   if (metric.value === 'grossProfit') return row.grossProfit
   return row.amount
 }
-
-const isBuilt = computed(
-  () => status.value?.built === true && (status.value?.factRows ?? 0) > 0,
-)
 
 const kpiItems = computed<KpiCardItem[]>(() => {
   const kpi = summary.value?.kpi
@@ -94,6 +89,18 @@ const kpiItems = computed<KpiCardItem[]>(() => {
       accentClass: 'bg-amber-50 text-amber-600',
     },
     {
+      label: '在庫数',
+      value: `${formatNumber(kpi.currentStock)} 点`,
+      icon: Boxes,
+      accentClass: 'bg-rose-50 text-rose-600',
+    },
+    {
+      label: '消化率',
+      value: formatRatioAsPercent(kpi.sellThroughRate),
+      icon: Gauge,
+      accentClass: 'bg-teal-50 text-teal-600',
+    },
+    {
       label: '商品数',
       value: `${formatNumber(kpi.productCount)} 品`,
       icon: Package,
@@ -103,7 +110,7 @@ const kpiItems = computed<KpiCardItem[]>(() => {
       label: 'SKU数',
       value: `${formatNumber(kpi.skuCount)} 件`,
       icon: Layers,
-      accentClass: 'bg-teal-50 text-teal-600',
+      accentClass: 'bg-cyan-50 text-cyan-600',
     },
   ]
 })
@@ -155,7 +162,7 @@ async function load(): Promise<void> {
   loading.value = true
   errorMessage.value = null
   try {
-    status.value = await get<MartStatus>('/api/mart/status')
+    await refreshStatus()
     if (!isBuilt.value) {
       summary.value = null
       breakdown.value = null
@@ -180,40 +187,11 @@ async function load(): Promise<void> {
   }
 }
 
-function sleep(ms: number): Promise<void> {
-  return new Promise((resolve) => setTimeout(resolve, ms))
-}
-
-async function rebuild(): Promise<void> {
-  rebuilding.value = true
-  rebuildMessage.value = null
+async function handleRebuild(): Promise<void> {
   errorMessage.value = null
-  try {
-    // 再構築はバックグラウンドで実行される。POST は即座に running を返すので、
-    // 同期実行のタイムアウトを避けるため status を完了までポーリングする。
-    status.value = await post<MartStatus>('/api/mart/rebuild')
-    await pollRebuild()
-  } catch (error) {
-    errorMessage.value = apiErrorMessage(error)
-  } finally {
-    rebuilding.value = false
-  }
-}
-
-async function pollRebuild(): Promise<void> {
-  // 3秒間隔で最大約15分まで running の完了を待つ。
-  for (let i = 0; i < 300 && status.value?.status === 'running'; i++) {
-    await sleep(3000)
-    status.value = await get<MartStatus>('/api/mart/status')
-  }
-  if (status.value?.status === 'completed') {
-    rebuildMessage.value = 'mart を再構築しました。'
-    await load()
-  } else if (status.value?.status === 'failed') {
-    errorMessage.value = `再構築に失敗しました: ${status.value.error ?? '原因不明'}`
-  } else if (status.value?.status === 'running') {
-    rebuildMessage.value =
-      '再構築は実行中です。完了までしばらくお待ちください（このまま待つか、後でページを再読み込みしてください）。'
+  const error = await rebuild(load)
+  if (error) {
+    errorMessage.value = error
   }
 }
 
@@ -226,7 +204,7 @@ onMounted(async () => {
 <template>
   <div class="space-y-4">
     <div>
-      <h1 class="text-xl font-bold text-slate-800">Mart分析（スタースキーマ）</h1>
+      <h1 class="text-xl font-bold text-slate-800">全社サマリー（スタースキーマ）</h1>
       <p class="text-sm text-slate-500">
         分析用ディメンショナルモデル（mart）から集計。既存の売上参照（sales_weekly）とは別系統で、
         他小売・他メーカーにも展開可能な汎用構造。
@@ -255,7 +233,7 @@ onMounted(async () => {
         type="button"
         class="inline-flex items-center gap-2 rounded-lg bg-indigo-600 px-3 py-1.5 text-sm font-medium text-white transition-colors hover:bg-indigo-500 disabled:opacity-50"
         :disabled="rebuilding"
-        @click="rebuild"
+        @click="handleRebuild"
       >
         <RefreshCw class="h-4 w-4" :class="rebuilding ? 'animate-spin' : ''" />
         {{ rebuilding ? '再構築中...' : 'mart を再構築' }}
@@ -266,7 +244,7 @@ onMounted(async () => {
       ※ 再構築は sales_weekly + 商品マスタから派生データ（次元・ファクト）を作り直します（public → mart のデータ移行。認証ユーザーが実行可）。
     </p>
 
-    <FilterBar @apply="load" />
+    <FilterBar :scope-key="MART_SCOPE" @apply="load" />
 
     <StatusBlock :loading="loading" :error="errorMessage">
       <div
@@ -276,7 +254,7 @@ onMounted(async () => {
         mart がまだ構築されていません。上の「mart を再構築」を実行すると、スタースキーマ集計が表示されます。
       </div>
       <div v-else class="space-y-4">
-        <div class="grid grid-cols-2 gap-3 md:grid-cols-3 lg:grid-cols-6">
+        <div class="grid grid-cols-2 gap-3 md:grid-cols-4">
           <KpiCard
             v-for="item in kpiItems"
             :key="item.label"

@@ -8,7 +8,6 @@ import {
   ListOrdered,
   ScatterChart,
   SlidersHorizontal,
-  Database,
   Upload,
   LogOut,
   Shirt,
@@ -61,23 +60,47 @@ const { user, logout } = useAuth()
 
 // 商品軸分析（/product-analytics）はサイドバーから隠す。ルート自体は残っており、
 // 必要に応じて直接 URL でアクセスできる。
-const navItems = [
-  { to: '/', label: '全社サマリー', icon: LayoutDashboard },
-  { to: '/sales', label: '売上分析', icon: TrendingUp },
-  { to: '/products', label: '商品別分析', icon: Package },
-  { to: '/inventory', label: '在庫・発注分析', icon: Boxes },
-  { to: '/crosstab', label: 'クロス集計', icon: LayoutGrid },
-  { to: '/ranking', label: 'ランキング分析', icon: ListOrdered },
-  { to: '/scatter', label: '散布図・回帰分析', icon: ScatterChart },
-  { to: '/simulation', label: '重回帰シミュレーター', icon: SlidersHorizontal },
-  { to: '/mart', label: 'Mart分析', icon: Database },
-  { to: '/product-master', label: '商品マスタ', icon: Shirt },
-  { to: '/imports', label: '週次取込', icon: Upload },
+// 既存の売上参照（sales_weekly 直参照）と、分析mart（スタースキーマ）を別グループで提示する。
+const navGroups = [
+  {
+    header: null as string | null,
+    items: [
+      { to: '/', label: '全社サマリー', icon: LayoutDashboard },
+      { to: '/sales', label: '売上分析', icon: TrendingUp },
+      { to: '/products', label: '商品別分析', icon: Package },
+      { to: '/inventory', label: '在庫・発注分析', icon: Boxes },
+      { to: '/crosstab', label: 'クロス集計', icon: LayoutGrid },
+      { to: '/ranking', label: 'ランキング分析', icon: ListOrdered },
+      { to: '/scatter', label: '散布図・回帰分析', icon: ScatterChart },
+      { to: '/simulation', label: '重回帰シミュレーター', icon: SlidersHorizontal },
+    ],
+  },
+  {
+    header: 'スタースキーマ分析',
+    items: [
+      { to: '/mart', label: '全社サマリー（スタースキーマ）', icon: LayoutDashboard },
+      { to: '/mart/sales', label: '売上分析（スタースキーマ）', icon: TrendingUp },
+      { to: '/mart/products', label: '商品別分析（スタースキーマ）', icon: Package },
+      { to: '/mart/inventory', label: '在庫・発注分析（スタースキーマ）', icon: Boxes },
+      { to: '/mart/crosstab', label: 'クロス集計（スタースキーマ）', icon: LayoutGrid },
+      { to: '/mart/ranking', label: 'ランキング分析（スタースキーマ）', icon: ListOrdered },
+      { to: '/mart/scatter', label: '散布図・回帰分析（スタースキーマ）', icon: ScatterChart },
+      { to: '/mart/simulation', label: '重回帰シミュレーター（スタースキーマ）', icon: SlidersHorizontal },
+    ],
+  },
+  {
+    header: 'データ管理',
+    items: [
+      { to: '/product-master', label: '商品マスタ', icon: Shirt },
+      { to: '/imports', label: '週次取込', icon: Upload },
+    ],
+  },
 ]
 
 /**
  * サイドバー項目のアクティブ判定。サブルートを持つメニュー（商品マスタ）は
  * 親パス + '/' 以下のサブルートでもアクティブ表示する。完全一致のみのページは === で判定。
+ * 全社サマリー（スタースキーマ）`/mart` は厳密一致のため、`/mart/sales` 等の配下では非アクティブになる。
  */
 function isActive(path: string): boolean {
   if (path === '/product-master') {
@@ -161,24 +184,39 @@ const ariaLabelText = computed(() =>
       class="flex-1 space-y-1 overflow-y-auto py-4"
       :class="navPaddingClass"
     >
-      <NuxtLink
-        v-for="item in navItems"
-        :key="item.to"
-        :to="item.to"
-        class="flex items-center rounded-lg py-2.5 text-sm font-medium transition-colors"
-        :class="[
-          navItemLayoutClass,
-          isActive(item.to)
-            ? 'bg-indigo-600 text-white'
-            : 'text-slate-300 hover:bg-slate-800 hover:text-white',
-        ]"
-        :title="props.collapsed ? item.label : undefined"
-        :aria-label="props.collapsed ? item.label : undefined"
-        @click="emit('navigate')"
-      >
-        <component :is="item.icon" class="h-5 w-5 shrink-0" />
-        <span v-if="!props.collapsed">{{ item.label }}</span>
-      </NuxtLink>
+      <div v-for="(group, groupIndex) in navGroups" :key="groupIndex" class="space-y-1">
+        <template v-if="group.header">
+          <p
+            v-if="!props.collapsed"
+            class="px-3 pb-1 pt-3 text-[10px] font-semibold uppercase tracking-wider text-slate-500"
+          >
+            {{ group.header }}
+          </p>
+          <div
+            v-else
+            class="mx-2 my-2 border-t border-slate-700/60"
+            aria-hidden="true"
+          />
+        </template>
+        <NuxtLink
+          v-for="item in group.items"
+          :key="item.to"
+          :to="item.to"
+          class="flex items-center rounded-lg py-2.5 text-sm font-medium transition-colors"
+          :class="[
+            navItemLayoutClass,
+            isActive(item.to)
+              ? 'bg-indigo-600 text-white'
+              : 'text-slate-300 hover:bg-slate-800 hover:text-white',
+          ]"
+          :title="props.collapsed ? item.label : undefined"
+          :aria-label="props.collapsed ? item.label : undefined"
+          @click="emit('navigate')"
+        >
+          <component :is="item.icon" class="h-5 w-5 shrink-0" />
+          <span v-if="!props.collapsed" class="truncate">{{ item.label }}</span>
+        </NuxtLink>
+      </div>
     </nav>
 
     <div

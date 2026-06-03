@@ -565,7 +565,7 @@ export interface MarkdownScatterResponse {
 // 既存 sales_weekly 直参照とは別系統。docs/star-schema-design.md。
 // ============================================================
 
-/** mart 全社サマリーのKPI（週次フロー指標）。在庫系は後続イテレーションで追加。 */
+/** mart 全社サマリーのKPI（週次フロー指標＋最新週の在庫スナップショット）。 */
 export interface MartKpi {
   quantity: number
   amount: number
@@ -573,6 +573,10 @@ export interface MartKpi {
   grossProfitRate: number
   productCount: number
   skuCount: number
+  /** 最新週の在庫数（fact_inventory_snapshot 由来）。 */
+  currentStock: number
+  /** 最新週の消化率（%）。 */
+  sellThroughRate: number
   latestWeek: string | null
 }
 

@@ -113,22 +113,7 @@ public sealed class MartAnalyticsRepository
         var parameters = new DynamicParameters();
         MartFilterSql.AddParameters(filter, parameters);
 
-        // フロー指標はファクトに事前計算済みのため SUM するだけ（設計の狙い）。
-        var trendSql = $"""
-            SELECT dd.week_monday AS date,
-                   COALESCE(SUM(f.quantity), 0)::bigint     AS quantity,
-                   COALESCE(SUM(f.amount), 0)::bigint       AS amount,
-                   COALESCE(SUM(f.gross_profit), 0)::bigint AS gross_profit
-            FROM mart.fact_sales_weekly f
-            JOIN mart.dim_date     dd ON dd.date_key     = f.date_key
-            JOIN mart.dim_product  dp ON dp.product_key  = f.product_key
-            JOIN mart.dim_retailer dr ON dr.retailer_key = f.retailer_key
-            {MartFilterSql.WhereClause(filter)}
-            GROUP BY dd.week_monday
-            ORDER BY dd.week_monday;
-            """;
-        var weeklyTrend = (await connection.QueryAsync<TrendPoint>(
-            new CommandDefinition(trendSql, parameters, cancellationToken: cancellationToken))).ToList();
+        var weeklyTrend = await QueryWeeklyTrendAsync(connection, filter, parameters, cancellationToken);
 
         // 商品数・SKU数はサロゲートキーの DISTINCT で算出（整数のため高速）。
         var countSql = $"""
@@ -148,9 +133,29 @@ public sealed class MartAnalyticsRepository
         var grossProfit = weeklyTrend.Sum(point => point.GrossProfit);
         var latestWeek = weeklyTrend.Count > 0 ? weeklyTrend[^1].Date : (DateOnly?)null;
 
+        // 在庫KPI（最新週スナップショット）。fact_inventory_snapshot から在庫数・消化率を集計する。
+        long currentStock = 0;
+        double sellThroughRate = 0;
+        if (latestWeek.HasValue)
+        {
+            parameters.Add("latestWeek", latestWeek.Value);
+            var snapshot = await connection.QuerySingleAsync<MartInvSnapshotRow>(new CommandDefinition($"""
+                SELECT COALESCE(SUM(inv.stock), 0)::bigint        AS stock,
+                       COALESCE(SUM(inv.cum_sales), 0)::bigint     AS cumulative_sales,
+                       COALESCE(SUM(inv.cum_delivery), 0)::bigint  AS cumulative_delivery
+                FROM mart.fact_inventory_snapshot inv
+                JOIN mart.dim_date     dd ON dd.date_key     = inv.date_key
+                JOIN mart.dim_product  dp ON dp.product_key  = inv.product_key
+                JOIN mart.dim_retailer dr ON dr.retailer_key = inv.retailer_key
+                WHERE dd.week_monday = @latestWeek{MartFilterSql.AndClause(filter)};
+                """, parameters, cancellationToken: cancellationToken));
+            currentStock = snapshot.Stock;
+            sellThroughRate = Ratio(snapshot.CumulativeSales, snapshot.CumulativeDelivery);
+        }
+
         var kpi = new MartKpi(
             quantity, amount, grossProfit, Ratio(grossProfit, amount),
-            counts.ProductCount, counts.SkuCount, latestWeek);
+            counts.ProductCount, counts.SkuCount, currentStock, sellThroughRate, latestWeek);
 
         return new MartSummaryResponse(kpi, weeklyTrend);
     }
@@ -216,6 +221,734 @@ public sealed class MartAnalyticsRepository
 
         return new MartBreakdownResponse(name, rows);
     }
+
+    /// <summary>ランキングで返却する最大行数（フロントは Top-N でさらに絞る）。</summary>
+    private const int MaxRankingRows = 1000;
+
+    /// <summary>商品一覧の最大ページサイズ。</summary>
+    private const int MaxPageSize = 200;
+
+    /// <summary>消化率×値引き率 散布図の最大点数。</summary>
+    private const int MaxMarkdownPoints = 500;
+
+    /// <summary>
+    /// 実気温（dim_climate）を採用する完全週の日数（月〜日）。これ未満の週は CSV 未カバーとみなし
+    /// 標準気候（<see cref="ClimateModel"/>）へフォールバックする。
+    /// </summary>
+    private const int FullWeekDays = 7;
+
+    /// <summary>在庫・発注分析（最新週スナップショット基準）を mart から取得する。</summary>
+    public async Task<InventoryResponse> GetInventoryAsync(
+        SalesQueryFilter filter, CancellationToken cancellationToken = default)
+    {
+        filter.EnsureValid();
+        await using var connection = await _connectionFactory.OpenConnectionAsync(cancellationToken);
+
+        var parameters = new DynamicParameters();
+        MartFilterSql.AddParameters(filter, parameters);
+
+        var latestWeek = await QueryLatestWeekAsync(connection, filter, parameters, cancellationToken);
+        if (!latestWeek.HasValue)
+        {
+            return new InventoryResponse(
+                new InventoryKpi(0, 0m, 0, 0, 0, 0, 0, null),
+                Array.Empty<InventoryBreakdownRow>());
+        }
+
+        parameters.Add("latestWeek", latestWeek.Value);
+        var andClause = MartFilterSql.AndClause(filter);
+
+        var kpiSql = $"""
+            SELECT COALESCE(SUM(inv.stock), 0)::bigint        AS total_stock,
+                   COALESCE(SUM(inv.order_qty), 0)            AS total_order_quantity,
+                   COALESCE(SUM(inv.advance_qty), 0)::bigint  AS total_advance_quantity,
+                   COALESCE(SUM(inv.cum_sales), 0)::bigint    AS cumulative_sales,
+                   COALESCE(SUM(inv.cum_delivery), 0)::bigint AS cumulative_delivery,
+                   COALESCE(AVG(inv.stock_days), 0)::float8   AS average_stock_days
+            FROM mart.fact_inventory_snapshot inv
+            JOIN mart.dim_date     dd ON dd.date_key     = inv.date_key
+            JOIN mart.dim_product  dp ON dp.product_key  = inv.product_key
+            JOIN mart.dim_retailer dr ON dr.retailer_key = inv.retailer_key
+            WHERE dd.week_monday = @latestWeek{andClause};
+            """;
+        var kpiRow = await connection.QuerySingleAsync<MartInventoryKpiRow>(
+            new CommandDefinition(kpiSql, parameters, cancellationToken: cancellationToken));
+
+        // 部門別内訳（部門名は dim_product から。コードのみの場合はコードを表示）。
+        var breakdownSql = $"""
+            SELECT COALESCE(NULLIF(dp.department_code, ''), '(未設定)') AS key,
+                   COALESCE(NULLIF(dp.department_name, ''),
+                            NULLIF(dp.department_code, ''), '(未設定)') AS label,
+                   COALESCE(SUM(inv.stock), 0)::bigint        AS stock,
+                   COALESCE(SUM(inv.order_qty), 0)            AS order_quantity,
+                   COALESCE(SUM(inv.advance_qty), 0)::bigint  AS advance_quantity,
+                   COALESCE(SUM(inv.cum_sales), 0)::bigint    AS cumulative_sales,
+                   COALESCE(SUM(inv.cum_delivery), 0)::bigint AS cumulative_delivery
+            FROM mart.fact_inventory_snapshot inv
+            JOIN mart.dim_date     dd ON dd.date_key     = inv.date_key
+            JOIN mart.dim_product  dp ON dp.product_key  = inv.product_key
+            JOIN mart.dim_retailer dr ON dr.retailer_key = inv.retailer_key
+            WHERE dd.week_monday = @latestWeek{andClause}
+            GROUP BY COALESCE(NULLIF(dp.department_code, ''), '(未設定)'),
+                     COALESCE(NULLIF(dp.department_name, ''),
+                              NULLIF(dp.department_code, ''), '(未設定)')
+            ORDER BY stock DESC, key;
+            """;
+        var breakdownRaw = await connection.QueryAsync<MartInventoryBreakdownRawRow>(
+            new CommandDefinition(breakdownSql, parameters, cancellationToken: cancellationToken));
+
+        var byDepartment = breakdownRaw
+            .Select(row => new InventoryBreakdownRow(
+                row.Key, row.Label, row.Stock, row.OrderQuantity, row.AdvanceQuantity,
+                Ratio(row.CumulativeSales, row.CumulativeDelivery)))
+            .ToList();
+
+        var kpi = new InventoryKpi(
+            kpiRow.TotalStock, kpiRow.TotalOrderQuantity, kpiRow.TotalAdvanceQuantity,
+            kpiRow.CumulativeSales, kpiRow.CumulativeDelivery,
+            Ratio(kpiRow.CumulativeSales, kpiRow.CumulativeDelivery),
+            kpiRow.AverageStockDays, latestWeek);
+
+        return new InventoryResponse(kpi, byDepartment);
+    }
+
+    /// <summary>商品別分析の一覧（ページング）を mart から取得する。</summary>
+    public async Task<ProductPage> GetProductsAsync(
+        SalesQueryFilter filter,
+        ProductSortKey sortKey,
+        bool ascending,
+        int page,
+        int pageSize,
+        CancellationToken cancellationToken = default)
+    {
+        filter.EnsureValid();
+        page = Math.Max(page, 1);
+        pageSize = Math.Clamp(pageSize, 1, MaxPageSize);
+
+        await using var connection = await _connectionFactory.OpenConnectionAsync(cancellationToken);
+
+        var parameters = new DynamicParameters();
+        MartFilterSql.AddParameters(filter, parameters);
+
+        var latestWeek = await QueryLatestWeekAsync(connection, filter, parameters, cancellationToken);
+        if (!latestWeek.HasValue)
+        {
+            return new ProductPage(Array.Empty<ProductRow>(), 0, page, pageSize);
+        }
+
+        parameters.Add("latestWeek", latestWeek.Value);
+        parameters.Add("limit", pageSize);
+        parameters.Add("offset", (page - 1) * pageSize);
+
+        var sortExpression = MartProductSortExpression(sortKey);
+        var direction = ascending ? "ASC" : "DESC";
+        var whereClause = MartFilterSql.WhereClause(filter);
+        var andClause = MartFilterSql.AndClause(filter);
+
+        // SKU（sku_key）単位の行。在庫は最新週スナップショット、フローは期間集計。
+        // 代表画像・名称・ブランドは mart 次元から、商品マスタID（詳細遷移用）は自然キーで
+        // 重複排除した m_product サブクエリから取得する（行増幅・一意制約の影響を受けない）。
+        var sql = $"""
+            WITH stock AS (
+                SELECT inv.sku_key,
+                       COALESCE(SUM(inv.stock), 0)::bigint        AS stock,
+                       COALESCE(SUM(inv.cum_sales), 0)::bigint    AS cum_sales,
+                       COALESCE(SUM(inv.cum_delivery), 0)::bigint AS cum_delivery,
+                       COALESCE(AVG(inv.stock_days), 0)::float8   AS average_stock_days
+                FROM mart.fact_inventory_snapshot inv
+                JOIN mart.dim_date     dd ON dd.date_key     = inv.date_key
+                JOIN mart.dim_product  dp ON dp.product_key  = inv.product_key
+                JOIN mart.dim_retailer dr ON dr.retailer_key = inv.retailer_key
+                WHERE dd.week_monday = @latestWeek{andClause}
+                GROUP BY inv.sku_key
+            ),
+            flow AS (
+                SELECT f.sku_key,
+                       COALESCE(SUM(f.quantity), 0)::bigint     AS sales_quantity,
+                       COALESCE(SUM(f.amount), 0)::bigint       AS sales_amount,
+                       COALESCE(SUM(f.gross_profit), 0)::bigint AS gross_profit
+                FROM mart.fact_sales_weekly f
+                JOIN mart.dim_date     dd ON dd.date_key     = f.date_key
+                JOIN mart.dim_product  dp ON dp.product_key  = f.product_key
+                JOIN mart.dim_retailer dr ON dr.retailer_key = f.retailer_key
+                {whereClause}
+                GROUP BY f.sku_key
+            )
+            SELECT dp.channel_code AS gyotai_code,
+                   dp.product_sign AS shohin_kigou,
+                   dp.product_code AS hinban_code,
+                   ds.unit_code    AS tanpin_code,
+                   COALESCE(dp.product_name, '') AS hinmei,
+                   COALESCE(dp.season, '')       AS kisetsu,
+                   COALESCE(f.sales_quantity, 0) AS sales_quantity,
+                   COALESCE(f.sales_amount, 0)   AS sales_amount,
+                   COALESCE(f.gross_profit, 0)   AS gross_profit,
+                   s.stock,
+                   s.cum_sales      AS cumulative_sales,
+                   s.cum_delivery   AS cumulative_delivery,
+                   s.average_stock_days,
+                   mp.product_id    AS master_product_id,
+                   dp.product_name  AS product_name,
+                   dp.brand         AS brand,
+                   ds.image_url     AS primary_image_url,
+                   (COUNT(*) OVER ())::int AS total_count
+            FROM stock s
+            JOIN mart.dim_sku     ds ON ds.sku_key     = s.sku_key
+            JOIN mart.dim_product dp ON dp.product_key = ds.product_key
+            LEFT JOIN flow f ON f.sku_key = s.sku_key
+            LEFT JOIN (
+                SELECT DISTINCT ON (business_category_cd, product_sign, product_type_crd)
+                       business_category_cd, product_sign, product_type_crd, product_id
+                FROM m_product
+                ORDER BY business_category_cd, product_sign, product_type_crd, updated_at DESC, product_id
+            ) mp ON mp.business_category_cd = dp.channel_code
+                AND mp.product_sign         = dp.product_sign
+                AND mp.product_type_crd     = dp.product_code
+            ORDER BY {sortExpression} {direction} NULLS LAST, dp.product_code, ds.unit_code
+            LIMIT @limit OFFSET @offset;
+            """;
+
+        var rawRows = (await connection.QueryAsync<MartProductRawRow>(
+            new CommandDefinition(sql, parameters, cancellationToken: cancellationToken))).ToList();
+
+        var totalCount = rawRows.Count > 0
+            ? rawRows[0].TotalCount
+            : await CountMartProductsAsync(connection, filter, parameters, cancellationToken);
+
+        var items = rawRows
+            .Select(row => new ProductRow(
+                row.GyotaiCode, row.ShohinKigou, row.HinbanCode, row.TanpinCode,
+                row.Hinmei, row.Kisetsu, row.SalesQuantity, row.SalesAmount, row.GrossProfit,
+                row.Stock, Ratio(row.CumulativeSales, row.CumulativeDelivery), row.AverageStockDays,
+                row.MasterProductId, row.ProductName, row.Brand, row.PrimaryImageUrl))
+            .ToList();
+
+        return new ProductPage(items, totalCount, page, pageSize);
+    }
+
+    /// <summary>商品行（最新週に在庫がある SKU）の総件数を数える（本体クエリが空集合のフォールバック）。</summary>
+    private static async Task<int> CountMartProductsAsync(
+        NpgsqlConnection connection,
+        SalesQueryFilter filter,
+        DynamicParameters parameters,
+        CancellationToken cancellationToken)
+    {
+        var sql = $"""
+            SELECT COUNT(DISTINCT inv.sku_key)::int
+            FROM mart.fact_inventory_snapshot inv
+            JOIN mart.dim_date     dd ON dd.date_key     = inv.date_key
+            JOIN mart.dim_product  dp ON dp.product_key  = inv.product_key
+            JOIN mart.dim_retailer dr ON dr.retailer_key = inv.retailer_key
+            WHERE dd.week_monday = @latestWeek{MartFilterSql.AndClause(filter)};
+            """;
+        return await connection.ExecuteScalarAsync<int>(
+            new CommandDefinition(sql, parameters, cancellationToken: cancellationToken));
+    }
+
+    /// <summary>クロス集計マトリクス（行×列の2次元集計）を mart から取得する。</summary>
+    /// <remarks>
+    /// 帳票区分・棚割は mart に保持しないため、それらを行/列に指定すると 400（未対応）を返す
+    /// （フロントは対応軸のみ提示する）。フロー指標は期間内集計、在庫系は最新週スナップショット基準。
+    /// </remarks>
+    public async Task<CrosstabMatrixResponse> GetCrosstabMatrixAsync(
+        SalesQueryFilter filter,
+        CrosstabDimension rowDim,
+        CrosstabDimension colDim,
+        TemperatureArea? temperatureArea = null,
+        CancellationToken cancellationToken = default)
+    {
+        filter.EnsureValid();
+        if (rowDim == colDim)
+        {
+            throw new AppException(ErrorCodes.InvalidRequest, 400,
+                "行と列に同じディメンションを指定することはできません。");
+        }
+
+        // 未対応ディメンション（帳票区分・棚割）はここで弾く（fail-fast）。
+        var rowExpr = ResolveMartCrosstabDimensionSql(rowDim);
+        var colExpr = ResolveMartCrosstabDimensionSql(colDim);
+        var rowInfo = CrosstabMatrixBuilder.DimensionInfo(rowDim);
+        var colInfo = CrosstabMatrixBuilder.DimensionInfo(colDim);
+        var hasTimeAxis = CrosstabMatrixBuilder.IsTimeDimension(rowDim)
+            || CrosstabMatrixBuilder.IsTimeDimension(colDim);
+        var temperatureActive = hasTimeAxis && temperatureArea.HasValue;
+        var availableMetrics =
+            CrosstabMatrixBuilder.ResolveAvailableMetrics(hasTimeAxis, temperatureActive);
+
+        await using var connection = await _connectionFactory.OpenConnectionAsync(cancellationToken);
+
+        var parameters = new DynamicParameters();
+        MartFilterSql.AddParameters(filter, parameters);
+        var whereClause = MartFilterSql.WhereClause(filter);
+        var andClause = MartFilterSql.AndClause(filter);
+
+        var latestWeek = await QueryLatestWeekAsync(connection, filter, parameters, cancellationToken);
+        if (!latestWeek.HasValue)
+        {
+            return CrosstabMatrixBuilder.BuildEmpty(rowInfo, colInfo, availableMetrics);
+        }
+
+        var rowKeyExpr = $"COALESCE(NULLIF({rowExpr}, ''), '{CrosstabMatrixBuilder.UnsetLabel}')";
+        var colKeyExpr = $"COALESCE(NULLIF({colExpr}, ''), '{CrosstabMatrixBuilder.UnsetLabel}')";
+
+        // 在日（stock_days）は在庫スナップショットを同一グレインで LEFT JOIN して期間平均する。
+        // ただし時間軸絡みのセルではビルダーが在庫系を null 化するため、1.6M 行規模の不要な結合を避けて
+        // 0 で代替する（フロー指標のみ算出）。
+        var stockDaysExpr = hasTimeAxis ? "0::float8" : "inv.stock_days";
+        var inventoryJoin = hasTimeAxis
+            ? string.Empty
+            : "LEFT JOIN mart.fact_inventory_snapshot inv "
+              + "ON inv.date_key = f.date_key AND inv.retailer_key = f.retailer_key "
+              + "AND inv.product_key = f.product_key AND inv.sku_key = f.sku_key";
+
+        var flowSql = $"""
+            WITH labeled AS (
+                SELECT {rowKeyExpr} AS row_key,
+                       {colKeyExpr} AS col_key,
+                       f.quantity     AS quantity,
+                       f.amount       AS amount,
+                       f.gross_profit AS gross_profit,
+                       {stockDaysExpr} AS stock_days
+                FROM mart.fact_sales_weekly f
+                JOIN mart.dim_date     dd ON dd.date_key     = f.date_key
+                JOIN mart.dim_retailer dr ON dr.retailer_key = f.retailer_key
+                JOIN mart.dim_product  dp ON dp.product_key  = f.product_key
+                JOIN mart.dim_sku      ds ON ds.sku_key      = f.sku_key
+                {inventoryJoin}
+                {whereClause}
+            )
+            SELECT row_key,
+                   col_key,
+                   COALESCE(SUM(quantity), 0)::bigint     AS quantity,
+                   COALESCE(SUM(amount), 0)::bigint       AS amount,
+                   COALESCE(SUM(gross_profit), 0)::bigint AS gross_profit,
+                   COALESCE(AVG(stock_days), 0)::float8   AS stock_days
+            FROM labeled
+            GROUP BY row_key, col_key;
+            """;
+        var flowRows = (await connection.QueryAsync<CrosstabFlowRow>(
+            new CommandDefinition(flowSql, parameters, cancellationToken: cancellationToken))).ToList();
+
+        // スナップショット集計（時間軸が含まれない場合のみ。最新週基準）。
+        Dictionary<(string Row, string Col), CrosstabSnapshotRow> snapshotMap = new();
+        if (!hasTimeAxis)
+        {
+            parameters.Add("latestWeek", latestWeek.Value);
+            var snapshotSql = $"""
+                WITH labeled AS (
+                    SELECT {rowKeyExpr} AS row_key,
+                           {colKeyExpr} AS col_key,
+                           inv.stock        AS stock,
+                           inv.cum_sales    AS cum_sales,
+                           inv.cum_delivery AS cum_delivery
+                    FROM mart.fact_inventory_snapshot inv
+                    JOIN mart.dim_date     dd ON dd.date_key     = inv.date_key
+                    JOIN mart.dim_retailer dr ON dr.retailer_key = inv.retailer_key
+                    JOIN mart.dim_product  dp ON dp.product_key  = inv.product_key
+                    JOIN mart.dim_sku      ds ON ds.sku_key      = inv.sku_key
+                    WHERE dd.week_monday = @latestWeek{andClause}
+                )
+                SELECT row_key,
+                       col_key,
+                       COALESCE(SUM(stock), 0)::bigint        AS stock,
+                       COALESCE(SUM(cum_sales), 0)::bigint    AS cumulative_sales,
+                       COALESCE(SUM(cum_delivery), 0)::bigint AS cumulative_delivery
+                FROM labeled
+                GROUP BY row_key, col_key;
+                """;
+            var snapshotRows = await connection.QueryAsync<CrosstabSnapshotRow>(
+                new CommandDefinition(snapshotSql, parameters, cancellationToken: cancellationToken));
+            foreach (var s in snapshotRows)
+            {
+                snapshotMap[(s.RowKey, s.ColKey)] = s;
+            }
+        }
+
+        return CrosstabMatrixBuilder.Build(
+            flowRows, snapshotMap, rowInfo, colInfo, hasTimeAxis, availableMetrics,
+            latestWeek, rowDim, colDim, temperatureActive ? temperatureArea : null);
+    }
+
+    /// <summary>単軸ランキング（主期間 + 任意の比較期間）の集計素材を mart から取得する。</summary>
+    public async Task<RankingResponse> GetRankingAsync(
+        SalesQueryFilter primaryFilter,
+        SalesQueryFilter? comparisonFilter,
+        BreakdownDimension dimension,
+        int maxRows,
+        CancellationToken cancellationToken = default)
+    {
+        primaryFilter.EnsureValid();
+        comparisonFilter?.EnsureValid();
+        maxRows = Math.Clamp(maxRows, 1, MaxRankingRows);
+
+        var (groupBy, keyExpr, labelExpr) = ResolveMartRankingDimension(dimension);
+
+        await using var connection = await _connectionFactory.OpenConnectionAsync(cancellationToken);
+
+        var primary = await QueryRankingPeriodAsync(
+            connection, primaryFilter, groupBy, keyExpr, labelExpr, cancellationToken);
+
+        RankingPeriodResult? comparison = null;
+        if (comparisonFilter != null)
+        {
+            comparison = await QueryRankingPeriodAsync(
+                connection, comparisonFilter, groupBy, keyExpr, labelExpr, cancellationToken);
+        }
+
+        return RankingBuilder.Build(dimension, primary, comparison, maxRows);
+    }
+
+    /// <summary>1期間ぶんのランキング集計（キー別フロー + 最新週スナップショット）を mart から取得する。</summary>
+    private async Task<RankingPeriodResult> QueryRankingPeriodAsync(
+        NpgsqlConnection connection,
+        SalesQueryFilter filter,
+        string groupBy,
+        string keyExpr,
+        string labelExpr,
+        CancellationToken cancellationToken)
+    {
+        var parameters = new DynamicParameters();
+        MartFilterSql.AddParameters(filter, parameters);
+
+        var byKey = new Dictionary<string, RankingAccumulator>(StringComparer.Ordinal);
+
+        var labelSql = $"COALESCE(NULLIF({labelExpr}, ''), '{CrosstabMatrixBuilder.UnsetLabel}')";
+        var flowSql = $"""
+            SELECT {keyExpr} AS key,
+                   {labelSql} AS label,
+                   COALESCE(SUM(f.quantity), 0)::bigint     AS quantity,
+                   COALESCE(SUM(f.amount), 0)::bigint       AS amount,
+                   COALESCE(SUM(f.gross_profit), 0)::bigint AS gross_profit
+            FROM mart.fact_sales_weekly f
+            JOIN mart.dim_date     dd ON dd.date_key     = f.date_key
+            JOIN mart.dim_retailer dr ON dr.retailer_key = f.retailer_key
+            JOIN mart.dim_product  dp ON dp.product_key  = f.product_key
+            JOIN mart.dim_sku      ds ON ds.sku_key      = f.sku_key
+            {MartFilterSql.WhereClause(filter)}
+            GROUP BY {groupBy};
+            """;
+        var flowRows = await connection.QueryAsync<RankingFlowRow>(
+            new CommandDefinition(flowSql, parameters, cancellationToken: cancellationToken));
+        foreach (var row in flowRows)
+        {
+            byKey[row.Key] = new RankingAccumulator
+            {
+                Label = row.Label,
+                Quantity = row.Quantity,
+                Amount = row.Amount,
+                GrossProfit = row.GrossProfit,
+            };
+        }
+
+        var latestWeek = await QueryLatestWeekAsync(connection, filter, parameters, cancellationToken);
+        if (latestWeek.HasValue)
+        {
+            parameters.Add("latestWeek", latestWeek.Value);
+            var snapshotSql = $"""
+                SELECT {keyExpr} AS key,
+                       COALESCE(SUM(inv.stock), 0)::bigint        AS stock,
+                       COALESCE(SUM(inv.cum_sales), 0)::bigint    AS cumulative_sales,
+                       COALESCE(SUM(inv.cum_delivery), 0)::bigint AS cumulative_delivery,
+                       COALESCE(AVG(inv.stock_days), 0)::float8   AS stock_days
+                FROM mart.fact_inventory_snapshot inv
+                JOIN mart.dim_date     dd ON dd.date_key     = inv.date_key
+                JOIN mart.dim_retailer dr ON dr.retailer_key = inv.retailer_key
+                JOIN mart.dim_product  dp ON dp.product_key  = inv.product_key
+                JOIN mart.dim_sku      ds ON ds.sku_key      = inv.sku_key
+                WHERE dd.week_monday = @latestWeek{MartFilterSql.AndClause(filter)}
+                GROUP BY {groupBy};
+                """;
+            var snapshotRows = await connection.QueryAsync<RankingSnapshotRow>(
+                new CommandDefinition(snapshotSql, parameters, cancellationToken: cancellationToken));
+            foreach (var row in snapshotRows)
+            {
+                if (!byKey.TryGetValue(row.Key, out var acc))
+                {
+                    acc = new RankingAccumulator { Label = row.Key };
+                    byKey[row.Key] = acc;
+                }
+                acc.HasSnapshot = true;
+                acc.Stock = row.Stock;
+                acc.CumulativeSales = row.CumulativeSales;
+                acc.CumulativeDelivery = row.CumulativeDelivery;
+                acc.StockDays = row.StockDays;
+            }
+        }
+
+        return new RankingPeriodResult(byKey, latestWeek);
+    }
+
+    /// <summary>
+    /// 週次系列（売上フロー指標 + その週・エリアの気温）を mart から取得する。
+    /// 気温は <c>mart.dim_climate</c>（実測。CSV由来）を週範囲で集計し、CSV 未カバーの週は
+    /// 標準気候（<see cref="ClimateModel"/>）へフォールバックする。
+    /// </summary>
+    public async Task<WeeklySeriesResponse> GetWeeklySeriesAsync(
+        SalesQueryFilter filter,
+        TemperatureArea area,
+        CancellationToken cancellationToken = default)
+    {
+        filter.EnsureValid();
+        await using var connection = await _connectionFactory.OpenConnectionAsync(cancellationToken);
+
+        var parameters = new DynamicParameters();
+        MartFilterSql.AddParameters(filter, parameters);
+
+        var flowSql = $"""
+            SELECT dd.week_monday AS week,
+                   COALESCE(SUM(f.quantity), 0)::bigint     AS quantity,
+                   COALESCE(SUM(f.amount), 0)::bigint       AS amount,
+                   COALESCE(SUM(f.gross_profit), 0)::bigint AS gross_profit
+            FROM mart.fact_sales_weekly f
+            JOIN mart.dim_date     dd ON dd.date_key     = f.date_key
+            JOIN mart.dim_product  dp ON dp.product_key  = f.product_key
+            JOIN mart.dim_retailer dr ON dr.retailer_key = f.retailer_key
+            {MartFilterSql.WhereClause(filter)}
+            GROUP BY dd.week_monday
+            ORDER BY dd.week_monday;
+            """;
+        var flowRows = (await connection.QueryAsync<MartWeeklyFlowRow>(
+            new CommandDefinition(flowSql, parameters, cancellationToken: cancellationToken))).ToList();
+
+        // 実気温（週=月曜が表す前週 月〜日の範囲）を集計。完全週（7日）のみ採用する。
+        var climateParameters = new DynamicParameters();
+        climateParameters.Add("area", ClimateModel.AreaCode(area));
+        var climateRows = await connection.QueryAsync<MartWeeklyClimateRow>(
+            new CommandDefinition("""
+                SELECT dd.week_monday AS week,
+                       AVG(c.temp_avg)::float8 AS temp_avg,
+                       MAX(c.temp_max)::float8 AS temp_max,
+                       MIN(c.temp_min)::float8 AS temp_min,
+                       COUNT(*)::int           AS day_count
+                FROM mart.dim_date dd
+                JOIN mart.dim_climate c
+                  ON c.area_code = @area
+                 AND c.the_date BETWEEN dd.week_monday - 7 AND dd.week_monday - 1
+                GROUP BY dd.week_monday;
+                """, climateParameters, cancellationToken: cancellationToken));
+        var climateByWeek = climateRows.ToDictionary(r => r.Week);
+
+        var points = flowRows
+            .Select(r =>
+            {
+                TemperatureReading temp;
+                if (climateByWeek.TryGetValue(r.Week, out var c) && c.DayCount == FullWeekDays)
+                {
+                    temp = new TemperatureReading(c.TempAvg, c.TempMax, c.TempMin);
+                }
+                else
+                {
+                    temp = ClimateModel.Week(area, r.Week);
+                }
+                return new WeeklySeriesPoint(
+                    r.Week, r.Quantity, r.Amount, r.GrossProfit,
+                    Round1(temp.Average), Round1(temp.Maximum), Round1(temp.Minimum));
+            })
+            .ToList();
+
+        return new WeeklySeriesResponse(
+            ClimateModel.AreaCode(area), ClimateModel.CityName(area), points);
+    }
+
+    /// <summary>
+    /// 消化率×値引き率の散布図素材（型番＝業態×記号×品番 単位）を mart から取得する。
+    /// 値引き率は定価（dim_sku.list_price）が必要なため、定価未登録の型番は対象外。
+    /// </summary>
+    public async Task<MarkdownScatterResponse> GetMarkdownScatterAsync(
+        SalesQueryFilter filter,
+        CancellationToken cancellationToken = default)
+    {
+        filter.EnsureValid();
+        await using var connection = await _connectionFactory.OpenConnectionAsync(cancellationToken);
+
+        var parameters = new DynamicParameters();
+        MartFilterSql.AddParameters(filter, parameters);
+
+        var latestWeek = await QueryLatestWeekAsync(connection, filter, parameters, cancellationToken);
+        if (!latestWeek.HasValue)
+        {
+            return new MarkdownScatterResponse(null, Array.Empty<MarkdownScatterPoint>());
+        }
+
+        parameters.Add("latestWeek", latestWeek.Value);
+        parameters.Add("limit", MaxMarkdownPoints);
+        var whereClause = MartFilterSql.WhereClause(filter);
+        var andClause = MartFilterSql.AndClause(filter);
+
+        // 期間内フロー数量、最新週の平均売価（売上ファクト）・累計（在庫スナップショット）、
+        // 定価（dim_sku）を型番（product_key）単位で結合する。
+        var sql = $"""
+            WITH flow AS (
+                SELECT f.product_key,
+                       COALESCE(SUM(f.quantity), 0)::bigint AS quantity
+                FROM mart.fact_sales_weekly f
+                JOIN mart.dim_date     dd ON dd.date_key     = f.date_key
+                JOIN mart.dim_product  dp ON dp.product_key  = f.product_key
+                JOIN mart.dim_retailer dr ON dr.retailer_key = f.retailer_key
+                {whereClause}
+                GROUP BY f.product_key
+            ),
+            price AS (
+                SELECT f.product_key,
+                       AVG(NULLIF(f.sale_price, 0))::float8 AS avg_baika
+                FROM mart.fact_sales_weekly f
+                JOIN mart.dim_date     dd ON dd.date_key     = f.date_key
+                JOIN mart.dim_product  dp ON dp.product_key  = f.product_key
+                JOIN mart.dim_retailer dr ON dr.retailer_key = f.retailer_key
+                WHERE dd.week_monday = @latestWeek{andClause}
+                GROUP BY f.product_key
+            ),
+            cum AS (
+                SELECT inv.product_key,
+                       COALESCE(SUM(inv.cum_sales), 0)::bigint    AS cum_sales,
+                       COALESCE(SUM(inv.cum_delivery), 0)::bigint AS cum_delivery
+                FROM mart.fact_inventory_snapshot inv
+                JOIN mart.dim_date     dd ON dd.date_key     = inv.date_key
+                JOIN mart.dim_product  dp ON dp.product_key  = inv.product_key
+                JOIN mart.dim_retailer dr ON dr.retailer_key = inv.retailer_key
+                WHERE dd.week_monday = @latestWeek{andClause}
+                GROUP BY inv.product_key
+            ),
+            list AS (
+                SELECT ds.product_key,
+                       AVG(ds.list_price)::float8 AS list_price
+                FROM mart.dim_sku ds
+                WHERE ds.list_price > 0
+                GROUP BY ds.product_key
+            )
+            SELECT dp.channel_code || '|' || dp.product_sign || '|' || dp.product_code AS key,
+                   dp.product_code AS label,
+                   dp.channel_code AS business_type,
+                   CASE WHEN cum.cum_delivery > 0
+                        THEN cum.cum_sales::float8 / cum.cum_delivery * 100.0
+                        ELSE 0 END AS sell_through_rate,
+                   GREATEST(0, LEAST(100, (1 - price.avg_baika / list.list_price) * 100.0)) AS markdown_rate,
+                   COALESCE(flow.quantity, 0)::bigint AS quantity
+            FROM price
+            JOIN mart.dim_product dp ON dp.product_key = price.product_key
+            JOIN list ON list.product_key = price.product_key
+            LEFT JOIN cum  ON cum.product_key  = price.product_key
+            LEFT JOIN flow ON flow.product_key = price.product_key
+            WHERE list.list_price > 0
+              AND price.avg_baika IS NOT NULL
+            ORDER BY quantity DESC, key
+            LIMIT @limit;
+            """;
+
+        var points = (await connection.QueryAsync<MarkdownScatterPoint>(
+            new CommandDefinition(sql, parameters, cancellationToken: cancellationToken))).ToList();
+
+        return new MarkdownScatterResponse(latestWeek.Value.ToString("yyyy-MM-dd"), points);
+    }
+
+    /// <summary>週次トレンド（取込日昇順）を mart から取得する（サマリー・売上分析で共有）。</summary>
+    private static async Task<IReadOnlyList<TrendPoint>> QueryWeeklyTrendAsync(
+        NpgsqlConnection connection,
+        SalesQueryFilter filter,
+        DynamicParameters parameters,
+        CancellationToken cancellationToken)
+    {
+        // フロー指標はファクトに事前計算済みのため SUM するだけ（設計の狙い）。
+        var sql = $"""
+            SELECT dd.week_monday AS date,
+                   COALESCE(SUM(f.quantity), 0)::bigint     AS quantity,
+                   COALESCE(SUM(f.amount), 0)::bigint       AS amount,
+                   COALESCE(SUM(f.gross_profit), 0)::bigint AS gross_profit
+            FROM mart.fact_sales_weekly f
+            JOIN mart.dim_date     dd ON dd.date_key     = f.date_key
+            JOIN mart.dim_product  dp ON dp.product_key  = f.product_key
+            JOIN mart.dim_retailer dr ON dr.retailer_key = f.retailer_key
+            {MartFilterSql.WhereClause(filter)}
+            GROUP BY dd.week_monday
+            ORDER BY dd.week_monday;
+            """;
+        var rows = await connection.QueryAsync<TrendPoint>(
+            new CommandDefinition(sql, parameters, cancellationToken: cancellationToken));
+        return rows.ToList();
+    }
+
+    /// <summary>フィルタ範囲内の最新取込週（MAX week_monday）を取得する。データなしは null。</summary>
+    private static async Task<DateOnly?> QueryLatestWeekAsync(
+        NpgsqlConnection connection,
+        SalesQueryFilter filter,
+        DynamicParameters parameters,
+        CancellationToken cancellationToken)
+    {
+        var sql = $"""
+            SELECT MAX(dd.week_monday)
+            FROM mart.fact_sales_weekly f
+            JOIN mart.dim_date     dd ON dd.date_key     = f.date_key
+            JOIN mart.dim_product  dp ON dp.product_key  = f.product_key
+            JOIN mart.dim_retailer dr ON dr.retailer_key = f.retailer_key
+            {MartFilterSql.WhereClause(filter)};
+            """;
+        return await connection.ExecuteScalarAsync<DateOnly?>(
+            new CommandDefinition(sql, parameters, cancellationToken: cancellationToken));
+    }
+
+    /// <summary>商品一覧の並び替えキーを mart クエリの式に解決する。</summary>
+    private static string MartProductSortExpression(ProductSortKey sortKey) => sortKey switch
+    {
+        ProductSortKey.SalesQuantity => "sales_quantity",
+        ProductSortKey.SalesAmount => "sales_amount",
+        ProductSortKey.GrossProfit => "gross_profit",
+        ProductSortKey.Stock => "s.stock",
+        ProductSortKey.SellThroughRate =>
+            "(s.cum_sales::float8 / NULLIF(s.cum_delivery, 0))",
+        ProductSortKey.StockDays => "s.average_stock_days",
+        _ => "sales_amount",
+    };
+
+    /// <summary>
+    /// クロス集計の <see cref="CrosstabDimension"/> を mart の SQL 式（text を返す式）に解決する。
+    /// 帳票区分・棚割は mart に保持しないため未対応（400）。エイリアスは dd/dr/dp/ds 固定。
+    /// </summary>
+    private static string ResolveMartCrosstabDimensionSql(CrosstabDimension dim) => dim switch
+    {
+        CrosstabDimension.TimeYear => "dd.year::text",
+        CrosstabDimension.TimeQuarter => "dd.year::text || '-Q' || dd.quarter::text",
+        CrosstabDimension.TimeMonth => "to_char(dd.week_monday, 'YYYY-MM')",
+        CrosstabDimension.CategoryDepartment => "dp.department_code",
+        CrosstabDimension.CategoryBusinessType => "dr.channel_code",
+        CrosstabDimension.CategorySeason => "dp.season",
+        CrosstabDimension.CategoryHinban => "dp.product_code",
+        CrosstabDimension.CategoryProduct => "(dp.product_code || '-' || ds.unit_code)",
+        CrosstabDimension.CategoryColor => "ds.variant_axis1_value",
+        CrosstabDimension.CategorySize => "ds.variant_axis2_value",
+        CrosstabDimension.CategoryShohinKigo => "dp.product_sign",
+        CrosstabDimension.CategoryChohyoKubun or CrosstabDimension.CategoryTanawari1
+            or CrosstabDimension.CategoryTanawari2 => throw new AppException(
+            ErrorCodes.UnknownDimension, 400,
+            "帳票区分・棚割はスタースキーマ分析では未対応です。"),
+        _ => throw new AppException(ErrorCodes.UnknownDimension, 400),
+    };
+
+    /// <summary>
+    /// ランキングの <see cref="BreakdownDimension"/> を mart の (GroupBy, KeyExpr, LabelExpr) に解決する。
+    /// 帳票区分・棚割は mart に保持しないため未対応（400）。エイリアスは dr/dp/ds 固定。
+    /// </summary>
+    private static (string GroupBy, string KeyExpr, string LabelExpr) ResolveMartRankingDimension(
+        BreakdownDimension dimension) => dimension switch
+    {
+        BreakdownDimension.Department => ("dp.department_code", "dp.department_code", "dp.department_code"),
+        BreakdownDimension.BusinessType => ("dr.channel_code", "dr.channel_code", "dr.channel_code"),
+        BreakdownDimension.Season => ("dp.season", "dp.season", "dp.season"),
+        BreakdownDimension.Hinban => ("dp.product_code", "dp.product_code", "dp.product_code"),
+        BreakdownDimension.ShohinKigo => ("dp.product_sign", "dp.product_sign", "dp.product_sign"),
+        BreakdownDimension.Color => ("ds.variant_axis1_value", "ds.variant_axis1_value", "ds.variant_axis1_value"),
+        BreakdownDimension.Size => ("ds.variant_axis2_value", "ds.variant_axis2_value", "ds.variant_axis2_value"),
+        BreakdownDimension.Product => (
+            "dp.channel_code, dp.product_sign, dp.product_code, ds.unit_code",
+            "dp.channel_code || '|' || dp.product_sign || '|' || dp.product_code || '|' || ds.unit_code",
+            "dp.product_code || '-' || ds.unit_code"),
+        BreakdownDimension.ChohyoKubun or BreakdownDimension.Tanawari1
+            or BreakdownDimension.Tanawari2 => throw new AppException(
+            ErrorCodes.UnknownDimension, 400,
+            "帳票区分・棚割はスタースキーマ分析では未対応です。"),
+        _ => throw new AppException(ErrorCodes.UnknownDimension, 400),
+    };
+
+    private static double Round1(double value) => Math.Round(value, 1, MidpointRounding.AwayFromZero);
 
     private static async Task<MartStatus> ReadStatusAsync(
         NpgsqlConnection connection, CancellationToken cancellationToken)
@@ -302,7 +1035,8 @@ internal static class MartFilterSql
         if (filter.Hinbans is { Length: > 0 }) parameters.Add("hinbans", filter.Hinbans);
     }
 
-    public static string WhereClause(SalesQueryFilter filter)
+    /// <summary>条件式を <c>AND</c> 連結で返す（条件がなければ空文字）。エイリアスは dd/dp/dr 固定。</summary>
+    public static string Conditions(SalesQueryFilter filter)
     {
         var conditions = new List<string>();
 
@@ -313,7 +1047,21 @@ internal static class MartFilterSql
         if (filter.Seasons is { Length: > 0 }) conditions.Add("dp.season = ANY(@seasons)");
         if (filter.Hinbans is { Length: > 0 }) conditions.Add("dp.product_code = ANY(@hinbans)");
 
-        return conditions.Count == 0 ? string.Empty : "WHERE " + string.Join(" AND ", conditions);
+        return string.Join(" AND ", conditions);
+    }
+
+    /// <summary><c>WHERE ...</c> 句を返す（条件がなければ空文字）。</summary>
+    public static string WhereClause(SalesQueryFilter filter)
+    {
+        var conditions = Conditions(filter);
+        return conditions.Length == 0 ? string.Empty : "WHERE " + conditions;
+    }
+
+    /// <summary>既存の WHERE に続けて連結する <c>AND ...</c> を返す（条件がなければ空文字）。</summary>
+    public static string AndClause(SalesQueryFilter filter)
+    {
+        var conditions = Conditions(filter);
+        return conditions.Length == 0 ? string.Empty : " AND " + conditions;
     }
 }
 
@@ -330,3 +1078,53 @@ internal sealed record BuildInfoRow(
     string Status, string? Error, DateTime? StartedAt,
     DateTime? RebuiltAt, long SourceRows, long FactRows,
     DateOnly? EarliestWeek, DateOnly? LatestWeek);
+
+/// <summary>Dapper マッピング用の内部行（サマリーの最新週在庫スナップショット）。</summary>
+internal sealed record MartInvSnapshotRow(long Stock, long CumulativeSales, long CumulativeDelivery);
+
+/// <summary>Dapper マッピング用の内部行（在庫・発注 KPI）。</summary>
+internal sealed record MartInventoryKpiRow(
+    long TotalStock,
+    decimal TotalOrderQuantity,
+    long TotalAdvanceQuantity,
+    long CumulativeSales,
+    long CumulativeDelivery,
+    double AverageStockDays);
+
+/// <summary>Dapper マッピング用の内部行（在庫・発注の部門別内訳）。</summary>
+internal sealed record MartInventoryBreakdownRawRow(
+    string Key,
+    string Label,
+    long Stock,
+    decimal OrderQuantity,
+    long AdvanceQuantity,
+    long CumulativeSales,
+    long CumulativeDelivery);
+
+/// <summary>Dapper マッピング用の内部行（商品別分析の1行 + 総件数）。</summary>
+internal sealed record MartProductRawRow(
+    string GyotaiCode,
+    string ShohinKigou,
+    string HinbanCode,
+    string TanpinCode,
+    string Hinmei,
+    string Kisetsu,
+    long SalesQuantity,
+    long SalesAmount,
+    long GrossProfit,
+    long Stock,
+    long CumulativeSales,
+    long CumulativeDelivery,
+    double AverageStockDays,
+    Guid? MasterProductId,
+    string? ProductName,
+    string? Brand,
+    string? PrimaryImageUrl,
+    int TotalCount);
+
+/// <summary>Dapper マッピング用の内部行（週次系列のフロー指標）。</summary>
+internal sealed record MartWeeklyFlowRow(DateOnly Week, long Quantity, long Amount, long GrossProfit);
+
+/// <summary>Dapper マッピング用の内部行（週範囲で集計した実気温と対象日数）。</summary>
+internal sealed record MartWeeklyClimateRow(
+    DateOnly Week, double TempAvg, double TempMax, double TempMin, int DayCount);

@@ -1,6 +1,9 @@
 using System.IO.Compression;
 using System.Text;
+using Dapper;
 using Microsoft.Extensions.Logging;
+using Npgsql;
+using NpgsqlTypes;
 using UndeuxSales.Core.Models;
 using UndeuxSales.Core.Parsing;
 using UndeuxSales.Infrastructure.Database;
@@ -58,6 +61,11 @@ try
     }
 
     logger.LogInformation("スキーマを適用しました。");
+
+    // 気温データ（mart.dim_climate）を投入する。売上取込とは独立した参照データで、CSV（リポジトリの SoT）
+    // から毎回冪等に再投入する。失敗してもデプロイ全体を止めない（非ブロッキング: 散布図/重回帰は
+    // dim_climate が無い週は ClimateModel の標準気候へフォールバックするため、欠落しても動作する）。
+    await LoadClimateAsync(connectionFactory, ResolveClimatePath(schemaPath), logger);
 
     // 冪等性: 初期投入が完了済みならスキップ
     var batchRepository = new ImportBatchRepository(connectionFactory);
@@ -169,3 +177,105 @@ static IEnumerable<string> EnumerateCandidateDirectories(string directoryName)
 
 static string? FindGzipDump(string directory)
     => Directory.EnumerateFiles(directory, "*.gz").OrderBy(path => path).FirstOrDefault();
+
+// ------------------------------------------------------------
+// 気温データ（mart.dim_climate）の投入
+// ------------------------------------------------------------
+
+// 気温CSVのパスを解決する（UNDEUX_CLIMATE_PATH → schema と同じディレクトリ → db 候補探索の順）。
+// 見つからなければ null を返し、投入はスキップする（非ブロッキング）。
+static string? ResolveClimatePath(string schemaPath)
+{
+    var configured = Environment.GetEnvironmentVariable("UNDEUX_CLIMATE_PATH");
+    if (!string.IsNullOrWhiteSpace(configured))
+    {
+        return File.Exists(configured) ? configured : null;
+    }
+
+    // 既定は schema.sql と同じディレクトリ（compose は db/ を /app/db にマウントする）。
+    var schemaDir = Path.GetDirectoryName(Path.GetFullPath(schemaPath));
+    if (schemaDir is not null)
+    {
+        var candidate = Path.Combine(schemaDir, "climate_daily.csv");
+        if (File.Exists(candidate))
+        {
+            return candidate;
+        }
+    }
+
+    foreach (var directory in EnumerateCandidateDirectories("db"))
+    {
+        var candidate = Path.Combine(directory, "climate_daily.csv");
+        if (File.Exists(candidate))
+        {
+            return candidate;
+        }
+    }
+
+    return null;
+}
+
+// 気温CSVを mart.dim_climate へ投入する（TRUNCATE + バイナリ COPY、冪等）。
+// 非ブロッキング: いかなる失敗もデプロイを止めず、警告ログのみ残す（CLAUDE.md 原則4）。
+static async Task LoadClimateAsync(
+    NpgsqlConnectionFactory connectionFactory, string? climatePath, ILogger logger)
+{
+    if (climatePath is null)
+    {
+        logger.LogInformation(
+            "気温CSV（climate_daily.csv）が見つかりません。気温データの投入をスキップします"
+            + "（散布図/重回帰は標準気候へフォールバックします）。");
+        return;
+    }
+
+    try
+    {
+        List<ClimateDailyRecord> records;
+        using (var stream = File.OpenRead(climatePath))
+        using (var reader = new StreamReader(stream, Encoding.UTF8))
+        {
+            records = ClimateCsvReader.ReadRecords(reader).ToList();
+        }
+
+        if (records.Count == 0)
+        {
+            logger.LogWarning(
+                "気温CSV {Path} から有効なレコードを取得できませんでした。既存の気温データを温存します。",
+                climatePath);
+            return;
+        }
+
+        // TRUNCATE + COPY を1トランザクションで原子的に行う（再投入で一時的に空にしない）。
+        await using var connection = await connectionFactory.OpenConnectionAsync();
+        await using var transaction = await connection.BeginTransactionAsync();
+
+        await connection.ExecuteAsync(new CommandDefinition(
+            "TRUNCATE mart.dim_climate;", transaction: transaction));
+
+        await using (var writer = await connection.BeginBinaryImportAsync(
+            "COPY mart.dim_climate (area_code, the_date, temp_avg, temp_max, temp_min) "
+            + "FROM STDIN (FORMAT BINARY)"))
+        {
+            foreach (var record in records)
+            {
+                await writer.StartRowAsync();
+                await writer.WriteAsync(record.AreaCode, NpgsqlDbType.Text);
+                await writer.WriteAsync(record.Date, NpgsqlDbType.Date);
+                await writer.WriteAsync(record.TempAvg, NpgsqlDbType.Double);
+                await writer.WriteAsync(record.TempMax, NpgsqlDbType.Double);
+                await writer.WriteAsync(record.TempMin, NpgsqlDbType.Double);
+            }
+
+            await writer.CompleteAsync();
+        }
+
+        await transaction.CommitAsync();
+        logger.LogInformation(
+            "気温データを投入しました: {Count:N0} 行（{Path}）。", records.Count, climatePath);
+    }
+    catch (Exception ex)
+    {
+        logger.LogWarning(
+            ex, "気温データの投入に失敗しました（非ブロッキング: 処理を継続します）。");
+    }
+}
