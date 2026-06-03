@@ -305,4 +305,233 @@ CREATE INDEX IF NOT EXISTS ix_m_product_sku_unit_cd
 -- 日付対応ロジック: sales_date = import_date - 8 + day_index
 --   day_index 1 → import_date-7（月） / day_index 7 → import_date-1（日）
 
+-- ============================================================
+--  分析 mart（スタースキーマ） — docs/star-schema-design.md
+-- ------------------------------------------------------------
+--  既存 sales_weekly（取込ソース層）を温存しつつ、分析用に
+--  ディメンショナルモデルを別スキーマ mart に構築する。
+--  本スキーマは派生（キャッシュ）であり、SoT は sales_weekly。
+--  mart.rebuild() で sales_weekly + 商品マスタから全再構築する。
+--
+--  本イテレーションの範囲（縦スライス）:
+--   * 次元: dim_date / dim_retailer / dim_product / dim_sku（全て SCD1）
+--   * ファクト: fact_sales_weekly（週次フロー。グレイン=週×SKU×小売）
+--   * 在庫スナップショット・日次派生ファクト・テナント別スキーマ分離は後続。
+-- ============================================================
+CREATE SCHEMA IF NOT EXISTS mart;
+
+-- 日付次元（週=取込日の月曜）
+CREATE TABLE IF NOT EXISTS mart.dim_date (
+    date_key    integer GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
+    week_monday date    NOT NULL UNIQUE,
+    iso_year    integer NOT NULL,
+    iso_week    integer NOT NULL,
+    year        integer NOT NULL,
+    quarter     integer NOT NULL,
+    month       integer NOT NULL
+);
+COMMENT ON TABLE mart.dim_date IS '日付次元（週=月曜）。sales_weekly.import_date から導出';
+
+-- 小売次元（企業集約。channel=業態）
+CREATE TABLE IF NOT EXISTS mart.dim_retailer (
+    retailer_key  integer GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
+    retailer_code text NOT NULL,
+    retailer_name text,
+    channel_code  text NOT NULL,
+    channel_name  text,
+    UNIQUE (retailer_code, channel_code)
+);
+COMMENT ON TABLE mart.dim_retailer IS '小売次元（企業集約）。retailer=customer_code / channel=業態(gyotai_code)';
+
+-- 商品次元（SCD1。自然キー=業態×記号×品番）
+CREATE TABLE IF NOT EXISTS mart.dim_product (
+    product_key     integer GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
+    channel_code    text NOT NULL,
+    product_sign    text NOT NULL,
+    product_code    text NOT NULL,
+    product_name    text,
+    department_code text,
+    department_name text,
+    brand           text,
+    manager         text,
+    category        text,
+    season          text,
+    attributes      jsonb NOT NULL DEFAULT '{}'::jsonb,
+    UNIQUE (channel_code, product_sign, product_code)
+);
+COMMENT ON TABLE mart.dim_product IS '商品次元（SCD1）。業種固有属性（季節・棚割）は attributes(jsonb)';
+
+-- 業種固有属性のうち頻用する季節は生成列＋索引で集計性能を担保（設計 §5.2）
+ALTER TABLE mart.dim_product
+    ADD COLUMN IF NOT EXISTS season_attr text
+    GENERATED ALWAYS AS (attributes->>'season') STORED;
+CREATE INDEX IF NOT EXISTS ix_dim_product_department ON mart.dim_product (department_code);
+CREATE INDEX IF NOT EXISTS ix_dim_product_season     ON mart.dim_product (season);
+
+-- SKU次元（SCD1。汎用バリアント2軸＋定価）
+CREATE TABLE IF NOT EXISTS mart.dim_sku (
+    sku_key             integer GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
+    product_key         integer NOT NULL REFERENCES mart.dim_product(product_key),
+    unit_code           text NOT NULL,
+    variant_axis1_label text,
+    variant_axis1_value text,
+    variant_axis2_label text,
+    variant_axis2_value text,
+    list_price          integer,
+    image_url           text,
+    UNIQUE (product_key, unit_code)
+);
+COMMENT ON TABLE mart.dim_sku IS 'SKU次元（SCD1）。色/サイズは汎用バリアント2軸。list_price=定価（現在値）';
+
+-- 売上ファクト（週次フロー。グレイン=週×SKU×小売。数量/金額/粗利は事前計算）
+CREATE TABLE IF NOT EXISTS mart.fact_sales_weekly (
+    date_key     integer NOT NULL REFERENCES mart.dim_date(date_key),
+    retailer_key integer NOT NULL REFERENCES mart.dim_retailer(retailer_key),
+    product_key  integer NOT NULL REFERENCES mart.dim_product(product_key),
+    sku_key      integer NOT NULL REFERENCES mart.dim_sku(sku_key),
+    quantity     bigint  NOT NULL,
+    amount       bigint  NOT NULL,
+    gross_profit bigint  NOT NULL,
+    sale_price   integer NOT NULL,
+    cost_price   integer NOT NULL,
+    PRIMARY KEY (date_key, retailer_key, product_key, sku_key)
+);
+COMMENT ON TABLE mart.fact_sales_weekly IS '売上ファクト（週次フロー）。amount=数量×売価, gross_profit=数量×(売価−原価) を事前計算';
+CREATE INDEX IF NOT EXISTS ix_fact_sw_date     ON mart.fact_sales_weekly (date_key);
+CREATE INDEX IF NOT EXISTS ix_fact_sw_product  ON mart.fact_sales_weekly (product_key);
+CREATE INDEX IF NOT EXISTS ix_fact_sw_retailer ON mart.fact_sales_weekly (retailer_key);
+
+-- mart のメタ情報（最終再構築時刻）。1行のみ。
+CREATE TABLE IF NOT EXISTS mart.build_info (
+    id           integer PRIMARY KEY DEFAULT 1 CHECK (id = 1),
+    rebuilt_at   timestamptz,
+    source_rows  bigint NOT NULL DEFAULT 0,
+    fact_rows    bigint NOT NULL DEFAULT 0
+);
+INSERT INTO mart.build_info (id) VALUES (1) ON CONFLICT (id) DO NOTHING;
+
+-- ------------------------------------------------------------
+--  mart 全再構築（sales_weekly + 商品マスタ → 次元・ファクト）
+--  冪等: 何度呼んでも同じ結果。advisory lock で再構築を直列化する。
+--  代表値（名称・季節・色/サイズ・定価）は各自然キーの最新取込週を採用。
+-- ------------------------------------------------------------
+CREATE OR REPLACE FUNCTION mart.rebuild() RETURNS void
+LANGUAGE plpgsql AS $$
+DECLARE
+    v_source_rows bigint;
+    v_fact_rows   bigint;
+BEGIN
+    -- 'MART'(0x4D415254) を鍵に再構築を直列化する。
+    PERFORM pg_advisory_xact_lock(1296913492);
+
+    TRUNCATE mart.fact_sales_weekly, mart.dim_sku, mart.dim_product,
+             mart.dim_retailer, mart.dim_date RESTART IDENTITY CASCADE;
+
+    -- 日付次元
+    INSERT INTO mart.dim_date (week_monday, iso_year, iso_week, year, quarter, month)
+    SELECT DISTINCT
+           sw.import_date,
+           EXTRACT(ISOYEAR  FROM sw.import_date)::int,
+           EXTRACT(WEEK     FROM sw.import_date)::int,
+           EXTRACT(YEAR     FROM sw.import_date)::int,
+           EXTRACT(QUARTER  FROM sw.import_date)::int,
+           EXTRACT(MONTH    FROM sw.import_date)::int
+    FROM sales_weekly sw;
+
+    -- 小売次元（業態名は business_type マスタから）
+    INSERT INTO mart.dim_retailer (retailer_code, retailer_name, channel_code, channel_name)
+    SELECT DISTINCT sw.customer_code, NULL::text, sw.gyotai_code, bt.display_name
+    FROM sales_weekly sw
+    LEFT JOIN business_type bt ON bt.code = sw.gyotai_code;
+
+    -- 商品次元（自然キーの最新取込週を代表値に）
+    INSERT INTO mart.dim_product
+        (channel_code, product_sign, product_code, product_name,
+         department_code, department_name, brand, manager, category, season, attributes)
+    SELECT s.gyotai_code, s.shohin_kigou, s.hinban_code,
+           COALESCE(mp.product_name, s.hinmei),
+           s.department, mp.division_name, mp.brand, mp.manager,
+           NULL::text, NULLIF(s.kisetsu, ''),
+           jsonb_strip_nulls(jsonb_build_object(
+               'season',    NULLIF(s.kisetsu, ''),
+               'tanawari1', NULLIF(s.tanawari1, ''),
+               'tanawari2', NULLIF(s.tanawari2, '')))
+    FROM (
+        SELECT DISTINCT ON (gyotai_code, shohin_kigou, hinban_code)
+               gyotai_code, shohin_kigou, hinban_code,
+               hinmei, department, kisetsu, tanawari1, tanawari2
+        FROM sales_weekly
+        ORDER BY gyotai_code, shohin_kigou, hinban_code, import_date DESC
+    ) s
+    LEFT JOIN m_product mp
+        ON mp.business_category_cd = s.gyotai_code
+       AND mp.product_sign        = s.shohin_kigou
+       AND mp.product_type_crd    = s.hinban_code;
+
+    -- SKU次元（定価・代表画像は商品マスタから）
+    INSERT INTO mart.dim_sku
+        (product_key, unit_code, variant_axis1_label, variant_axis1_value,
+         variant_axis2_label, variant_axis2_value, list_price, image_url)
+    SELECT dp.product_key, s.tanpin_code,
+           'カラー', NULLIF(s.color, ''),
+           'サイズ', NULLIF(s.size, ''),
+           sk.sales_price, sk.image_url
+    FROM (
+        SELECT DISTINCT ON (gyotai_code, shohin_kigou, hinban_code, tanpin_code)
+               gyotai_code, shohin_kigou, hinban_code, tanpin_code, color, size
+        FROM sales_weekly
+        ORDER BY gyotai_code, shohin_kigou, hinban_code, tanpin_code, import_date DESC
+    ) s
+    JOIN mart.dim_product dp
+        ON dp.channel_code = s.gyotai_code
+       AND dp.product_sign = s.shohin_kigou
+       AND dp.product_code = s.hinban_code
+    LEFT JOIN LATERAL (
+        SELECT msk.sales_price, msk.image_url
+        FROM m_product mp
+        JOIN m_product_sku msk
+            ON msk.product_id = mp.product_id
+           AND msk.unit_cd    = s.tanpin_code
+        WHERE mp.business_category_cd = s.gyotai_code
+          AND mp.product_sign        = s.shohin_kigou
+          AND mp.product_type_crd    = s.hinban_code
+        ORDER BY msk.image_index, msk.sku_item_id
+        LIMIT 1
+    ) sk ON true;
+
+    -- 売上ファクト（週×SKU×小売に集約。数量/金額/粗利を事前計算）
+    INSERT INTO mart.fact_sales_weekly
+        (date_key, retailer_key, product_key, sku_key,
+         quantity, amount, gross_profit, sale_price, cost_price)
+    SELECT dd.date_key, dr.retailer_key, dp.product_key, ds.sku_key,
+           SUM(q.qty)::bigint,
+           SUM(q.qty * sw.baika)::bigint,
+           SUM(q.qty * (sw.baika - sw.genka))::bigint,
+           MAX(sw.baika), MAX(sw.genka)
+    FROM sales_weekly sw
+    CROSS JOIN LATERAL (SELECT (sw.toshu_uriage_count1 + sw.toshu_uriage_count2
+           + sw.toshu_uriage_count3 + sw.toshu_uriage_count4 + sw.toshu_uriage_count5
+           + sw.toshu_uriage_count6 + sw.toshu_uriage_count7) AS qty) q
+    JOIN mart.dim_date     dd ON dd.week_monday   = sw.import_date
+    JOIN mart.dim_retailer dr ON dr.retailer_code = sw.customer_code
+                             AND dr.channel_code  = sw.gyotai_code
+    JOIN mart.dim_product  dp ON dp.channel_code  = sw.gyotai_code
+                             AND dp.product_sign  = sw.shohin_kigou
+                             AND dp.product_code  = sw.hinban_code
+    JOIN mart.dim_sku      ds ON ds.product_key   = dp.product_key
+                             AND ds.unit_code     = sw.tanpin_code
+    GROUP BY dd.date_key, dr.retailer_key, dp.product_key, ds.sku_key;
+
+    SELECT count(*) INTO v_source_rows FROM sales_weekly;
+    SELECT count(*) INTO v_fact_rows   FROM mart.fact_sales_weekly;
+
+    UPDATE mart.build_info
+    SET rebuilt_at  = now(),
+        source_rows = v_source_rows,
+        fact_rows   = v_fact_rows
+    WHERE id = 1;
+END;
+$$;
+COMMENT ON FUNCTION mart.rebuild() IS 'sales_weekly + 商品マスタから mart を全再構築する（冪等・直列化）';
+
 COMMIT;
