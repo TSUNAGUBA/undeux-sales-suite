@@ -33,21 +33,68 @@ public sealed class MartAnalyticsRepository
         DapperConfiguration.Initialize();
     }
 
-    /// <summary>mart を sales_weekly + 商品マスタから全再構築する（冪等・DB側で直列化）。</summary>
-    public async Task<MartStatus> RebuildAsync(CancellationToken cancellationToken = default)
+    /// <summary>
+    /// 再構築の実行権を原子的に取得する。idle / completed / failed のとき、または 30 分以上
+    /// 滞留した running（コンテナ再起動等で取り残された状態）のときに限り running 化する。
+    /// 取得できたら true、既に実行中なら false を返す。
+    /// </summary>
+    public async Task<bool> TryStartRebuildAsync(CancellationToken cancellationToken = default)
     {
         await using var connection = await _connectionFactory.OpenConnectionAsync(cancellationToken);
-
-        var stopwatch = Stopwatch.StartNew();
-        await connection.ExecuteAsync(new CommandDefinition(
-            "SELECT mart.rebuild();",
-            commandTimeout: RebuildCommandTimeoutSeconds,
-            cancellationToken: cancellationToken));
-        stopwatch.Stop();
-
-        _logger.LogInformation("mart を再構築しました（{ElapsedMs} ms）。", stopwatch.ElapsedMilliseconds);
-        return await ReadStatusAsync(connection, cancellationToken);
+        var rows = await connection.ExecuteAsync(new CommandDefinition("""
+            UPDATE mart.build_info
+            SET status = 'running', started_at = now(), error = NULL
+            WHERE id = 1
+              AND (status <> 'running'
+                   OR started_at IS NULL
+                   OR started_at < now() - interval '30 minutes');
+            """, cancellationToken: cancellationToken));
+        return rows > 0;
     }
+
+    /// <summary>
+    /// mart 全再構築の本体（バックグラウンドで実行）。<c>mart.rebuild()</c> を呼び、
+    /// 成否を <c>build_info.status</c> に completed / failed として記録する。
+    /// 事前に <see cref="TryStartRebuildAsync"/> で running 化されている前提。
+    /// </summary>
+    public async Task RunRebuildCoreAsync(CancellationToken cancellationToken = default)
+    {
+        var stopwatch = Stopwatch.StartNew();
+        try
+        {
+            await using var connection = await _connectionFactory.OpenConnectionAsync(cancellationToken);
+            await connection.ExecuteAsync(new CommandDefinition(
+                "SELECT mart.rebuild();",
+                commandTimeout: RebuildCommandTimeoutSeconds,
+                cancellationToken: cancellationToken));
+            await connection.ExecuteAsync(new CommandDefinition(
+                "UPDATE mart.build_info SET status = 'completed', error = NULL WHERE id = 1;",
+                cancellationToken: cancellationToken));
+            stopwatch.Stop();
+            _logger.LogInformation("mart を再構築しました（{ElapsedMs} ms）。", stopwatch.ElapsedMilliseconds);
+        }
+        catch (Exception ex)
+        {
+            stopwatch.Stop();
+            _logger.LogError(ex, "mart の再構築が失敗しました（{ElapsedMs} ms）。", stopwatch.ElapsedMilliseconds);
+            // 失敗状態は別接続で記録する（実行中の接続が壊れている可能性に備える）。
+            try
+            {
+                await using var failConnection =
+                    await _connectionFactory.OpenConnectionAsync(CancellationToken.None);
+                await failConnection.ExecuteAsync(new CommandDefinition(
+                    "UPDATE mart.build_info SET status = 'failed', error = @error WHERE id = 1;",
+                    new { error = Truncate(ex.Message, 1000) }));
+            }
+            catch (Exception recordEx)
+            {
+                _logger.LogError(recordEx, "mart の失敗状態の記録に失敗しました。");
+            }
+        }
+    }
+
+    private static string Truncate(string value, int maxLength)
+        => value.Length <= maxLength ? value : value[..maxLength];
 
     /// <summary>mart の構築状態（最終再構築時刻・行数・対象週範囲）を取得する。</summary>
     public async Task<MartStatus> GetStatusAsync(CancellationToken cancellationToken = default)
@@ -174,7 +221,7 @@ public sealed class MartAnalyticsRepository
         NpgsqlConnection connection, CancellationToken cancellationToken)
     {
         var info = await connection.QuerySingleOrDefaultAsync<BuildInfoRow>(new CommandDefinition("""
-            SELECT bi.rebuilt_at, bi.source_rows, bi.fact_rows,
+            SELECT bi.status, bi.error, bi.started_at, bi.rebuilt_at, bi.source_rows, bi.fact_rows,
                    (SELECT MIN(week_monday) FROM mart.dim_date) AS earliest_week,
                    (SELECT MAX(week_monday) FROM mart.dim_date) AS latest_week
             FROM mart.build_info bi
@@ -183,12 +230,12 @@ public sealed class MartAnalyticsRepository
 
         if (info is null)
         {
-            return new MartStatus(false, null, 0, 0, null, null);
+            return new MartStatus(false, "idle", null, null, null, 0, 0, null, null);
         }
 
         return new MartStatus(
-            info.RebuiltAt.HasValue, info.RebuiltAt, info.SourceRows, info.FactRows,
-            info.EarliestWeek, info.LatestWeek);
+            info.FactRows > 0, info.Status, info.Error, info.StartedAt, info.RebuiltAt,
+            info.SourceRows, info.FactRows, info.EarliestWeek, info.LatestWeek);
     }
 
     /// <summary>集計軸の文字列を mart 次元のSQL式（キー・ラベル・正規名）に解決する。ホワイトリスト照合。</summary>
@@ -280,5 +327,6 @@ internal sealed record CountRow(int ProductCount, int SkuCount);
 
 /// <summary>Dapper マッピング用の内部行（mart.build_info）。</summary>
 internal sealed record BuildInfoRow(
+    string Status, string? Error, DateTime? StartedAt,
     DateTime? RebuiltAt, long SourceRows, long FactRows,
     DateOnly? EarliestWeek, DateOnly? LatestWeek);

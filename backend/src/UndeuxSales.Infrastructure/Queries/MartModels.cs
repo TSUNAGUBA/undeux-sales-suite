@@ -23,9 +23,18 @@ public sealed record MartSummaryResponse(MartKpi Kpi, IReadOnlyList<TrendPoint> 
 /// <summary>mart 集計軸別分析のレスポンス。<see cref="BreakdownRow"/> を sales 系と共有する。</summary>
 public sealed record MartBreakdownResponse(string Dimension, IReadOnlyList<BreakdownRow> Rows);
 
-/// <summary>mart（スタースキーマ）の構築状態。フロントの再構築UI・鮮度表示に使う。</summary>
+/// <summary>
+/// mart（スタースキーマ）の構築状態。フロントの再構築UI・鮮度表示・進捗ポーリングに使う。
+/// </summary>
+/// <param name="Built">ファクトに行があるか（=分析表示が可能か）。</param>
+/// <param name="Status">再構築の状態（idle / running / completed / failed）。</param>
+/// <param name="Error">失敗時のエラーメッセージ（それ以外は null）。</param>
+/// <param name="StartedAt">直近の再構築開始時刻。</param>
 public sealed record MartStatus(
     bool Built,
+    string Status,
+    string? Error,
+    DateTime? StartedAt,
     DateTime? RebuiltAt,
     long SourceRows,
     long FactRows,

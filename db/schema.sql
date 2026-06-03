@@ -410,6 +410,21 @@ CREATE TABLE IF NOT EXISTS mart.build_info (
 );
 INSERT INTO mart.build_info (id) VALUES (1) ON CONFLICT (id) DO NOTHING;
 
+-- 非同期再構築の進捗管理列（冪等に追加）。
+-- status はアプリ側で idle → running → completed / failed と遷移させる。
+ALTER TABLE mart.build_info
+    ADD COLUMN IF NOT EXISTS status     text NOT NULL DEFAULT 'idle',
+    ADD COLUMN IF NOT EXISTS error      text,
+    ADD COLUMN IF NOT EXISTS started_at timestamptz;
+DO $$
+BEGIN
+    ALTER TABLE mart.build_info
+        ADD CONSTRAINT mart_build_info_status_chk
+        CHECK (status IN ('idle', 'running', 'completed', 'failed'));
+EXCEPTION WHEN duplicate_object THEN NULL;
+END
+$$;
+
 -- ------------------------------------------------------------
 --  mart 全再構築（sales_weekly + 商品マスタ → 次元・ファクト）
 --  冪等: 何度呼んでも同じ結果。advisory lock で再構築を直列化する。
