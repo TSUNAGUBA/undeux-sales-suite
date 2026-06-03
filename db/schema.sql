@@ -573,51 +573,53 @@ BEGIN
        AND sk.product_type_crd    = s.hinban_code
        AND sk.unit_cd             = s.tanpin_code;
 
-    -- 売上ファクト（週×SKU×小売に集約。数量/金額/粗利を事前計算）
-    INSERT INTO mart.fact_sales_weekly
-        (date_key, retailer_key, product_key, sku_key,
-         quantity, amount, gross_profit, sale_price, cost_price)
-    SELECT dd.date_key, dr.retailer_key, dp.product_key, ds.sku_key,
-           SUM(q.qty)::bigint,
-           SUM(q.qty * sw.baika)::bigint,
-           SUM(q.qty * (sw.baika - sw.genka))::bigint,
-           MAX(sw.baika), MAX(sw.genka)
-    FROM sales_weekly sw
-    CROSS JOIN LATERAL (SELECT (sw.toshu_uriage_count1 + sw.toshu_uriage_count2
-           + sw.toshu_uriage_count3 + sw.toshu_uriage_count4 + sw.toshu_uriage_count5
-           + sw.toshu_uriage_count6 + sw.toshu_uriage_count7) AS qty) q
-    JOIN mart.dim_date     dd ON dd.week_monday   = sw.import_date
-    JOIN mart.dim_retailer dr ON dr.retailer_code = sw.customer_code
-                             AND dr.channel_code  = sw.gyotai_code
-    JOIN mart.dim_product  dp ON dp.channel_code  = sw.gyotai_code
-                             AND dp.product_sign  = sw.shohin_kigou
-                             AND dp.product_code  = sw.hinban_code
-    JOIN mart.dim_sku      ds ON ds.product_key   = dp.product_key
-                             AND ds.unit_code     = sw.tanpin_code
-    GROUP BY dd.date_key, dr.retailer_key, dp.product_key, ds.sku_key;
-
-    -- 在庫スナップショット（週×小売×SKU に集約。在庫・累計・発注・先付は SUM、在日は AVG）。
-    -- 売上ファクトと同一の次元結合で対称に構築する。
+    -- 売上ファクト＋在庫スナップショットを「1回の集約」から両方構築する。
+    -- 両ファクトはグレイン（週×小売×SKU）と次元結合が完全に同一で、測定値だけが異なる。
+    -- そこで sales_weekly の走査・次元結合・GROUP BY を1度だけ行い（agg）、データ変更CTEで
+    -- 両ファクトへ流し込む（agg は複数参照のため1回だけマテリアライズされる）。
+    -- これにより 160万行の二重走査・二重結合を避け、再構築時間を約半減する
+    -- （在庫追加で従来比2倍となり command timeout を超えた問題への対処）。
+    WITH agg AS (
+        SELECT dd.date_key, dr.retailer_key, dp.product_key, ds.sku_key,
+               SUM(q.qty)::bigint                         AS quantity,
+               SUM(q.qty * sw.baika)::bigint              AS amount,
+               SUM(q.qty * (sw.baika - sw.genka))::bigint AS gross_profit,
+               MAX(sw.baika)                              AS sale_price,
+               MAX(sw.genka)                              AS cost_price,
+               SUM(sw.zaikosu)::bigint                    AS stock,
+               SUM(sw.ruikei_uriage_count)::bigint        AS cum_sales,
+               SUM(sw.ruikei_nohin_count)::bigint         AS cum_delivery,
+               SUM(sw.hatchu_count)                       AS order_qty,
+               SUM(sw.sakizuke_count)::bigint             AS advance_qty,
+               COALESCE(AVG(sw.zainiti), 0)::float8       AS stock_days
+        FROM sales_weekly sw
+        CROSS JOIN LATERAL (SELECT (sw.toshu_uriage_count1 + sw.toshu_uriage_count2
+               + sw.toshu_uriage_count3 + sw.toshu_uriage_count4 + sw.toshu_uriage_count5
+               + sw.toshu_uriage_count6 + sw.toshu_uriage_count7) AS qty) q
+        JOIN mart.dim_date     dd ON dd.week_monday   = sw.import_date
+        JOIN mart.dim_retailer dr ON dr.retailer_code = sw.customer_code
+                                 AND dr.channel_code  = sw.gyotai_code
+        JOIN mart.dim_product  dp ON dp.channel_code  = sw.gyotai_code
+                                 AND dp.product_sign  = sw.shohin_kigou
+                                 AND dp.product_code  = sw.hinban_code
+        JOIN mart.dim_sku      ds ON ds.product_key   = dp.product_key
+                                 AND ds.unit_code     = sw.tanpin_code
+        GROUP BY dd.date_key, dr.retailer_key, dp.product_key, ds.sku_key
+    ),
+    ins_sales AS (
+        INSERT INTO mart.fact_sales_weekly
+            (date_key, retailer_key, product_key, sku_key,
+             quantity, amount, gross_profit, sale_price, cost_price)
+        SELECT date_key, retailer_key, product_key, sku_key,
+               quantity, amount, gross_profit, sale_price, cost_price
+        FROM agg
+    )
     INSERT INTO mart.fact_inventory_snapshot
         (date_key, retailer_key, product_key, sku_key,
          stock, cum_sales, cum_delivery, order_qty, advance_qty, stock_days)
-    SELECT dd.date_key, dr.retailer_key, dp.product_key, ds.sku_key,
-           SUM(sw.zaikosu)::bigint,
-           SUM(sw.ruikei_uriage_count)::bigint,
-           SUM(sw.ruikei_nohin_count)::bigint,
-           SUM(sw.hatchu_count),
-           SUM(sw.sakizuke_count)::bigint,
-           COALESCE(AVG(sw.zainiti), 0)::float8
-    FROM sales_weekly sw
-    JOIN mart.dim_date     dd ON dd.week_monday   = sw.import_date
-    JOIN mart.dim_retailer dr ON dr.retailer_code = sw.customer_code
-                             AND dr.channel_code  = sw.gyotai_code
-    JOIN mart.dim_product  dp ON dp.channel_code  = sw.gyotai_code
-                             AND dp.product_sign  = sw.shohin_kigou
-                             AND dp.product_code  = sw.hinban_code
-    JOIN mart.dim_sku      ds ON ds.product_key   = dp.product_key
-                             AND ds.unit_code     = sw.tanpin_code
-    GROUP BY dd.date_key, dr.retailer_key, dp.product_key, ds.sku_key;
+    SELECT date_key, retailer_key, product_key, sku_key,
+           stock, cum_sales, cum_delivery, order_qty, advance_qty, stock_days
+    FROM agg;
 
     SELECT count(*) INTO v_source_rows FROM sales_weekly;
     SELECT count(*) INTO v_fact_rows   FROM mart.fact_sales_weekly;
