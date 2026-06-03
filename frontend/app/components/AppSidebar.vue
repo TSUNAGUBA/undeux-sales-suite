@@ -8,6 +8,7 @@ import {
   ListOrdered,
   ScatterChart,
   SlidersHorizontal,
+  Database,
   Upload,
   LogOut,
   Shirt,
@@ -69,6 +70,7 @@ const navItems = [
   { to: '/ranking', label: 'ランキング分析', icon: ListOrdered },
   { to: '/scatter', label: '散布図・回帰分析', icon: ScatterChart },
   { to: '/simulation', label: '重回帰シミュレーター', icon: SlidersHorizontal },
+  { to: '/mart', label: 'Mart分析', icon: Database },
   { to: '/product-master', label: '商品マスタ', icon: Shirt },
   { to: '/imports', label: '週次取込', icon: Upload },
 ]

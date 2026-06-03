@@ -559,3 +559,41 @@ export interface MarkdownScatterResponse {
   latestWeek: string | null
   points: MarkdownScatterPoint[]
 }
+
+// ============================================================
+// 分析 mart（スタースキーマ）
+// 既存 sales_weekly 直参照とは別系統。docs/star-schema-design.md。
+// ============================================================
+
+/** mart 全社サマリーのKPI（週次フロー指標）。在庫系は後続イテレーションで追加。 */
+export interface MartKpi {
+  quantity: number
+  amount: number
+  grossProfit: number
+  grossProfitRate: number
+  productCount: number
+  skuCount: number
+  latestWeek: string | null
+}
+
+/** mart 全社サマリーのレスポンス（KPI＋週次トレンド）。 */
+export interface MartSummaryResponse {
+  kpi: MartKpi
+  weeklyTrend: TrendPoint[]
+}
+
+/** mart 集計軸別分析のレスポンス（BreakdownRow を sales 系と共有）。 */
+export interface MartBreakdownResponse {
+  dimension: string
+  rows: BreakdownRow[]
+}
+
+/** mart（スタースキーマ）の構築状態。フロントの鮮度表示・再構築UIに使う。 */
+export interface MartStatus {
+  built: boolean
+  rebuiltAt: string | null
+  sourceRows: number
+  factRows: number
+  earliestWeek: string | null
+  latestWeek: string | null
+}

@@ -1,7 +1,8 @@
 # UndeuxSales 分析DB — スタースキーマ設計（提案）
 
-> **ステータス: 設計提案（未実装）。** 本書は壁打ちで確定した設計方針をまとめた成果物であり、
-> コード・スキーマの改修は未着手。実装着手の判断材料とする。
+> **ステータス: 設計提案 ＋ 第1スライス実装着手。** 本書は壁打ちで確定した設計方針をまとめた成果物。
+> 第1スライス（`mart` スキーマ＋週次売上ファクト＋新API＋新ページ `/mart`）を実装済み。
+> 在庫スナップショット・日次派生・互換ビュー・テナント別スキーマ分離は後続（§14 実装状況）。
 
 ## 0. 本書の位置づけ
 
@@ -403,3 +404,27 @@ flowchart TD
 
 > **CLAUDE.md 原則との整合:** 互換ビュー＝下位互換（原則7）、`sales_weekly` 温存＝SoT 保護（原則6）、
 > jsonb＝汎用性、SCD1＝過剰設計の回避（YAGNI）。
+
+---
+
+## 14. 実装状況（第1スライス）
+
+「DB＝新スキーマ新設／API＝既存に追加／画面＝新ページ新設」の方針で、**動く end-to-end の縦スライス**を実装した。
+
+### 実装済み
+
+| 層 | 内容 | 主なファイル |
+|----|------|------------|
+| DB | `mart` スキーマ：`dim_date`/`dim_retailer`/`dim_product`/`dim_sku`/`fact_sales_weekly`/`build_info` と再構築関数 `mart.rebuild()` | `db/schema.sql` |
+| API | `GET /api/mart/status`・`/summary`・`/breakdown`、`POST /api/mart/rebuild`（admin） | `MartController.cs`・`MartAnalyticsRepository.cs`・`MartModels.cs` |
+| 画面 | 新ページ `/mart`（KPI・週次トレンド・集計軸別ランキング・再構築UI）、サイドメニュー追加 | `frontend/app/pages/mart.vue`・`AppSidebar.vue`・`types/api.ts` |
+
+- **グレイン:** 週×SKU×小売（`donyu_date` 区別は集約）。数量・金額・粗利を事前計算列で保持。
+- **再構築:** `sales_weekly` ＋ 商品マスタから `mart.rebuild()` で全再構築（冪等・advisory lock で直列化）。代表値（名称・季節・色/サイズ・定価）は各自然キーの最新取込週を採用。
+- **既存への影響:** なし（`sales_weekly` も既存APIも不変。mart は別スキーマの追加系統）。
+
+### 未実装（後続イテレーション）
+
+- `fact_inventory_snapshot`（在庫・消化率の在庫KPI）／`fact_sales_daily`（曜日別）
+- 互換ビュー（既存APIの mart 移行）／テナント別スキーマ分離／集約マテビュー
+- 取込フックでの自動再構築（現状は手動 `POST /api/mart/rebuild`）／棚割・在庫日数フィルタの mart 対応
