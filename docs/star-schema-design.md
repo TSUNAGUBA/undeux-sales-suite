@@ -416,7 +416,7 @@ flowchart TD
 | 層 | 内容 | 主なファイル |
 |----|------|------------|
 | DB | `mart` スキーマ：`dim_date`/`dim_retailer`/`dim_product`/`dim_sku`/`fact_sales_weekly`/`build_info` と再構築関数 `mart.rebuild()` | `db/schema.sql` |
-| API | `GET /api/mart/status`・`/summary`・`/breakdown`、`POST /api/mart/rebuild`（admin） | `MartController.cs`・`MartAnalyticsRepository.cs`・`MartModels.cs` |
+| API | `GET /api/mart/status`・`/summary`・`/breakdown`、`POST /api/mart/rebuild`（認証ユーザー） | `MartController.cs`・`MartAnalyticsRepository.cs`・`MartModels.cs` |
 | 画面 | 新ページ `/mart`（KPI・週次トレンド・集計軸別ランキング・再構築UI）、サイドメニュー追加 | `frontend/app/pages/mart.vue`・`AppSidebar.vue`・`types/api.ts` |
 
 - **グレイン:** 週×SKU×小売（`donyu_date` 区別は集約）。数量・金額・粗利を事前計算列で保持。
