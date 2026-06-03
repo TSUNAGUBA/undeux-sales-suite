@@ -50,11 +50,12 @@ public sealed class MartController : ControllerBase
             cancellationToken);
 
     /// <summary>
-    /// mart を sales_weekly + 商品マスタから全再構築する。
-    /// データ更新に相当するため取込権限（role=admin）を要求する。
+    /// mart を sales_weekly + 商品マスタから全再構築する（public → mart のデータ移行）。
+    /// mart は派生キャッシュであり、元データ（sales_weekly）も既存機能も壊さない冪等処理
+    /// （DB側で advisory lock により直列化）のため、認証済みユーザーであれば実行できる。
+    /// クラスの [Authorize] により認証（ログイン）は必須。
     /// </summary>
     [HttpPost("rebuild")]
-    [Authorize(Policy = AuthorizationPolicies.Importer)]
     public Task<MartStatus> Rebuild(CancellationToken cancellationToken)
         => _martRepository.RebuildAsync(cancellationToken);
 }

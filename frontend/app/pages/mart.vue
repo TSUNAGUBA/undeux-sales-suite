@@ -238,7 +238,7 @@ onMounted(async () => {
     </div>
     <p v-if="rebuildMessage" class="text-xs text-emerald-600">{{ rebuildMessage }}</p>
     <p class="text-xs text-slate-400">
-      ※ 再構築は取込権限（管理者）が必要です。sales_weekly + 商品マスタから派生データ（次元・ファクト）を作り直します。
+      ※ 再構築は sales_weekly + 商品マスタから派生データ（次元・ファクト）を作り直します（public → mart のデータ移行。認証ユーザーが実行可）。
     </p>
 
     <FilterBar @apply="load" />
