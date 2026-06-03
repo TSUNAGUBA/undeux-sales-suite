@@ -38,49 +38,9 @@ public sealed class CrosstabController : ControllerBase
         [FromQuery] string? temperatureArea,
         CancellationToken cancellationToken)
     {
-        var rowDim = ParseCrosstabDimension(rowDimension, "rowDimension");
-        var colDim = ParseCrosstabDimension(columnDimension, "columnDimension");
+        var rowDim = RequestParsing.ParseCrosstabDimension(rowDimension, "rowDimension");
+        var colDim = RequestParsing.ParseCrosstabDimension(columnDimension, "columnDimension");
         var area = ClimateModel.ParseArea(temperatureArea);
         return _analyticsRepository.GetCrosstabMatrixAsync(filter, rowDim, colDim, area, cancellationToken);
-    }
-
-    /// <summary>
-    /// フロント表現の文字列（"time:year" / "category:department" 等）を <see cref="CrosstabDimension"/> に解釈する。
-    /// 解析できない場合は <see cref="AppException"/>（HTTP 400）を送出する。
-    /// </summary>
-    private static CrosstabDimension ParseCrosstabDimension(string? value, string parameterName)
-    {
-        if (string.IsNullOrWhiteSpace(value))
-        {
-            throw new AppException(ErrorCodes.UnknownDimension, 400,
-                $"{parameterName} が指定されていません。");
-        }
-
-        var dim = value switch
-        {
-            "time:year" => CrosstabDimension.TimeYear,
-            "time:quarter" => CrosstabDimension.TimeQuarter,
-            "time:month" => CrosstabDimension.TimeMonth,
-            "category:department" => CrosstabDimension.CategoryDepartment,
-            "category:businessType" => CrosstabDimension.CategoryBusinessType,
-            "category:season" => CrosstabDimension.CategorySeason,
-            "category:hinban" => CrosstabDimension.CategoryHinban,
-            "category:product" => CrosstabDimension.CategoryProduct,
-            "category:color" => CrosstabDimension.CategoryColor,
-            "category:size" => CrosstabDimension.CategorySize,
-            "category:chohyoKubun" => CrosstabDimension.CategoryChohyoKubun,
-            "category:tanawari1" => CrosstabDimension.CategoryTanawari1,
-            "category:tanawari2" => CrosstabDimension.CategoryTanawari2,
-            "category:shohinKigo" => CrosstabDimension.CategoryShohinKigo,
-            _ => (CrosstabDimension?)null,
-        };
-
-        if (dim.HasValue)
-        {
-            return dim.Value;
-        }
-
-        throw new AppException(ErrorCodes.UnknownDimension, 400,
-            $"{parameterName} '{value}' は不正です。");
     }
 }

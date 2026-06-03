@@ -12,6 +12,11 @@ const props = withDefaults(
 
 const { filter, options, optionsError, loadOptions, years } = useFilters(props.scopeKey)
 
+// 分析mart（スタースキーマ）スコープでは、mart が保持しない棚割1・平均在庫日数は
+// フィルタとして適用されない（API 側で無視＝グレースフルデグラデーション）。
+// 「設定したのに効かない」UXの罠を避けるため、mart スコープでは当該コントロールを出さない。
+const isMartScope = computed(() => props.scopeKey === 'mart-filter')
+
 onMounted(loadOptions)
 
 function toSelectOptions(items: CodeName[]): { value: string; text: string }[] {
@@ -82,11 +87,13 @@ function removeHinban(value: string): void {
         :options="seasonOptions"
       />
       <MultiSelect
+        v-if="!isMartScope"
         v-model="filter.tanawari1"
         label="棚割1"
         :options="tanawari1Options"
       />
       <MultiSelect
+        v-if="!isMartScope"
         v-model="filter.stockDaysBuckets"
         label="平均在庫日数"
         :options="stockDaysOptions"
