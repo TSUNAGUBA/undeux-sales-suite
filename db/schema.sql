@@ -444,7 +444,10 @@ BEGIN
     FROM sales_weekly sw
     LEFT JOIN business_type bt ON bt.code = sw.gyotai_code;
 
-    -- 商品次元（自然キーの最新取込週を代表値に）
+    -- 商品次元（自然キーの最新取込週を代表値に）。
+    -- 商品マスタ m_product は自然キー（業態×記号×品番）に重複があり得る
+    -- （重複により ux_m_product_business_key が未作成の運用環境）。LATERAL + LIMIT 1 で
+    -- 1件（updated_at 最新）に絞り、LEFT JOIN の行増幅と dim_product の一意制約違反を防ぐ。
     INSERT INTO mart.dim_product
         (channel_code, product_sign, product_code, product_name,
          department_code, department_name, brand, manager, category, season, attributes)
@@ -463,10 +466,15 @@ BEGIN
         FROM sales_weekly
         ORDER BY gyotai_code, shohin_kigou, hinban_code, import_date DESC
     ) s
-    LEFT JOIN m_product mp
-        ON mp.business_category_cd = s.gyotai_code
-       AND mp.product_sign        = s.shohin_kigou
-       AND mp.product_type_crd    = s.hinban_code;
+    LEFT JOIN LATERAL (
+        SELECT mp.product_name, mp.division_name, mp.brand, mp.manager
+        FROM m_product mp
+        WHERE mp.business_category_cd = s.gyotai_code
+          AND mp.product_sign        = s.shohin_kigou
+          AND mp.product_type_crd    = s.hinban_code
+        ORDER BY mp.updated_at DESC, mp.product_id
+        LIMIT 1
+    ) mp ON true;
 
     -- SKU次元（定価・代表画像は商品マスタから）
     INSERT INTO mart.dim_sku

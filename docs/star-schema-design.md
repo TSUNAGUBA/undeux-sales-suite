@@ -420,7 +420,7 @@ flowchart TD
 | 画面 | 新ページ `/mart`（KPI・週次トレンド・集計軸別ランキング・再構築UI）、サイドメニュー追加 | `frontend/app/pages/mart.vue`・`AppSidebar.vue`・`types/api.ts` |
 
 - **グレイン:** 週×SKU×小売（`donyu_date` 区別は集約）。数量・金額・粗利を事前計算列で保持。
-- **再構築:** `sales_weekly` ＋ 商品マスタから `mart.rebuild()` で全再構築（冪等・advisory lock で直列化）。代表値（名称・季節・色/サイズ・定価）は各自然キーの最新取込週を採用。
+- **再構築:** `sales_weekly` ＋ 商品マスタから `mart.rebuild()` で全再構築（冪等・advisory lock で直列化）。代表値（名称・季節・色/サイズ・定価）は各自然キーの最新取込週を採用。商品マスタ（`m_product`/`m_product_sku`）に自然キー重複がある運用環境でも、`LATERAL + LIMIT 1`（`updated_at` 最新）で1件に絞り、再構築は失敗しない。
 - **既存への影響:** なし（`sales_weekly` も既存APIも不変。mart は別スキーマの追加系統）。
 
 ### 未実装（後続イテレーション）
