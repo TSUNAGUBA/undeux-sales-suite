@@ -466,15 +466,19 @@ BEGIN
         FROM sales_weekly
         ORDER BY gyotai_code, shohin_kigou, hinban_code, import_date DESC
     ) s
-    LEFT JOIN LATERAL (
-        SELECT mp.product_name, mp.division_name, mp.brand, mp.manager
-        FROM m_product mp
-        WHERE mp.business_category_cd = s.gyotai_code
-          AND mp.product_sign        = s.shohin_kigou
-          AND mp.product_type_crd    = s.hinban_code
-        ORDER BY mp.updated_at DESC, mp.product_id
-        LIMIT 1
-    ) mp ON true;
+    LEFT JOIN (
+        -- 商品マスタを自然キーで1回だけ重複排除（updated_at 最新を代表）。
+        -- LATERAL（行数ぶんの再スキャン）を避け、インデックス未整備でも高速に結合する。
+        SELECT DISTINCT ON (business_category_cd, product_sign, product_type_crd)
+               business_category_cd, product_sign, product_type_crd,
+               product_name, division_name, brand, manager
+        FROM m_product
+        ORDER BY business_category_cd, product_sign, product_type_crd,
+                 updated_at DESC, product_id
+    ) mp
+        ON mp.business_category_cd = s.gyotai_code
+       AND mp.product_sign        = s.shohin_kigou
+       AND mp.product_type_crd    = s.hinban_code;
 
     -- SKU次元（定価・代表画像は商品マスタから）
     INSERT INTO mart.dim_sku
@@ -494,18 +498,21 @@ BEGIN
         ON dp.channel_code = s.gyotai_code
        AND dp.product_sign = s.shohin_kigou
        AND dp.product_code = s.hinban_code
-    LEFT JOIN LATERAL (
-        SELECT msk.sales_price, msk.image_url
+    LEFT JOIN (
+        -- SKU（業態×記号×品番×単品）ごとに代表（画像 index 最小）を1回で確定する。
+        -- LATERAL の再スキャンを避け、インデックス未整備でも高速に結合する。
+        SELECT DISTINCT ON (mp.business_category_cd, mp.product_sign, mp.product_type_crd, msk.unit_cd)
+               mp.business_category_cd, mp.product_sign, mp.product_type_crd, msk.unit_cd,
+               msk.sales_price, msk.image_url
         FROM m_product mp
-        JOIN m_product_sku msk
-            ON msk.product_id = mp.product_id
-           AND msk.unit_cd    = s.tanpin_code
-        WHERE mp.business_category_cd = s.gyotai_code
-          AND mp.product_sign        = s.shohin_kigou
-          AND mp.product_type_crd    = s.hinban_code
-        ORDER BY msk.image_index, msk.sku_item_id
-        LIMIT 1
-    ) sk ON true;
+        JOIN m_product_sku msk ON msk.product_id = mp.product_id
+        ORDER BY mp.business_category_cd, mp.product_sign, mp.product_type_crd, msk.unit_cd,
+                 msk.image_index, msk.sku_item_id
+    ) sk
+        ON sk.business_category_cd = s.gyotai_code
+       AND sk.product_sign        = s.shohin_kigou
+       AND sk.product_type_crd    = s.hinban_code
+       AND sk.unit_cd             = s.tanpin_code;
 
     -- 売上ファクト（週×SKU×小売に集約。数量/金額/粗利を事前計算）
     INSERT INTO mart.fact_sales_weekly

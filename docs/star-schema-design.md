@@ -428,3 +428,4 @@ flowchart TD
 - `fact_inventory_snapshot`（在庫・消化率の在庫KPI）／`fact_sales_daily`（曜日別）
 - 互換ビュー（既存APIの mart 移行）／テナント別スキーマ分離／集約マテビュー
 - 取込フックでの自動再構築（現状は手動 `POST /api/mart/rebuild`）／棚割・在庫日数フィルタの mart 対応
+- 再構築の非同期化（202 Accepted ＋ 進捗ポーリング）。データ量増で同期実行が nginx タイムアウト（約60秒）を超える場合に備える
