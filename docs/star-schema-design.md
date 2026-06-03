@@ -416,11 +416,12 @@ flowchart TD
 | 層 | 内容 | 主なファイル |
 |----|------|------------|
 | DB | `mart` スキーマ：`dim_date`/`dim_retailer`/`dim_product`/`dim_sku`/`fact_sales_weekly`/`build_info` と再構築関数 `mart.rebuild()` | `db/schema.sql` |
-| API | `GET /api/mart/status`・`/summary`・`/breakdown`、`POST /api/mart/rebuild`（認証ユーザー） | `MartController.cs`・`MartAnalyticsRepository.cs`・`MartModels.cs` |
+| API | `GET /api/mart/status`・`/summary`・`/breakdown`、`POST /api/mart/rebuild`（認証ユーザー・**非同期**: 即時応答＋`status` ポーリング） | `MartController.cs`・`MartAnalyticsRepository.cs`・`MartModels.cs` |
 | 画面 | 新ページ `/mart`（KPI・週次トレンド・集計軸別ランキング・再構築UI）、サイドメニュー追加 | `frontend/app/pages/mart.vue`・`AppSidebar.vue`・`types/api.ts` |
 
 - **グレイン:** 週×SKU×小売（`donyu_date` 区別は集約）。数量・金額・粗利を事前計算列で保持。
-- **再構築:** `sales_weekly` ＋ 商品マスタから `mart.rebuild()` で全再構築（冪等・advisory lock で直列化）。代表値（名称・季節・色/サイズ・定価）は各自然キーの最新取込週を採用。商品マスタ（`m_product`/`m_product_sku`）に自然キー重複がある運用環境でも、`LATERAL + LIMIT 1`（`updated_at` 最新）で1件に絞り、再構築は失敗しない。
+- **再構築:** `sales_weekly` ＋ 商品マスタから `mart.rebuild()` で全再構築（冪等・advisory lock で直列化）。代表値（名称・季節・色/サイズ・定価）は各自然キーの最新取込週を採用。商品マスタ（`m_product`/`m_product_sku`）に自然キー重複がある運用環境でも、マスタを自然キーで `DISTINCT ON` 重複排除したサブクエリ結合（`updated_at` 最新）で1件に絞り、一意制約違反を避けつつ高速に処理する。
+- **非同期実行:** 約160万行の集約は数十秒〜数分かかり、共有 `nginx-proxy` のタイムアウト（約60秒）を超えるため、`POST /api/mart/rebuild` は実行権を取得して即応答し、本体はバックグラウンドで実行する。状態は `build_info.status`（idle/running/completed/failed）で管理し、フロントは `GET /api/mart/status` をポーリングする。30分以上滞留した `running` は stale とみなし再実行を許可する。
 - **既存への影響:** なし（`sales_weekly` も既存APIも不変。mart は別スキーマの追加系統）。
 
 ### 未実装（後続イテレーション）
@@ -428,4 +429,3 @@ flowchart TD
 - `fact_inventory_snapshot`（在庫・消化率の在庫KPI）／`fact_sales_daily`（曜日別）
 - 互換ビュー（既存APIの mart 移行）／テナント別スキーマ分離／集約マテビュー
 - 取込フックでの自動再構築（現状は手動 `POST /api/mart/rebuild`）／棚割・在庫日数フィルタの mart 対応
-- 再構築の非同期化（202 Accepted ＋ 進捗ポーリング）。データ量増で同期実行が nginx タイムアウト（約60秒）を超える場合に備える

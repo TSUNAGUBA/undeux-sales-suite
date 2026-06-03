@@ -591,6 +591,12 @@ export interface MartBreakdownResponse {
 /** mart（スタースキーマ）の構築状態。フロントの鮮度表示・再構築UIに使う。 */
 export interface MartStatus {
   built: boolean
+  /** 再構築の状態: 'idle' | 'running' | 'completed' | 'failed'。 */
+  status: string
+  /** 失敗時のエラーメッセージ（それ以外は null）。 */
+  error: string | null
+  /** 直近の再構築開始時刻。 */
+  startedAt: string | null
   rebuiltAt: string | null
   sourceRows: number
   factRows: number

@@ -180,18 +180,40 @@ async function load(): Promise<void> {
   }
 }
 
+function sleep(ms: number): Promise<void> {
+  return new Promise((resolve) => setTimeout(resolve, ms))
+}
+
 async function rebuild(): Promise<void> {
   rebuilding.value = true
   rebuildMessage.value = null
   errorMessage.value = null
   try {
+    // 再構築はバックグラウンドで実行される。POST は即座に running を返すので、
+    // 同期実行のタイムアウトを避けるため status を完了までポーリングする。
     status.value = await post<MartStatus>('/api/mart/rebuild')
-    rebuildMessage.value = 'mart を再構築しました。'
-    await load()
+    await pollRebuild()
   } catch (error) {
     errorMessage.value = apiErrorMessage(error)
   } finally {
     rebuilding.value = false
+  }
+}
+
+async function pollRebuild(): Promise<void> {
+  // 3秒間隔で最大約15分まで running の完了を待つ。
+  for (let i = 0; i < 300 && status.value?.status === 'running'; i++) {
+    await sleep(3000)
+    status.value = await get<MartStatus>('/api/mart/status')
+  }
+  if (status.value?.status === 'completed') {
+    rebuildMessage.value = 'mart を再構築しました。'
+    await load()
+  } else if (status.value?.status === 'failed') {
+    errorMessage.value = `再構築に失敗しました: ${status.value.error ?? '原因不明'}`
+  } else if (status.value?.status === 'running') {
+    rebuildMessage.value =
+      '再構築は実行中です。完了までしばらくお待ちください（このまま待つか、後でページを再読み込みしてください）。'
   }
 }
 
@@ -217,7 +239,10 @@ onMounted(async () => {
     >
       <div class="flex items-center gap-2 text-sm text-slate-600">
         <Database class="h-4 w-4 shrink-0 text-indigo-500" />
-        <span v-if="status?.rebuiltAt">
+        <span v-if="status?.status === 'running'" class="font-medium text-indigo-600">
+          再構築中...（完了まで数分かかる場合があります）
+        </span>
+        <span v-else-if="status?.rebuiltAt">
           最終再構築: {{ formatDateTime(status.rebuiltAt) }}
           ／ ファクト {{ formatNumber(status.factRows) }} 行
           <template v-if="status.earliestWeek && status.latestWeek">

@@ -1,5 +1,7 @@
 using Microsoft.AspNetCore.Authorization;
 using Microsoft.AspNetCore.Mvc;
+using Microsoft.Extensions.DependencyInjection;
+using Microsoft.Extensions.Logging;
 using UndeuxSales.Infrastructure.Queries;
 
 namespace UndeuxSales.Api.Controllers;
@@ -17,11 +19,20 @@ public sealed class MartController : ControllerBase
     private const int DefaultBreakdownLimit = 20;
 
     private readonly MartAnalyticsRepository _martRepository;
+    private readonly IServiceScopeFactory _scopeFactory;
+    private readonly ILogger<MartController> _logger;
 
-    public MartController(MartAnalyticsRepository martRepository)
-        => _martRepository = martRepository;
+    public MartController(
+        MartAnalyticsRepository martRepository,
+        IServiceScopeFactory scopeFactory,
+        ILogger<MartController> logger)
+    {
+        _martRepository = martRepository;
+        _scopeFactory = scopeFactory;
+        _logger = logger;
+    }
 
-    /// <summary>mart の構築状態（鮮度・行数・対象週範囲）を取得する。</summary>
+    /// <summary>mart の構築状態（再構築の進捗・鮮度・行数・対象週範囲）を取得する。</summary>
     [HttpGet("status")]
     public Task<MartStatus> Status(CancellationToken cancellationToken)
         => _martRepository.GetStatusAsync(cancellationToken);
@@ -50,12 +61,35 @@ public sealed class MartController : ControllerBase
             cancellationToken);
 
     /// <summary>
-    /// mart を sales_weekly + 商品マスタから全再構築する（public → mart のデータ移行）。
-    /// mart は派生キャッシュであり、元データ（sales_weekly）も既存機能も壊さない冪等処理
-    /// （DB側で advisory lock により直列化）のため、認証済みユーザーであれば実行できる。
-    /// クラスの [Authorize] により認証（ログイン）は必須。
+    /// mart の全再構築を「バックグラウンドで開始」する（public → mart のデータ移行）。
+    /// 約160万行の集約は数十秒〜数分かかり、同期実行ではリバースプロキシのタイムアウトを
+    /// 超えるため、本エンドポイントは即時に現在の状態（running）を返し、実処理は
+    /// バックグラウンドで実行する。フロントは GET /api/mart/status を
+    /// running / completed / failed でポーリングする。
+    /// mart は派生キャッシュで元データを壊さないため、認証済みユーザーであれば実行できる。
     /// </summary>
     [HttpPost("rebuild")]
-    public Task<MartStatus> Rebuild(CancellationToken cancellationToken)
-        => _martRepository.RebuildAsync(cancellationToken);
+    public async Task<MartStatus> Rebuild(CancellationToken cancellationToken)
+    {
+        var started = await _martRepository.TryStartRebuildAsync(cancellationToken);
+        if (started)
+        {
+            // リクエストのライフサイクルから切り離してバックグラウンド実行する。
+            // scoped 依存（リポジトリ）を安全に使うため、専用の DI スコープを作成する。
+            _ = Task.Run(async () =>
+            {
+                using var scope = _scopeFactory.CreateScope();
+                var repository = scope.ServiceProvider.GetRequiredService<MartAnalyticsRepository>();
+                await repository.RunRebuildCoreAsync(CancellationToken.None);
+            });
+            _logger.LogInformation("mart 再構築をバックグラウンドで開始しました。");
+        }
+        else
+        {
+            _logger.LogInformation("mart 再構築は既に実行中のため、新規開始をスキップしました。");
+        }
+
+        // running を含む現在の状態を返す。フロントはこの後 status をポーリングする。
+        return await _martRepository.GetStatusAsync(cancellationToken);
+    }
 }
