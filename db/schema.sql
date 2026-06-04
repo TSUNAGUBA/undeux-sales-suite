@@ -477,6 +477,11 @@ DECLARE
     v_source_rows bigint;
     v_fact_rows   bigint;
 BEGIN
+    -- 再構築は有界だが長時間（数分〜十数分）に及ぶ。サーバ側に statement_timeout が
+    -- 設定されていても、本トランザクション内では無効化して中断されないようにする
+    -- （クライアント側の CommandTimeout=0 と合わせ、再構築がタイムアウトしないことを保証する）。
+    SET LOCAL statement_timeout = 0;
+
     -- 'MART'(0x4D415254) を鍵に再構築を直列化する。
     PERFORM pg_advisory_xact_lock(1296913492);
 

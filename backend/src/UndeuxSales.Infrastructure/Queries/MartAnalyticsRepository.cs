@@ -19,11 +19,14 @@ public sealed class MartAnalyticsRepository
     private const int MaxBreakdownLimit = 1000;
 
     /// <summary>
-    /// 全再構築は 160 万行規模を売上・在庫の2ファクトへ集約するため十分なタイムアウトを与える。
-    /// 集約は1回走査に最適化済みだが、本番データ量の変動に備えて 30 分の余裕を持たせる
-    /// （後述の stale-running しきい値 45 分より小さく保ち、正常実行が stale 扱いされないようにする）。
+    /// 全再構築のコマンドタイムアウト（秒）。<c>0 = 無制限</c>。
+    /// 再構築は HTTP リクエストから切り離したバックグラウンドタスクで実行され（即時応答＋status ポーリング）、
+    /// nginx 等のリバースプロキシのタイムアウトとは無関係。処理は有限テーブルに対する有界な集約で必ず終了し、
+    /// advisory lock で直列化・<c>build_info.status</c> で状態管理されるため、クライアント側で人工的な
+    /// コマンドタイムアウト上限を設ける意味がない。よって 0（無制限）とし、データ量に依らずタイムアウトしない。
+    /// （Npgsql は CommandTimeout=0 を無期限として扱う。）
     /// </summary>
-    private const int RebuildCommandTimeoutSeconds = 1800;
+    private const int RebuildCommandTimeoutSeconds = 0;
 
     private readonly IDbConnectionFactory _connectionFactory;
     private readonly ILogger<MartAnalyticsRepository> _logger;
