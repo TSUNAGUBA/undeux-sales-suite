@@ -18,8 +18,15 @@ public sealed class MartAnalyticsRepository
 {
     private const int MaxBreakdownLimit = 1000;
 
-    /// <summary>全再構築は 160 万行規模を集約するため十分なタイムアウトを与える。</summary>
-    private const int RebuildCommandTimeoutSeconds = 600;
+    /// <summary>
+    /// 全再構築のコマンドタイムアウト（秒）。<c>0 = 無制限</c>。
+    /// 再構築は HTTP リクエストから切り離したバックグラウンドタスクで実行され（即時応答＋status ポーリング）、
+    /// nginx 等のリバースプロキシのタイムアウトとは無関係。処理は有限テーブルに対する有界な集約で必ず終了し、
+    /// advisory lock で直列化・<c>build_info.status</c> で状態管理されるため、クライアント側で人工的な
+    /// コマンドタイムアウト上限を設ける意味がない。よって 0（無制限）とし、データ量に依らずタイムアウトしない。
+    /// （Npgsql は CommandTimeout=0 を無期限として扱う。）
+    /// </summary>
+    private const int RebuildCommandTimeoutSeconds = 0;
 
     private readonly IDbConnectionFactory _connectionFactory;
     private readonly ILogger<MartAnalyticsRepository> _logger;
@@ -34,9 +41,10 @@ public sealed class MartAnalyticsRepository
     }
 
     /// <summary>
-    /// 再構築の実行権を原子的に取得する。idle / completed / failed のとき、または 30 分以上
+    /// 再構築の実行権を原子的に取得する。idle / completed / failed のとき、または 45 分以上
     /// 滞留した running（コンテナ再起動等で取り残された状態）のときに限り running 化する。
-    /// 取得できたら true、既に実行中なら false を返す。
+    /// しきい値はコマンドタイムアウト（30 分）より大きく取り、正常に長時間実行中の再構築を
+    /// stale と誤認しないようにする。取得できたら true、既に実行中なら false を返す。
     /// </summary>
     public async Task<bool> TryStartRebuildAsync(CancellationToken cancellationToken = default)
     {
@@ -47,7 +55,7 @@ public sealed class MartAnalyticsRepository
             WHERE id = 1
               AND (status <> 'running'
                    OR started_at IS NULL
-                   OR started_at < now() - interval '30 minutes');
+                   OR started_at < now() - interval '45 minutes');
             """, cancellationToken: cancellationToken));
         return rows > 0;
     }

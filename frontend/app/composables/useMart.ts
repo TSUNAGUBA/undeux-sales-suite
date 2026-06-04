@@ -38,10 +38,13 @@ export function useMart() {
     rebuilding.value = true
     rebuildMessage.value = null
     try {
-      // POST は即座に running を返す。完了まで status を 3 秒間隔でポーリングする。
+      // POST は即座に running を返す。完了まで status を 5 秒間隔でポーリングする。
+      // 再構築は最適化後で数分〜十数分かかる。サーバ側コマンドタイムアウト（約30分）を超えて
+      // 追跡できるよう約33分（5秒×400）まで待ち、running のまま打ち切られた場合は
+      // 下の running ガイダンス（このまま待つ/後で再読込）を表示する。
       status.value = await post<MartStatus>('/api/mart/rebuild')
-      for (let i = 0; i < 300 && status.value?.status === 'running'; i++) {
-        await sleep(3000)
+      for (let i = 0; i < 400 && status.value?.status === 'running'; i++) {
+        await sleep(5000)
         status.value = await get<MartStatus>('/api/mart/status')
       }
       if (status.value?.status === 'completed') {
