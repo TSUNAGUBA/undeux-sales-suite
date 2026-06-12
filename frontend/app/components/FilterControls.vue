@@ -12,10 +12,9 @@ const props = withDefaults(
 
 const { filter, options, optionsError, loadOptions, years } = useFilters(props.scopeKey)
 
-// 分析mart（スタースキーマ）スコープでは、mart が保持しない棚割1・平均在庫日数は
-// フィルタとして適用されない（API 側で無視＝グレースフルデグラデーション）。
-// 「設定したのに効かない」UXの罠を避けるため、mart スコープでは当該コントロールを出さない。
-const isMartScope = computed(() => props.scopeKey === 'mart-filter')
+// 棚割1・平均在庫日数（在日）は sales 系・mart 系の両方が解釈する
+// （mart は dim_product.attributes / fact_inventory_snapshot.stock_days に適用）。
+// そのため全スコープで同じコントロールを表示する。
 
 onMounted(loadOptions)
 
@@ -57,7 +56,18 @@ function removeHinban(value: string): void {
       フィルタ選択肢の取得に失敗しました: {{ optionsError }}
     </p>
 
+    <!-- 並び順は 業態 → 部門 → 年度 → 季節（→ 棚割1 → 平均在庫日数）。 -->
     <div class="grid grid-cols-1 gap-3 sm:grid-cols-2 lg:grid-cols-3">
+      <MultiSelect
+        v-model="filter.businessTypes"
+        label="業態"
+        :options="businessTypeOptions"
+      />
+      <MultiSelect
+        v-model="filter.departments"
+        label="部門"
+        :options="departmentOptions"
+      />
       <div>
         <label class="mb-1 block text-xs font-medium text-slate-500">
           年度（1月〜12月）
@@ -70,32 +80,19 @@ function removeHinban(value: string): void {
           <option v-for="y in years" :key="y" :value="y">{{ y }}年</option>
         </select>
       </div>
-
-      <MultiSelect
-        v-model="filter.departments"
-        label="部門"
-        :options="departmentOptions"
-      />
-      <MultiSelect
-        v-model="filter.businessTypes"
-        label="業態"
-        :options="businessTypeOptions"
-      />
       <MultiSelect
         v-model="filter.seasons"
         label="季節区分"
         :options="seasonOptions"
       />
       <MultiSelect
-        v-if="!isMartScope"
         v-model="filter.tanawari1"
         label="棚割1"
         :options="tanawari1Options"
       />
       <MultiSelect
-        v-if="!isMartScope"
         v-model="filter.stockDaysBuckets"
-        label="平均在庫日数"
+        label="平均在庫日数（在日）"
         :options="stockDaysOptions"
       />
     </div>

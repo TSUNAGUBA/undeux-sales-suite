@@ -89,18 +89,6 @@ internal static class SalesFilterSql
         }
     }
 
-    /// <summary>
-    /// 平均在庫日数（在日）バケットの SQL 述語。値はホワイトリスト照合（外部入力を SQL へ直接埋め込まない）。
-    /// 未知のバケットは <c>null</c> を返し、条件から除外する。
-    /// </summary>
-    private static string? StockDaysBucketPredicate(string bucket, string alias) => bucket switch
-    {
-        "le30" => $"{alias}.zainiti <= 30",
-        "d31to60" => $"{alias}.zainiti BETWEEN 31 AND 60",
-        "ge61" => $"{alias}.zainiti >= 61",
-        _ => null,
-    };
-
     /// <summary>条件式を <c>AND</c> 連結で返す（条件がなければ空文字）。</summary>
     public static string Conditions(SalesQueryFilter filter, string alias)
     {
@@ -142,17 +130,10 @@ internal static class SalesFilterSql
         }
 
         // 平均在庫日数（在日）バケットは OR 連結。複数選択時はいずれかに該当すれば対象。
-        if (filter.StockDaysBuckets is { Length: > 0 })
+        var stockDaysCondition = StockDaysSql.OrCondition(filter.StockDaysBuckets, $"{alias}.zainiti");
+        if (stockDaysCondition is not null)
         {
-            var predicates = filter.StockDaysBuckets
-                .Select(b => StockDaysBucketPredicate(b, alias))
-                .Where(p => p is not null)
-                .Distinct()
-                .ToList();
-            if (predicates.Count > 0)
-            {
-                conditions.Add("(" + string.Join(" OR ", predicates) + ")");
-            }
+            conditions.Add(stockDaysCondition);
         }
 
         return string.Join(" AND ", conditions);
@@ -170,5 +151,44 @@ internal static class SalesFilterSql
     {
         var conditions = Conditions(filter, alias);
         return conditions.Length == 0 ? string.Empty : " AND " + conditions;
+    }
+}
+
+/// <summary>
+/// 平均在庫日数（在日）バケットの SQL 述語を組み立てる共通ヘルパー。
+/// sales 系（<c>sales_weekly.zainiti</c>）と mart 系（<c>fact_inventory_snapshot.stock_days</c>）で
+/// 列名が異なるため、対象の列式を引数に取る。バケット定義（le30 / d31to60 / ge61）の SoT。
+/// </summary>
+internal static class StockDaysSql
+{
+    /// <summary>
+    /// バケットキーを列式に対する範囲述語へ解決する。値はホワイトリスト照合
+    /// （外部入力を SQL へ直接埋め込まない）。未知のバケットは <c>null</c> を返し、条件から除外する。
+    /// </summary>
+    public static string? BucketPredicate(string bucket, string columnExpr) => bucket switch
+    {
+        "le30" => $"{columnExpr} <= 30",
+        "d31to60" => $"{columnExpr} BETWEEN 31 AND 60",
+        "ge61" => $"{columnExpr} >= 61",
+        _ => null,
+    };
+
+    /// <summary>
+    /// バケット群を OR 連結した条件式を返す（複数選択時はいずれかに該当すれば対象）。
+    /// 有効なバケットが1つも無ければ <c>null</c>。
+    /// </summary>
+    public static string? OrCondition(string[]? buckets, string columnExpr)
+    {
+        if (buckets is not { Length: > 0 })
+        {
+            return null;
+        }
+
+        var predicates = buckets
+            .Select(b => BucketPredicate(b, columnExpr))
+            .Where(p => p is not null)
+            .Distinct()
+            .ToList();
+        return predicates.Count == 0 ? null : "(" + string.Join(" OR ", predicates) + ")";
     }
 }

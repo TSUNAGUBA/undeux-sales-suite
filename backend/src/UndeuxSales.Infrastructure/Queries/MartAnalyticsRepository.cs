@@ -131,7 +131,7 @@ public sealed class MartAnalyticsRepository
             JOIN mart.dim_date     dd ON dd.date_key     = f.date_key
             JOIN mart.dim_product  dp ON dp.product_key  = f.product_key
             JOIN mart.dim_retailer dr ON dr.retailer_key = f.retailer_key
-            {MartFilterSql.WhereClause(filter)};
+            {MartFilterSql.WhereClause(filter, "f")};
             """;
         var counts = await connection.QuerySingleAsync<CountRow>(
             new CommandDefinition(countSql, parameters, cancellationToken: cancellationToken));
@@ -155,7 +155,7 @@ public sealed class MartAnalyticsRepository
                 JOIN mart.dim_date     dd ON dd.date_key     = inv.date_key
                 JOIN mart.dim_product  dp ON dp.product_key  = inv.product_key
                 JOIN mart.dim_retailer dr ON dr.retailer_key = inv.retailer_key
-                WHERE dd.week_monday = @latestWeek{MartFilterSql.AndClause(filter)};
+                WHERE dd.week_monday = @latestWeek{MartFilterSql.AndClause(filter, "inv")};
                 """, parameters, cancellationToken: cancellationToken));
             currentStock = snapshot.Stock;
             sellThroughRate = Ratio(snapshot.CumulativeSales, snapshot.CumulativeDelivery);
@@ -211,7 +211,7 @@ public sealed class MartAnalyticsRepository
                 JOIN mart.dim_date     dd ON dd.date_key     = f.date_key
                 JOIN mart.dim_product  dp ON dp.product_key  = f.product_key
                 JOIN mart.dim_retailer dr ON dr.retailer_key = f.retailer_key
-                {MartFilterSql.WhereClause(filter)}
+                {MartFilterSql.WhereClause(filter, "f")}
                 GROUP BY {keyExpr}
             ) g
             ORDER BY {metricColumn} {direction}, key
@@ -264,7 +264,7 @@ public sealed class MartAnalyticsRepository
         }
 
         parameters.Add("latestWeek", latestWeek.Value);
-        var andClause = MartFilterSql.AndClause(filter);
+        var andClause = MartFilterSql.AndClause(filter, "inv");
 
         var kpiSql = $"""
             SELECT COALESCE(SUM(inv.stock), 0)::bigint        AS total_stock,
@@ -350,8 +350,8 @@ public sealed class MartAnalyticsRepository
 
         var sortExpression = MartProductSortExpression(sortKey);
         var direction = ascending ? "ASC" : "DESC";
-        var whereClause = MartFilterSql.WhereClause(filter);
-        var andClause = MartFilterSql.AndClause(filter);
+        var whereClause = MartFilterSql.WhereClause(filter, "f");
+        var andClause = MartFilterSql.AndClause(filter, "inv");
 
         // SKU（sku_key）単位の行。在庫は最新週スナップショット、フローは期間集計。
         // 代表画像・名称・ブランドは mart 次元から、商品マスタID（詳細遷移用）は自然キーで
@@ -447,7 +447,7 @@ public sealed class MartAnalyticsRepository
             JOIN mart.dim_date     dd ON dd.date_key     = inv.date_key
             JOIN mart.dim_product  dp ON dp.product_key  = inv.product_key
             JOIN mart.dim_retailer dr ON dr.retailer_key = inv.retailer_key
-            WHERE dd.week_monday = @latestWeek{MartFilterSql.AndClause(filter)};
+            WHERE dd.week_monday = @latestWeek{MartFilterSql.AndClause(filter, "inv")};
             """;
         return await connection.ExecuteScalarAsync<int>(
             new CommandDefinition(sql, parameters, cancellationToken: cancellationToken));
@@ -487,8 +487,8 @@ public sealed class MartAnalyticsRepository
 
         var parameters = new DynamicParameters();
         MartFilterSql.AddParameters(filter, parameters);
-        var whereClause = MartFilterSql.WhereClause(filter);
-        var andClause = MartFilterSql.AndClause(filter);
+        var whereClause = MartFilterSql.WhereClause(filter, "f");
+        var andClause = MartFilterSql.AndClause(filter, "inv");
 
         var latestWeek = await QueryLatestWeekAsync(connection, filter, parameters, cancellationToken);
         if (!latestWeek.HasValue)
@@ -632,7 +632,7 @@ public sealed class MartAnalyticsRepository
             JOIN mart.dim_retailer dr ON dr.retailer_key = f.retailer_key
             JOIN mart.dim_product  dp ON dp.product_key  = f.product_key
             JOIN mart.dim_sku      ds ON ds.sku_key      = f.sku_key
-            {MartFilterSql.WhereClause(filter)}
+            {MartFilterSql.WhereClause(filter, "f")}
             GROUP BY {groupBy};
             """;
         var flowRows = await connection.QueryAsync<RankingFlowRow>(
@@ -663,7 +663,7 @@ public sealed class MartAnalyticsRepository
                 JOIN mart.dim_retailer dr ON dr.retailer_key = inv.retailer_key
                 JOIN mart.dim_product  dp ON dp.product_key  = inv.product_key
                 JOIN mart.dim_sku      ds ON ds.sku_key      = inv.sku_key
-                WHERE dd.week_monday = @latestWeek{MartFilterSql.AndClause(filter)}
+                WHERE dd.week_monday = @latestWeek{MartFilterSql.AndClause(filter, "inv")}
                 GROUP BY {groupBy};
                 """;
             var snapshotRows = await connection.QueryAsync<RankingSnapshotRow>(
@@ -711,12 +711,31 @@ public sealed class MartAnalyticsRepository
             JOIN mart.dim_date     dd ON dd.date_key     = f.date_key
             JOIN mart.dim_product  dp ON dp.product_key  = f.product_key
             JOIN mart.dim_retailer dr ON dr.retailer_key = f.retailer_key
-            {MartFilterSql.WhereClause(filter)}
+            {MartFilterSql.WhereClause(filter, "f")}
             GROUP BY dd.week_monday
             ORDER BY dd.week_monday;
             """;
         var flowRows = (await connection.QueryAsync<MartWeeklyFlowRow>(
             new CommandDefinition(flowSql, parameters, cancellationToken: cancellationToken))).ToList();
+
+        // 週ごとの在庫スナップショット（店頭在庫・在日・消化率の素材）。
+        // 売上ファクトと同一グレインのため、同じフィルタで週単位に集計して合流する。
+        var snapshotSql = $"""
+            SELECT dd.week_monday AS week,
+                   COALESCE(SUM(inv.stock), 0)::bigint        AS stock,
+                   COALESCE(SUM(inv.cum_sales), 0)::bigint    AS cum_sales,
+                   COALESCE(SUM(inv.cum_delivery), 0)::bigint AS cum_delivery,
+                   COALESCE(AVG(inv.stock_days), 0)::float8   AS stock_days
+            FROM mart.fact_inventory_snapshot inv
+            JOIN mart.dim_date     dd ON dd.date_key     = inv.date_key
+            JOIN mart.dim_product  dp ON dp.product_key  = inv.product_key
+            JOIN mart.dim_retailer dr ON dr.retailer_key = inv.retailer_key
+            {MartFilterSql.WhereClause(filter, "inv")}
+            GROUP BY dd.week_monday;
+            """;
+        var snapshotRows = await connection.QueryAsync<MartWeeklySnapshotRow>(
+            new CommandDefinition(snapshotSql, parameters, cancellationToken: cancellationToken));
+        var snapshotByWeek = snapshotRows.ToDictionary(r => r.Week);
 
         // 実気温（週=月曜が表す前週 月〜日の範囲）を集計。完全週（7日）のみ採用する。
         var climateParameters = new DynamicParameters();
@@ -748,9 +767,14 @@ public sealed class MartAnalyticsRepository
                 {
                     temp = ClimateModel.Week(area, r.Week);
                 }
+                // 同一グレインの派生のため snapshot は通常必ず存在するが、欠損時は 0 で埋める。
+                snapshotByWeek.TryGetValue(r.Week, out var snapshot);
                 return new WeeklySeriesPoint(
                     r.Week, r.Quantity, r.Amount, r.GrossProfit,
-                    Round1(temp.Average), Round1(temp.Maximum), Round1(temp.Minimum));
+                    Round1(temp.Average), Round1(temp.Maximum), Round1(temp.Minimum),
+                    snapshot?.Stock ?? 0,
+                    snapshot?.StockDays ?? 0,
+                    snapshot is null ? 0 : Ratio(snapshot.CumSales, snapshot.CumDelivery));
             })
             .ToList();
 
@@ -780,11 +804,12 @@ public sealed class MartAnalyticsRepository
 
         parameters.Add("latestWeek", latestWeek.Value);
         parameters.Add("limit", MaxMarkdownPoints);
-        var whereClause = MartFilterSql.WhereClause(filter);
-        var andClause = MartFilterSql.AndClause(filter);
+        var whereClause = MartFilterSql.WhereClause(filter, "f");
+        var andClauseFlow = MartFilterSql.AndClause(filter, "f");
+        var andClauseInv = MartFilterSql.AndClause(filter, "inv");
 
-        // 期間内フロー数量、最新週の平均売価（売上ファクト）・累計（在庫スナップショット）、
-        // 定価（dim_sku）を型番（product_key）単位で結合する。
+        // 期間内フロー数量、最新週の平均売価（売上ファクト）・累計/店頭在庫/在日（在庫スナップショット）、
+        // 定価（dim_sku）を型番（product_key）単位で結合する。季節は商品次元の属性。
         var sql = $"""
             WITH flow AS (
                 SELECT f.product_key,
@@ -803,18 +828,20 @@ public sealed class MartAnalyticsRepository
                 JOIN mart.dim_date     dd ON dd.date_key     = f.date_key
                 JOIN mart.dim_product  dp ON dp.product_key  = f.product_key
                 JOIN mart.dim_retailer dr ON dr.retailer_key = f.retailer_key
-                WHERE dd.week_monday = @latestWeek{andClause}
+                WHERE dd.week_monday = @latestWeek{andClauseFlow}
                 GROUP BY f.product_key
             ),
             cum AS (
                 SELECT inv.product_key,
                        COALESCE(SUM(inv.cum_sales), 0)::bigint    AS cum_sales,
-                       COALESCE(SUM(inv.cum_delivery), 0)::bigint AS cum_delivery
+                       COALESCE(SUM(inv.cum_delivery), 0)::bigint AS cum_delivery,
+                       COALESCE(SUM(inv.stock), 0)::bigint        AS stock,
+                       COALESCE(AVG(inv.stock_days), 0)::float8   AS stock_days
                 FROM mart.fact_inventory_snapshot inv
                 JOIN mart.dim_date     dd ON dd.date_key     = inv.date_key
                 JOIN mart.dim_product  dp ON dp.product_key  = inv.product_key
                 JOIN mart.dim_retailer dr ON dr.retailer_key = inv.retailer_key
-                WHERE dd.week_monday = @latestWeek{andClause}
+                WHERE dd.week_monday = @latestWeek{andClauseInv}
                 GROUP BY inv.product_key
             ),
             list AS (
@@ -831,7 +858,10 @@ public sealed class MartAnalyticsRepository
                         THEN cum.cum_sales::float8 / cum.cum_delivery * 100.0
                         ELSE 0 END AS sell_through_rate,
                    GREATEST(0, LEAST(100, (1 - price.avg_baika / list.list_price) * 100.0)) AS markdown_rate,
-                   COALESCE(flow.quantity, 0)::bigint AS quantity
+                   COALESCE(flow.quantity, 0)::bigint AS quantity,
+                   NULLIF(dp.season, '')              AS season,
+                   COALESCE(cum.stock, 0)::bigint     AS stock,
+                   COALESCE(cum.stock_days, 0)::float8 AS stock_days
             FROM price
             JOIN mart.dim_product dp ON dp.product_key = price.product_key
             JOIN list ON list.product_key = price.product_key
@@ -847,6 +877,151 @@ public sealed class MartAnalyticsRepository
             new CommandDefinition(sql, parameters, cancellationToken: cancellationToken))).ToList();
 
         return new MarkdownScatterResponse(latestWeek.Value.ToString("yyyy-MM-dd"), points);
+    }
+
+    /// <summary>商品導入管理の最大ページサイズ。</summary>
+    private const int MaxIntroductionPageSize = 200;
+
+    /// <summary>
+    /// 商品導入管理の一覧（ページング）を mart から取得する。
+    /// 1行 = 商品（業態×記号×品番）。導入日は配下 SKU の <c>attributes->>'donyu'</c>（YYYYMMDD 文字列）の
+    /// 最小値（最初に導入された日）。並び順は導入日（既定: 降順＝新しい導入が先頭、NULL は末尾）。
+    /// </summary>
+    public async Task<MartIntroductionPage> GetIntroductionsAsync(
+        MartIntroductionQuery query,
+        bool ascending,
+        int page,
+        int pageSize,
+        CancellationToken cancellationToken = default)
+    {
+        query.EnsureValid();
+        page = Math.Max(page, 1);
+        pageSize = Math.Clamp(pageSize, 1, MaxIntroductionPageSize);
+
+        await using var connection = await _connectionFactory.OpenConnectionAsync(cancellationToken);
+
+        var parameters = new DynamicParameters();
+        MartIntroductionFilterSql.AddParameters(query, parameters);
+        parameters.Add("limit", pageSize);
+        parameters.Add("offset", (page - 1) * pageSize);
+
+        var whereClause = MartIntroductionFilterSql.WhereClause(query);
+        var direction = ascending ? "ASC" : "DESC";
+
+        // SKU 集約（導入日・SKU数・代表画像）と全期間フロー（売上数量）を商品単位に結合する。
+        // 業態表示名は dim_retailer の channel 列から重複排除して引く（business_type マスタ由来）。
+        var sql = $"""
+            WITH sku AS (
+                SELECT ds.product_key,
+                       COUNT(*)::int                AS sku_count,
+                       MIN(ds.attributes->>'donyu') AS donyu,
+                       MIN(ds.image_url)            AS image_url
+                FROM mart.dim_sku ds
+                GROUP BY ds.product_key
+            ),
+            flow AS (
+                SELECT f.product_key,
+                       COALESCE(SUM(f.quantity), 0)::bigint AS sales_quantity
+                FROM mart.fact_sales_weekly f
+                GROUP BY f.product_key
+            ),
+            channel AS (
+                SELECT DISTINCT ON (channel_code) channel_code, channel_name
+                FROM mart.dim_retailer
+                ORDER BY channel_code, channel_name NULLS LAST
+            )
+            SELECT dp.channel_code,
+                   ch.channel_name,
+                   dp.department_code,
+                   dp.department_name,
+                   dp.product_sign,
+                   dp.product_code,
+                   dp.product_name,
+                   dp.brand,
+                   dp.manager,
+                   sku.donyu,
+                   sku.sku_count,
+                   COALESCE(flow.sales_quantity, 0) AS sales_quantity,
+                   sku.image_url AS primary_image_url,
+                   (COUNT(*) OVER ())::int AS total_count
+            FROM mart.dim_product dp
+            JOIN sku ON sku.product_key = dp.product_key
+            LEFT JOIN flow ON flow.product_key = dp.product_key
+            LEFT JOIN channel ch ON ch.channel_code = dp.channel_code
+            {whereClause}
+            ORDER BY sku.donyu {direction} NULLS LAST,
+                     dp.product_code, dp.product_sign, dp.channel_code
+            LIMIT @limit OFFSET @offset;
+            """;
+
+        var rawRows = (await connection.QueryAsync<MartIntroductionRawRow>(
+            new CommandDefinition(sql, parameters, cancellationToken: cancellationToken))).ToList();
+
+        var totalCount = rawRows.Count > 0
+            ? rawRows[0].TotalCount
+            : await CountIntroductionsAsync(connection, query, parameters, cancellationToken);
+
+        var items = rawRows
+            .Select(row => new MartIntroductionRow(
+                row.ChannelCode, row.ChannelName, row.DepartmentCode, row.DepartmentName,
+                row.ProductSign, row.ProductCode, row.ProductName, row.Brand, row.Manager,
+                ParseDonyu(row.Donyu), row.SkuCount, row.SalesQuantity, row.PrimaryImageUrl))
+            .ToList();
+
+        return new MartIntroductionPage(items, totalCount, page, pageSize);
+    }
+
+    /// <summary>導入管理の対象商品の総件数（ページ範囲外で本体クエリが空のときのフォールバック）。</summary>
+    private static async Task<int> CountIntroductionsAsync(
+        NpgsqlConnection connection,
+        MartIntroductionQuery query,
+        DynamicParameters parameters,
+        CancellationToken cancellationToken)
+    {
+        var sql = $"""
+            WITH sku AS (
+                SELECT ds.product_key, MIN(ds.attributes->>'donyu') AS donyu
+                FROM mart.dim_sku ds
+                GROUP BY ds.product_key
+            )
+            SELECT COUNT(*)::int
+            FROM mart.dim_product dp
+            JOIN sku ON sku.product_key = dp.product_key
+            {MartIntroductionFilterSql.WhereClause(query)};
+            """;
+        return await connection.ExecuteScalarAsync<int>(
+            new CommandDefinition(sql, parameters, cancellationToken: cancellationToken));
+    }
+
+    /// <summary>
+    /// 導入日（YYYYMMDD 文字列）を <see cref="DateOnly"/> へ変換する。
+    /// 不正値（存在しない日付等）は null（再構築側で 8 桁数字に絞っているが二重に防御する）。
+    /// </summary>
+    private static DateOnly? ParseDonyu(string? donyu)
+        => DateOnly.TryParseExact(donyu, "yyyyMMdd", out var parsed) ? parsed : null;
+
+    /// <summary>商品導入管理のフィルタ選択肢（ブランド・担当者・服種）を mart の商品次元から取得する。</summary>
+    public async Task<MartIntroductionOptions> GetIntroductionOptionsAsync(
+        CancellationToken cancellationToken = default)
+    {
+        await using var connection = await _connectionFactory.OpenConnectionAsync(cancellationToken);
+
+        var brands = (await connection.QueryAsync<string>(new CommandDefinition("""
+            SELECT DISTINCT brand FROM mart.dim_product
+            WHERE brand IS NOT NULL AND brand <> '' ORDER BY brand;
+            """, cancellationToken: cancellationToken))).ToList();
+
+        var managers = (await connection.QueryAsync<string>(new CommandDefinition("""
+            SELECT DISTINCT manager FROM mart.dim_product
+            WHERE manager IS NOT NULL AND manager <> '' ORDER BY manager;
+            """, cancellationToken: cancellationToken))).ToList();
+
+        var hinbans = (await connection.QueryAsync<string>(new CommandDefinition("""
+            SELECT DISTINCT product_code FROM mart.dim_product
+            WHERE product_code <> '' ORDER BY product_code;
+            """, cancellationToken: cancellationToken))).ToList();
+
+        return new MartIntroductionOptions(brands, managers, hinbans);
     }
 
     /// <summary>週次トレンド（取込日昇順）を mart から取得する（サマリー・売上分析で共有）。</summary>
@@ -866,7 +1041,7 @@ public sealed class MartAnalyticsRepository
             JOIN mart.dim_date     dd ON dd.date_key     = f.date_key
             JOIN mart.dim_product  dp ON dp.product_key  = f.product_key
             JOIN mart.dim_retailer dr ON dr.retailer_key = f.retailer_key
-            {MartFilterSql.WhereClause(filter)}
+            {MartFilterSql.WhereClause(filter, "f")}
             GROUP BY dd.week_monday
             ORDER BY dd.week_monday;
             """;
@@ -888,7 +1063,7 @@ public sealed class MartAnalyticsRepository
             JOIN mart.dim_date     dd ON dd.date_key     = f.date_key
             JOIN mart.dim_product  dp ON dp.product_key  = f.product_key
             JOIN mart.dim_retailer dr ON dr.retailer_key = f.retailer_key
-            {MartFilterSql.WhereClause(filter)};
+            {MartFilterSql.WhereClause(filter, "f")};
             """;
         return await connection.ExecuteScalarAsync<DateOnly?>(
             new CommandDefinition(sql, parameters, cancellationToken: cancellationToken));
@@ -1038,9 +1213,16 @@ public sealed class MartAnalyticsRepository
 
 /// <summary><see cref="SalesQueryFilter"/> から mart 次元に対する WHERE 条件を組み立てる。</summary>
 /// <remarks>
-/// 棚割1（mart 未保持）・平均在庫日数バケット（在庫は別ファクトで期間フローには適用しない）は
-/// mart では未対応のため無視する（グレースフルデグラデーション）。フロントは mart スコープで
-/// 当該フィルタUIを非表示にし、「効かない」UXの罠を避ける（FilterControls.vue の isMartScope）。
+/// <para>
+/// 棚割1 は商品次元の拡張属性（<c>dim_product.attributes->>'tanawari1'</c>。SCD1＝最新取込週の値）に
+/// 対して適用する。平均在庫日数（在日）バケットは、ファクトと同一グレイン
+/// （週×小売×SKU）の在庫スナップショット <c>fact_inventory_snapshot.stock_days</c> を EXISTS で
+/// 参照して適用する（sales 系の週次行 <c>zainiti</c> フィルタと同一意味論）。
+/// </para>
+/// <para>
+/// 次元エイリアスは dd/dp/dr 固定。ファクト（売上 <c>fact_sales_weekly</c> または在庫
+/// <c>fact_inventory_snapshot</c>）のエイリアスはクエリごとに異なるため引数で受け取る。
+/// </para>
 /// </remarks>
 internal static class MartFilterSql
 {
@@ -1052,10 +1234,18 @@ internal static class MartFilterSql
         if (filter.BusinessTypes is { Length: > 0 }) parameters.Add("businessTypes", filter.BusinessTypes);
         if (filter.Seasons is { Length: > 0 }) parameters.Add("seasons", filter.Seasons);
         if (filter.Hinbans is { Length: > 0 }) parameters.Add("hinbans", filter.Hinbans);
+        if (filter.Tanawari1 is { Length: > 0 }) parameters.Add("tanawari1", filter.Tanawari1);
     }
 
-    /// <summary>条件式を <c>AND</c> 連結で返す（条件がなければ空文字）。エイリアスは dd/dp/dr 固定。</summary>
-    public static string Conditions(SalesQueryFilter filter)
+    /// <summary>
+    /// 条件式を <c>AND</c> 連結で返す（条件がなければ空文字）。
+    /// </summary>
+    /// <param name="filter">共通フィルタ。</param>
+    /// <param name="factAlias">
+    /// クエリ対象ファクトのエイリアス（在日バケットの EXISTS が結合キーとして参照する。
+    /// date_key / retailer_key / product_key / sku_key を持つこと）。
+    /// </param>
+    public static string Conditions(SalesQueryFilter filter, string factAlias)
     {
         var conditions = new List<string>();
 
@@ -1065,21 +1255,37 @@ internal static class MartFilterSql
         if (filter.BusinessTypes is { Length: > 0 }) conditions.Add("dr.channel_code = ANY(@businessTypes)");
         if (filter.Seasons is { Length: > 0 }) conditions.Add("dp.season = ANY(@seasons)");
         if (filter.Hinbans is { Length: > 0 }) conditions.Add("dp.product_code = ANY(@hinbans)");
+        if (filter.Tanawari1 is { Length: > 0 })
+        {
+            conditions.Add("COALESCE(dp.attributes->>'tanawari1', '') = ANY(@tanawari1)");
+        }
+
+        // 在日バケット: 同一グレイン（PK 完全一致）の在庫スナップショット行の stock_days を参照する。
+        // 在庫クエリ（factAlias が fact_inventory_snapshot）では自己の PK 参照となり同値条件に縮退する。
+        var stockDays = StockDaysSql.OrCondition(filter.StockDaysBuckets, "z.stock_days");
+        if (stockDays is not null)
+        {
+            conditions.Add(
+                $"EXISTS (SELECT 1 FROM mart.fact_inventory_snapshot z "
+                + $"WHERE z.date_key = {factAlias}.date_key AND z.retailer_key = {factAlias}.retailer_key "
+                + $"AND z.product_key = {factAlias}.product_key AND z.sku_key = {factAlias}.sku_key "
+                + $"AND {stockDays})");
+        }
 
         return string.Join(" AND ", conditions);
     }
 
     /// <summary><c>WHERE ...</c> 句を返す（条件がなければ空文字）。</summary>
-    public static string WhereClause(SalesQueryFilter filter)
+    public static string WhereClause(SalesQueryFilter filter, string factAlias)
     {
-        var conditions = Conditions(filter);
+        var conditions = Conditions(filter, factAlias);
         return conditions.Length == 0 ? string.Empty : "WHERE " + conditions;
     }
 
     /// <summary>既存の WHERE に続けて連結する <c>AND ...</c> を返す（条件がなければ空文字）。</summary>
-    public static string AndClause(SalesQueryFilter filter)
+    public static string AndClause(SalesQueryFilter filter, string factAlias)
     {
-        var conditions = Conditions(filter);
+        var conditions = Conditions(filter, factAlias);
         return conditions.Length == 0 ? string.Empty : " AND " + conditions;
     }
 }
@@ -1141,8 +1347,29 @@ internal sealed record MartProductRawRow(
     string? PrimaryImageUrl,
     int TotalCount);
 
+/// <summary>Dapper マッピング用の内部行（商品導入管理の1行 + 総件数）。donyu は YYYYMMDD 文字列。</summary>
+internal sealed record MartIntroductionRawRow(
+    string ChannelCode,
+    string? ChannelName,
+    string? DepartmentCode,
+    string? DepartmentName,
+    string ProductSign,
+    string ProductCode,
+    string? ProductName,
+    string? Brand,
+    string? Manager,
+    string? Donyu,
+    int SkuCount,
+    long SalesQuantity,
+    string? PrimaryImageUrl,
+    int TotalCount);
+
 /// <summary>Dapper マッピング用の内部行（週次系列のフロー指標）。</summary>
 internal sealed record MartWeeklyFlowRow(DateOnly Week, long Quantity, long Amount, long GrossProfit);
+
+/// <summary>Dapper マッピング用の内部行（週次系列の在庫スナップショット集計）。</summary>
+internal sealed record MartWeeklySnapshotRow(
+    DateOnly Week, long Stock, long CumSales, long CumDelivery, double StockDays);
 
 /// <summary>Dapper マッピング用の内部行（週範囲で集計した実気温と対象日数）。</summary>
 internal sealed record MartWeeklyClimateRow(

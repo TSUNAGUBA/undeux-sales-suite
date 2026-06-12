@@ -248,4 +248,145 @@ public sealed class MartApiIntegrationTests
         Assert.NotNull(response);
         Assert.NotNull(response!.Points);
     }
+
+    [Fact]
+    public async Task Mart_Summary_StockDaysBucketFilter_Applies()
+    {
+        await RebuildMartAsync();
+        var client = CreateAuthedClient();
+
+        // シードは全行 zainiti=30 → mart の stock_days=30。le30 は全件、d31to60 は0件になる。
+        // （mart がバケットを無視すると d31to60 でも 28 が返るため、フィルタ適用の回帰を固定する。）
+        var le30 = await client.GetFromJsonAsync<MartSummaryResponse>(
+            $"/api/mart/summary?{SeedRange}&stockDaysBuckets=le30");
+        var d31to60 = await client.GetFromJsonAsync<MartSummaryResponse>(
+            $"/api/mart/summary?{SeedRange}&stockDaysBuckets=d31to60");
+
+        Assert.NotNull(le30);
+        Assert.NotNull(d31to60);
+        Assert.Equal(28, le30!.Kpi.Quantity);
+        Assert.Equal(0, d31to60!.Kpi.Quantity);
+    }
+
+    [Fact]
+    public async Task Mart_Summary_Tanawari1Filter_Applies()
+    {
+        await RebuildMartAsync();
+        var client = CreateAuthedClient();
+
+        // シードの棚割1は未設定（NULL）。実値での絞り込みは0件になる
+        // （mart が棚割1を無視すると 28 が返るため、フィルタ適用の回帰を固定する）。
+        var summary = await client.GetFromJsonAsync<MartSummaryResponse>(
+            $"/api/mart/summary?{SeedRange}&tanawari1=A1");
+
+        Assert.NotNull(summary);
+        Assert.Equal(0, summary!.Kpi.Quantity);
+    }
+
+    [Fact]
+    public async Task Mart_WeeklySeries_IncludesInventorySeries()
+    {
+        await RebuildMartAsync();
+        var client = CreateAuthedClient();
+
+        var series = await client.GetFromJsonAsync<WeeklySeriesResponse>(
+            $"/api/mart/weekly-series?{SeedRange}&area=standard");
+
+        Assert.NotNull(series);
+        Assert.Equal(2, series!.Points.Count);
+        // 週ごとの店頭在庫: 2026-05-04 = 50+10+30 = 90 / 2026-05-11 = 44+10+20 = 74。
+        Assert.Equal(90, series.Points[0].Stock);
+        Assert.Equal(74, series.Points[1].Stock);
+        foreach (var point in series.Points)
+        {
+            Assert.Equal(30, point.StockDays, 3);
+            Assert.InRange(point.SellThroughRate, 0.0, 1.0);
+        }
+    }
+
+    // 取込テストが追加する行（品番900・導入日2025-01-01）に影響されないよう、
+    // 導入管理のテストはシードの品番（100/200）に固定して検証する。
+    private const string SeedHinbans = "hinbans=100&hinbans=200";
+
+    [Fact]
+    public async Task Mart_Introductions_ReturnsProductsWithDonyu()
+    {
+        await RebuildMartAsync();
+        var client = CreateAuthedClient();
+
+        var page = await client.GetFromJsonAsync<MartIntroductionPage>(
+            $"/api/mart/introductions?{SeedHinbans}");
+
+        Assert.NotNull(page);
+        // 商品（業態×記号×品番）は (G1,S100,100) / (G1,S200,200) の2件。
+        Assert.Equal(2, page!.TotalCount);
+        Assert.Equal(2, page.Items.Count);
+        var p100 = page.Items.Single(i => i.ProductCode == "100");
+        var p200 = page.Items.Single(i => i.ProductCode == "200");
+        // シードの導入日は全行 20240101。
+        Assert.Equal(new DateOnly(2024, 1, 1), p100.DonyuDate);
+        Assert.Equal(new DateOnly(2024, 1, 1), p200.DonyuDate);
+        Assert.Equal(2, p100.SkuCount); // 単品 0001 / 0002
+        Assert.Equal(1, p200.SkuCount);
+        Assert.Equal(15, p100.SalesQuantity); // (7+2) + (6+0)
+        Assert.Equal(13, p200.SalesQuantity); // 3 + 10
+    }
+
+    [Fact]
+    public async Task Mart_Introductions_DonyuRangeFilter_Applies()
+    {
+        await RebuildMartAsync();
+        var client = CreateAuthedClient();
+
+        var inRange = await client.GetFromJsonAsync<MartIntroductionPage>(
+            $"/api/mart/introductions?{SeedHinbans}&donyuFrom=2024-01-01&donyuTo=2024-01-01");
+        var outOfRange = await client.GetFromJsonAsync<MartIntroductionPage>(
+            $"/api/mart/introductions?{SeedHinbans}&donyuFrom=2024-01-02");
+
+        Assert.NotNull(inRange);
+        Assert.NotNull(outOfRange);
+        Assert.Equal(2, inRange!.TotalCount);
+        Assert.Equal(0, outOfRange!.TotalCount);
+    }
+
+    [Fact]
+    public async Task Mart_Introductions_KeywordFilter_Applies()
+    {
+        await RebuildMartAsync();
+        var client = CreateAuthedClient();
+
+        // 品番 "100" に部分一致（品番・品名 "商品100"）。"200" 側は対象外。
+        var page = await client.GetFromJsonAsync<MartIntroductionPage>(
+            "/api/mart/introductions?keyword=100");
+
+        Assert.NotNull(page);
+        Assert.Equal(1, page!.TotalCount);
+        Assert.Equal("100", page.Items.Single().ProductCode);
+    }
+
+    [Fact]
+    public async Task Mart_Introductions_InvalidDonyuRange_ReturnsBadRequest()
+    {
+        await RebuildMartAsync();
+        var client = CreateAuthedClient();
+
+        var response = await client.GetAsync(
+            "/api/mart/introductions?donyuFrom=2024-02-01&donyuTo=2024-01-01");
+
+        Assert.Equal(HttpStatusCode.BadRequest, response.StatusCode);
+    }
+
+    [Fact]
+    public async Task Mart_IntroductionOptions_ReturnsHinbans()
+    {
+        await RebuildMartAsync();
+        var client = CreateAuthedClient();
+
+        var options = await client.GetFromJsonAsync<MartIntroductionOptions>(
+            "/api/mart/introduction-options");
+
+        Assert.NotNull(options);
+        Assert.Contains("100", options!.Hinbans);
+        Assert.Contains("200", options.Hinbans);
+    }
 }

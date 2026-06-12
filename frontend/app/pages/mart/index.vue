@@ -38,7 +38,7 @@ const dimensionOptions = [
   { value: 'department', label: '部門別' },
   { value: 'businessType', label: '業態別' },
   { value: 'season', label: '季節別' },
-  { value: 'product', label: '品番別' },
+  { value: 'product', label: '品番CD（服種）別' },
   { value: 'brand', label: 'ブランド別' },
 ]
 
@@ -271,7 +271,7 @@ onMounted(async () => {
 
         <LineChartCard
           v-if="trendLabels.length > 0"
-          title="週次売上推移（mart）"
+          title="週次売上推移グラフ"
           :labels="trendLabels"
           :series="trendSeries"
         />

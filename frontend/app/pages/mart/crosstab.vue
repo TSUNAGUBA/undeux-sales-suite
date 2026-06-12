@@ -43,6 +43,7 @@ const route = useRoute()
 // 候補から除外する。既存 /crosstab の DIMENSIONS から該当3軸を外したもの。
 // ---------------------------------------------------------------
 
+// 商品系の軸は「商品記号 → 単品 → 品番3桁」の並び順（要望対応）。
 const DIMENSIONS: CrosstabDimensionInfo[] = [
   { key: 'time:year', category: 'time', label: '年', isTimeAxis: true },
   { key: 'time:quarter', category: 'time', label: '四半期', isTimeAxis: true },
@@ -50,11 +51,11 @@ const DIMENSIONS: CrosstabDimensionInfo[] = [
   { key: 'category:department', category: 'category', label: '部門', isTimeAxis: false },
   { key: 'category:businessType', category: 'category', label: '業態', isTimeAxis: false },
   { key: 'category:season', category: 'category', label: '季節区分', isTimeAxis: false },
-  { key: 'category:hinban', category: 'category', label: '品番3桁', isTimeAxis: false },
+  { key: 'category:shohinKigo', category: 'category', label: '商品記号', isTimeAxis: false },
   { key: 'category:product', category: 'category', label: '単品（品番-単品）', isTimeAxis: false },
+  { key: 'category:hinban', category: 'category', label: '品番3桁', isTimeAxis: false },
   { key: 'category:color', category: 'category', label: 'カラー', isTimeAxis: false },
   { key: 'category:size', category: 'category', label: 'サイズ', isTimeAxis: false },
-  { key: 'category:shohinKigo', category: 'category', label: '商品記号', isTimeAxis: false },
 ]
 
 const DIMENSION_KEYS: ReadonlySet<CrosstabDimensionKey> = new Set(
@@ -81,6 +82,7 @@ function pickDimensionKey(raw: unknown): CrosstabDimensionKey | undefined {
     : undefined
 }
 
+// stock は店頭在庫（sales_weekly.zaikosu 由来の時点値）を表すため「店頭在庫」表記とする。
 const METRICS: CrosstabMetricInfo[] = [
   { key: 'amount', label: '売上金額', format: 'currency' },
   { key: 'quantity', label: '売上数量', format: 'number' },
@@ -88,7 +90,7 @@ const METRICS: CrosstabMetricInfo[] = [
   { key: 'sharePercent', label: '構成比率', format: 'percent' },
   { key: 'stockDays', label: '在日（平均）', format: 'decimal' },
   { key: 'sellThroughRate', label: '消化率', format: 'percent' },
-  { key: 'stock', label: '在庫数', format: 'number' },
+  { key: 'stock', label: '店頭在庫', format: 'number' },
   { key: 'tempAvg', label: '週平均気温', format: 'temperature' },
   { key: 'tempMax', label: '週最高気温', format: 'temperature' },
   { key: 'tempMin', label: '週最低気温', format: 'temperature' },
@@ -357,7 +359,7 @@ onMounted(async () => {
             <p>
               行 {{ data?.rowLabels.length ?? 0 }} ／ 列 {{ data?.columnLabels.length ?? 0 }}
               <span v-if="data?.latestWeek"> ／ 最新取込週: {{ data.latestWeek }}（在庫スナップショット基準）</span>
-              <span v-if="hasTimeAxis"> ／ 在日・消化率・在庫数は時間軸との組合せでは表示されません</span>
+              <span v-if="hasTimeAxis"> ／ 在日・消化率・店頭在庫は時間軸との組合せでは表示されません</span>
             </p>
             <p v-if="cellCountWarning" class="rounded bg-amber-50 px-2 py-1 text-xs text-amber-700">
               {{ cellCountWarning }}
