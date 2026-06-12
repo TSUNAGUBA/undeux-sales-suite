@@ -55,9 +55,13 @@ const totalColumns = computed(
   () => (isMetricRows.value ? 2 : 1) + colSpan.value * numColumnGroups.value,
 )
 
-// メトリクス行モードの左端固定2列（行ラベル / 集計値名）の幅。sticky の left オフセットと一致させる。
+// メトリクス行モードの左端固定2列（行ラベル / 集計値名）の幅。
+// 2列目の sticky left オフセットは1列目の幅を前提にするため、1列目は max-width まで
+// 指定して幅を固定し、収まらないラベルは truncate（title でフル表示）する。
 const ROW_LABEL_WIDTH = '10rem'
 const METRIC_LABEL_WIDTH = '7rem'
+const ROW_LABEL_FIXED_STYLE =
+  `width: ${ROW_LABEL_WIDTH}; min-width: ${ROW_LABEL_WIDTH}; max-width: ${ROW_LABEL_WIDTH}`
 
 /** セルの値（メトリクスごと）をフォーマットして返す。 */
 function formatMetric(value: number | null | undefined, info: CrosstabMetricInfo): string {
@@ -379,10 +383,11 @@ onBeforeUnmount(() => {
             <tr v-for="(m, mi) in metricInfos" :key="`mr-${rl}-${m.key}`">
               <th
                 v-if="mi === 0"
-                scope="row"
+                scope="rowgroup"
                 :rowspan="metricInfos.length"
-                class="sticky left-0 z-10 whitespace-nowrap bg-white px-3 py-2 text-left align-top font-semibold text-slate-700"
-                :style="`min-width: ${ROW_LABEL_WIDTH}; border-top: 1px solid #e2e8f0; border-right: 1px solid #e2e8f0`"
+                class="sticky left-0 z-10 truncate bg-white px-3 py-2 text-left align-top font-semibold text-slate-700"
+                :style="`${ROW_LABEL_FIXED_STYLE}; border-top: 1px solid #e2e8f0; border-right: 1px solid #e2e8f0`"
+                :title="rl"
               >
                 {{ rl }}
               </th>
@@ -415,10 +420,10 @@ onBeforeUnmount(() => {
             <tr v-for="(m, mi) in metricInfos" :key="`mr-total-${m.key}`">
               <th
                 v-if="mi === 0"
-                scope="row"
+                scope="rowgroup"
                 :rowspan="metricInfos.length"
-                class="sticky left-0 z-10 whitespace-nowrap bg-indigo-50 px-3 py-2 text-left align-top font-semibold text-indigo-700"
-                :style="`min-width: ${ROW_LABEL_WIDTH}; border-top: 1px solid #e2e8f0; border-right: 1px solid #e2e8f0`"
+                class="sticky left-0 z-10 truncate bg-indigo-50 px-3 py-2 text-left align-top font-semibold text-indigo-700"
+                :style="`${ROW_LABEL_FIXED_STYLE}; border-top: 1px solid #e2e8f0; border-right: 1px solid #e2e8f0`"
               >
                 {{ TOTAL_LABEL }}
               </th>

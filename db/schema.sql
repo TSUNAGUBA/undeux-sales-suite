@@ -563,7 +563,10 @@ BEGIN
            'サイズ', NULLIF(s.size, ''),
            sk.sales_price, sk.image_url,
            jsonb_strip_nulls(jsonb_build_object(
-               'donyu', CASE WHEN s.donyu_date ~ '^[0-9]{8}$' THEN s.donyu_date END))
+               -- '0'（未設定）のほか '00000000' も非日付のため除外する
+               -- （商品単位の導入日は MIN(donyu) で集計するため、最小に張り付く偽値を入れない）。
+               'donyu', CASE WHEN s.donyu_date ~ '^[0-9]{8}$' AND s.donyu_date <> '00000000'
+                             THEN s.donyu_date END))
     FROM (
         SELECT DISTINCT ON (gyotai_code, shohin_kigou, hinban_code, tanpin_code)
                gyotai_code, shohin_kigou, hinban_code, tanpin_code, color, size, donyu_date

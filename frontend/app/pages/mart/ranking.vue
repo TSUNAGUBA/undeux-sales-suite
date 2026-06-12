@@ -10,8 +10,8 @@
  * mart 固有の差分:
  * - フィルタスコープを 'mart-filter' に分離（既存 sales 系 'sales-filter' とは別系統）。
  * - mart 未構築時は MartNotBuiltNotice を表示し、データ取得を行わない。
- * - mart が保持しない軸（帳票区分・棚割1・棚割2）は集計軸の候補から除外する
- *   （API は未対応軸に HTTP 400 を返すため、UI 側で選ばせない）。
+ * - mart が集計軸として保持しない軸（帳票区分・棚割1・棚割2）は集計軸の候補から除外する
+ *   （API は未対応軸に HTTP 400 を返すため、UI 側で選ばせない。棚割1のフィルタは対応済み）。
  * - 共有の RankingConditionPanel は集計軸 select に RANKING_DIMENSIONS（全軸）を直接埋め込んでおり
  *   props で軸を制限できないため、本ページでは props で制限できる範囲のシンプルな自前コントロール
  *   （集計軸・並び替え・並び順・件数・期間比較の各 select／ボタン）を構築し、フィルタは共通の
@@ -53,8 +53,9 @@ const PARETO_MAX = 30
 // ---------------------------------------------------------------
 // 集計軸カタログ（mart がサポートする軸の部分集合）。
 //
-// mart は帳票区分（chohyoKubun）・棚割1/2（tanawari1/tanawari2）を保持しないため
-// 候補から除外する。RANKING_DIMENSIONS（utils/ranking が SoT）から該当3軸を外したもの。
+// mart は帳票区分（chohyoKubun）・棚割1/2（tanawari1/tanawari2）を集計軸としては
+// 保持しないため候補から除外する（棚割1のフィルタは対応済み）。
+// RANKING_DIMENSIONS（utils/ranking が SoT）から該当3軸を外したもの。
 // ---------------------------------------------------------------
 const EXCLUDED_DIMENSIONS: ReadonlySet<RankingDimensionKey> = new Set<RankingDimensionKey>([
   'chohyoKubun',

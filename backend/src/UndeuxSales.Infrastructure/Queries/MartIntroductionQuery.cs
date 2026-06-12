@@ -73,7 +73,11 @@ internal static class MartIntroductionFilterSql
         if (query.DonyuTo.HasValue) parameters.Add("donyuTo", query.DonyuTo.Value.ToString("yyyyMMdd"));
     }
 
-    public static string Conditions(MartIntroductionQuery query)
+    /// <summary>
+    /// 商品次元（dp）に対する条件のみを返す。集約（SKU・フロー）の<b>前</b>に商品集合を
+    /// 絞り込むための条件で、全表集約を避ける（導入日条件は集約後の <see cref="DonyuConditions"/>）。
+    /// </summary>
+    public static string ProductConditions(MartIntroductionQuery query)
     {
         var conditions = new List<string>();
 
@@ -93,17 +97,32 @@ internal static class MartIntroductionFilterSql
                 + "OR COALESCE(dp.manager, '') ILIKE @keywordPattern ESCAPE '\\')");
         }
 
-        // 導入日範囲。導入日未設定（NULL）の商品は範囲指定時に対象外となる（比較結果が NULL）。
-        if (query.DonyuFrom.HasValue) conditions.Add("sku.donyu >= @donyuFrom");
-        if (query.DonyuTo.HasValue) conditions.Add("sku.donyu <= @donyuTo");
-
         return string.Join(" AND ", conditions);
     }
 
-    /// <summary><c>WHERE ...</c> 句を返す（条件がなければ空文字）。</summary>
-    public static string WhereClause(MartIntroductionQuery query)
+    /// <summary>商品次元（dp）条件の <c>WHERE ...</c> 句（条件がなければ空文字）。</summary>
+    public static string ProductWhereClause(MartIntroductionQuery query)
     {
-        var conditions = Conditions(query);
+        var conditions = ProductConditions(query);
+        return conditions.Length == 0 ? string.Empty : "WHERE " + conditions;
+    }
+
+    /// <summary>
+    /// 導入日（SKU 集約後の <c>sku.donyu</c>）に対する条件のみを返す。
+    /// 導入日未設定（NULL）の商品は範囲指定時に対象外となる（比較結果が NULL）。
+    /// </summary>
+    public static string DonyuConditions(MartIntroductionQuery query)
+    {
+        var conditions = new List<string>();
+        if (query.DonyuFrom.HasValue) conditions.Add("sku.donyu >= @donyuFrom");
+        if (query.DonyuTo.HasValue) conditions.Add("sku.donyu <= @donyuTo");
+        return string.Join(" AND ", conditions);
+    }
+
+    /// <summary>導入日条件の <c>WHERE ...</c> 句（条件がなければ空文字）。</summary>
+    public static string DonyuWhereClause(MartIntroductionQuery query)
+    {
+        var conditions = DonyuConditions(query);
         return conditions.Length == 0 ? string.Empty : "WHERE " + conditions;
     }
 }
