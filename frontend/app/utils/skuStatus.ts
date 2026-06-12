@@ -22,6 +22,8 @@ import {
 import type {
   InventoryActionSeverity,
   InventoryActionTargetTab,
+  InventoryFlagStatus,
+  InventoryFlagType,
   InventoryStatus,
   RecommendedActionCode,
 } from '~/types/api'
@@ -116,6 +118,37 @@ export const ACTION_TARGET_LABELS: Record<InventoryActionTargetTab, string> = {
   stagnant: '滞留一覧を見る',
   dormant: '不動一覧を見る',
 }
+
+/** 在庫アクションフラグ種別の表示カタログ（コードの SoT はバックエンド InventoryFlagRules）。 */
+export const FLAG_TYPES: Record<InventoryFlagType, { label: string; className: string }> = {
+  'stop-order': {
+    label: '発注停止候補',
+    className: 'bg-rose-50 text-rose-700 ring-1 ring-rose-200',
+  },
+  'markdown': {
+    label: '値下げ候補',
+    className: 'bg-indigo-50 text-indigo-700 ring-1 ring-indigo-200',
+  },
+}
+
+/** フラグ種別の表示順。 */
+export const FLAG_TYPE_ORDER: InventoryFlagType[] = ['stop-order', 'markdown']
+
+/** フラグ対応状況の表示カタログ。 */
+export const FLAG_STATUSES: Record<InventoryFlagStatus, { label: string; className: string }> = {
+  'candidate': { label: '候補', className: 'bg-slate-100 text-slate-600' },
+  'in-progress': { label: '対応中', className: 'bg-amber-100 text-amber-700' },
+  'done': { label: '対応済', className: 'bg-emerald-100 text-emerald-700' },
+  'dismissed': { label: '見送り', className: 'bg-slate-200 text-slate-500' },
+}
+
+/** フラグ対応状況の表示順（セレクト・チップで共通）。 */
+export const FLAG_STATUS_ORDER: InventoryFlagStatus[] = [
+  'candidate',
+  'in-progress',
+  'done',
+  'dismissed',
+]
 
 /** 商品マスタ詳細ページの SKU バッジ種別（クライアント推計による分類）。 */
 export type SkuBadgeKind =

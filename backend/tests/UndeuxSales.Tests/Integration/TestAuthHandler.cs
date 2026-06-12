@@ -40,6 +40,10 @@ public sealed class TestAuthHandler : AuthenticationHandler<AuthenticationScheme
         {
             new(ClaimTypes.NameIdentifier, "test-user"),
             new(ClaimTypes.Email, "tester@example.com"),
+            // 本番（MapInboundClaims=false）の生クレーム名も併せて発行し、
+            // RequestIdentity の解決順（生名優先）を本番同等の経路で検証できるようにする。
+            new("sub", "test-user"),
+            new("email", "tester@example.com"),
         };
 
         if (token == AdminToken)
