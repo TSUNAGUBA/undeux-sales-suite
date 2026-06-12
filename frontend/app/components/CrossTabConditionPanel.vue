@@ -1,17 +1,17 @@
 <script setup lang="ts">
 /**
- * クロス集計（/crosstab）の条件設定パネル。
+ * クロス集計（/mart/crosstab）の条件設定パネル。
  *
  * - 折り畳み式のヘッダ。モバイル時はデフォルト閉、PC時はデフォルト開。
  * - 行/列ディメンション選択 + 行 ⇄ 列 入替ボタン
  * - 表示メトリクス選択（チェックボックス、availableMetrics 外は disabled）
  * - 表示モード切替（複数メトリクス時のみ表示: セル内縦並び / 列を増やして横並び / 行を増やして横並び）
- * - 一次フィルタ: 業態（タブ切り替え）・部門・年度・季節区分・棚割1・平均在庫日数（この並び順）
+ * - 一次フィルタ: 業態（タグ・複数選択）・部門・年度・季節区分・棚割1・平均在庫日数（この並び順）
  * - 「詳細」トグルで品番フィルタ（ドリル経由で増える項目）
  * - 適用ボタン・リセットボタン
  *
- * 既存の FilterControls.vue は他ページが利用しているため変更せず、
- * 共有 state（useFilters）のみ流用して UI を再構築している。
+ * FilterBar（FilterControls）を使う各分析ページと共有 state（useFilters）を共有しつつ、
+ * クロス集計向けに集計単位・表示集計値の設定を加えた専用パネルとして構成している。
  */
 
 import { ArrowLeftRight, ChevronDown, Filter, RotateCcw, Search, Thermometer } from 'lucide-vue-next'
@@ -25,9 +25,8 @@ import type {
 } from '~/types/api'
 
 // useFilters の共通ヘルパーから整形済みの選択肢を取得する。
-// useFilters は useState で共有状態を持つため、親（crosstab.vue）と
+// useFilters は useState で共有状態を持つため、親（mart/crosstab.vue）と
 // 同一の state を参照する（=SoT は1つ）。
-// FilterControls.vue は他ページで利用中のため変更せず、次イテレーションで集約予定。
 const {
   departmentChipOptions,
   businessTypeChipOptions,
@@ -167,22 +166,6 @@ function updateFilter<K extends keyof SalesFilterState>(
   emit('update:filterState', { ...props.filterState, [field]: value })
 }
 
-// 業態はタブ切り替え（単一選択）。state は他ページと互換の string[] を維持し、
-// タブ操作では [] （全て）または [code] のみを設定する。ドリルダウン等で複数業態が
-// 設定されている間はどのタブも非アクティブ（=全て表示）になるため、注意書きを出す。
-const activeBusinessTypeTab = computed(() =>
-  props.filterState.businessTypes.length === 1
-    ? props.filterState.businessTypes[0]!
-    : null,
-)
-const hasMultipleBusinessTypes = computed(
-  () => props.filterState.businessTypes.length > 1,
-)
-
-function onBusinessTypeTabChange(value: string | null): void {
-  updateFilter('businessTypes', value === null ? [] : [value])
-}
-
 // 部門・業態・季節区分の選択肢は useFilters の共通ヘルパーから取得する。
 const departmentOptions = departmentChipOptions
 const businessTypeOptions = businessTypeChipOptions
@@ -279,24 +262,21 @@ const summaryText = computed(() => {
             フィルター
           </h3>
 
-          <!-- 業態（タブ切り替え・単一選択） -->
+          <!-- 業態（タグ・複数選択） -->
           <details class="mb-2" open>
             <summary class="cursor-pointer text-sm text-slate-700">
               業態
               <span v-if="filterState.businessTypes.length > 0" class="ml-2 text-xs text-indigo-600">
-                ●{{ activeBusinessTypeTab ?? `${filterState.businessTypes.length}件` }}
+                ●{{ filterState.businessTypes.length }}
               </span>
             </summary>
             <div class="mt-2">
-              <TabSwitcher
+              <CrossTabMultiSelectChips
                 :options="businessTypeOptions"
-                :model-value="activeBusinessTypeTab"
-                aria-label="業態"
-                @update:model-value="onBusinessTypeTabChange"
+                :model-value="filterState.businessTypes"
+                empty-label="業態候補がありません"
+                @update:model-value="(v: string[]) => updateFilter('businessTypes', v)"
               />
-              <p v-if="hasMultipleBusinessTypes" class="mt-1 text-xs text-amber-600">
-                複数の業態が選択されています（ドリルダウン由来）。タブを選ぶと単一選択に上書きされます。
-              </p>
             </div>
           </details>
 

@@ -3,7 +3,7 @@ import { Search, RotateCcw } from 'lucide-vue-next'
 
 const props = withDefaults(
   defineProps<{
-    /** useFilters のスコープキー。既定は全社共通の 'sales-filter'。 */
+    /** useFilters のスコープキー。利用側（/mart 配下）は 'mart-filter' を渡す。 */
     scopeKey?: string
   }>(),
   { scopeKey: 'sales-filter' },

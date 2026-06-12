@@ -633,6 +633,23 @@ public sealed class ApiIntegrationTests
     }
 
     [Fact]
+    public async Task Summary_ShohinKigoFilter_Applies()
+    {
+        var client = CreateAuthedClient();
+
+        // 商品記号 S100 = 品番100（数量15）。mart 系と同一契約の sales 系パリティを回帰で固定する。
+        var s100 = await client.GetFromJsonAsync<SummaryResponse>(
+            "/api/summary?from=2026-05-04&to=2026-05-11&shohinKigos=S100");
+        var none = await client.GetFromJsonAsync<SummaryResponse>(
+            "/api/summary?from=2026-05-04&to=2026-05-11&shohinKigos=S999");
+
+        Assert.NotNull(s100);
+        Assert.NotNull(none);
+        Assert.Equal(15, s100!.Kpi.Quantity);
+        Assert.Equal(0, none!.Kpi.Quantity);
+    }
+
+    [Fact]
     public async Task Crosstab_Temperature_AvailableWithTimeAxisAndArea()
     {
         var client = CreateAuthedClient();

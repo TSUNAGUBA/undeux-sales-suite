@@ -9,7 +9,7 @@ namespace UndeuxSales.Infrastructure.Queries;
 /// </summary>
 public sealed class MartIntroductionQuery
 {
-    /// <summary>業態コード（いずれかに一致）。タブUIからは単一値が渡る。</summary>
+    /// <summary>業態コード（いずれかに一致）。タグUI（複数選択）から複数値が渡る。</summary>
     public string[]? BusinessTypes { get; set; }
 
     /// <summary>部門コード（いずれかに一致）。</summary>

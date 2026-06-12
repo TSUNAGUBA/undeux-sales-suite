@@ -16,8 +16,10 @@ function emptyFilter(): SalesFilterState {
  * 売上分析の共通フィルタ状態と選択肢を提供するコンポーザブル。
  *
  * @param scopeKey フィルタ状態を分離するキー。同じキーを指定したページ間で状態が共有される。
- *                 既定 'sales-filter' は /sales /products /inventory /crosstab で共有される
- *                 全社共通フィルタ。商品軸分析など別軸の画面では独自のキーを渡して分離する。
+ *                 分析ページ（/mart 配下）は 'mart-filter' を共有する。別軸の画面では
+ *                 独自のキーを渡して分離する。既定 'sales-filter' のフィルタ state は
+ *                 旧ページ廃止に伴い現在未使用（スコープ非依存の選択肢ヘルパーのみを
+ *                 既定スコープ経由で使う呼び出しはある。filter を使う場合は明示スコープを渡すこと）。
  */
 export function useFilters(scopeKey: string = 'sales-filter') {
   const filter = useState<SalesFilterState>(scopeKey, emptyFilter)
@@ -111,9 +113,9 @@ export function useFilters(scopeKey: string = 'sales-filter') {
   // ============================================================
   // セレクトオプション組立ヘルパー（FilterControls / CrossTabConditionPanel の重複削減）
   //
-  // FilterControls.vue は `{ value, text }` 形式（MultiSelect コンポーネント用）、
-  // CrossTabConditionPanel.vue は `{ value, label }` 形式を使うため、
-  // ここでは生形（code + 表示名）のみを提供する。ラベル整形は呼び出し側で行う。
+  // MultiSelect コンポーネントは `{ value, text }` 形式、チップ（CrossTabMultiSelectChips）は
+  // `{ value, label }` 形式を使う。本コンポーザブルはチップ用の `{ value, label }` を提供し、
+  // MultiSelect 用の整形は利用側（FilterControls 等）で行う。
   //
   // **重要**: 既存の export を変更しないこと（他ページの FilterControls が依存）。
   // 新規追加のみで対応する。
