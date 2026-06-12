@@ -175,7 +175,12 @@ async function loadList(tab: ListTabKey): Promise<void> {
     if (seq !== listRequestSeq[tab]) return
     state.response = page
     state.loaded = true
-    lastStatusCounts.value = page.statusCounts
+    // 検索適用中の在庫一覧タブの statusCounts は検索スコープの件数になるため、
+    // タブバッジの単一参照元には反映しない（検索なしのキャッシュ済みタブと
+    // バッジが矛盾したまま持続するのを防ぐ）。latestWeek は検索非依存のため常に更新する。
+    if (tab !== 'items' || !appliedSearch.value) {
+      lastStatusCounts.value = page.statusCounts
+    }
     lastLatestWeek.value = page.latestWeek
   } catch (error) {
     if (seq !== listRequestSeq[tab]) return
@@ -202,12 +207,21 @@ async function ensureTabLoaded(tab: TabKey): Promise<void> {
  * フィルタ適用時: 全タブのキャッシュを無効化し、表示中タブだけ再取得する。
  * バッジ・最新週の単一参照元（lastStatusCounts 等）も破棄し、旧フィルタの件数が
  * 新フィルタの明細と同一画面に混在しないようにする。
+ *
+ * in-flight の旧フィルタ応答が後着で採用されないよう、リクエスト世代も必ず進める。
+ * 世代を進めると旧リクエストの finally は loading を解除しなくなるため、loading の
+ * 明示リセットを必ずセットで行う（行わないと ensureTabLoaded の loading ガードで
+ * 再取得が永久スキップされ、スピナーが固着する）。
  */
 async function handleFilterApply(): Promise<void> {
+  actionsRequestSeq += 1
+  actionsLoading.value = false
   actionsLoaded.value = false
   lastStatusCounts.value = null
   lastLatestWeek.value = null
   for (const key of ['items', 'stagnant', 'dormant'] as const) {
+    listRequestSeq[key] += 1
+    listStates[key].loading = false
     listStates[key].loaded = false
     listStates[key].page = 1
   }
