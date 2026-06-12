@@ -279,6 +279,7 @@ async function handleFilterApply(): Promise<void> {
   lastStatusCounts.value = null
   lastLatestWeek.value = null
   clearSelection()
+  flagMutationError.value = null
   for (const key of LIST_TAB_KEYS) {
     listRequestSeq[key] += 1
     listStates[key].loading = false
@@ -290,7 +291,9 @@ async function handleFilterApply(): Promise<void> {
 
 watch(activeTab, (tab) => {
   // タブをまたいだ選択の持ち越しは誤登録のもとになるため解除する。
+  // 失敗バナーも文脈が変わるためタブ切替で閉じる。
   clearSelection()
+  flagMutationError.value = null
   void ensureTabLoaded(tab)
 })
 
@@ -388,7 +391,9 @@ function clearSelection(): void {
     selectedKeys.value = new Set()
   }
   bulkError.value = null
-  flagMutationError.value = null
+  // flagMutationError はここでクリアしない。失敗時のフローは「バナー表示 → 自動リフレッシュ
+  // （成功）→ loadList 成功 → clearSelection」と続くため、ここで消すとバナーが一瞬で
+  // 消えて読めなくなる。クリアは「次の操作開始時・✕ボタン・タブ切替・フィルタ適用」に限定する。
 }
 
 function isSelected(row: InventoryItemRow): boolean {
