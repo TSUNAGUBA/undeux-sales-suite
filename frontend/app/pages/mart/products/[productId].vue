@@ -112,14 +112,16 @@ const priceLabel = computed(() => {
 
 const year = ref<number | null>(null)
 
-/** 商品の自然キー + 期間を mart API のクエリへ変換する。 */
-function martQuery(): Record<string, unknown> {
-  const summary = detail.value?.summary
-  const query: Record<string, unknown> = {}
-  if (summary) {
-    query.businessTypes = [summary.businessCategoryCd]
-    query.shohinKigos = [summary.productSign]
-    query.hinbans = [summary.productTypeCrd]
+/**
+ * 商品の自然キー + 期間を mart API のクエリへ変換する。
+ * 呼び出し側は detail 取得済みであること（マスタ未取得のまま商品スコープなしの
+ * 全社集計へ静かに縮退しないよう、summary を必須引数で受ける）。
+ */
+function martQueryOf(summary: import('~/types/api').MasterProductSummary): Record<string, unknown> {
+  const query: Record<string, unknown> = {
+    businessTypes: [summary.businessCategoryCd],
+    shohinKigos: [summary.productSign],
+    hinbans: [summary.productTypeCrd],
   }
   if (year.value !== null) {
     query.from = `${year.value}-01-01`
@@ -152,7 +154,9 @@ const analyticsError = ref<string | null>(null)
 let analyticsRequestSeq = 0
 
 async function loadAnalytics(): Promise<void> {
-  if (!detail.value) return
+  // await を跨いでも商品スコープが変わらないよう、呼出時点の summary を捕捉する。
+  const summary = detail.value?.summary
+  if (!summary) return
   const seq = ++analyticsRequestSeq
   analyticsLoading.value = true
   analyticsError.value = null
@@ -165,7 +169,7 @@ async function loadAnalytics(): Promise<void> {
       skuPerformance.value = null
       return
     }
-    const query = martQuery()
+    const query = martQueryOf(summary)
     const [summaryResult, weeklyResult, skuResult] = await Promise.all([
       get<import('~/types/api').MartSummaryResponse>('/api/mart/summary', query),
       get<WeeklySeriesResponse>('/api/mart/weekly-series', { ...query, area: area.value }),
@@ -188,6 +192,28 @@ async function loadAnalytics(): Promise<void> {
   } finally {
     if (seq === analyticsRequestSeq) {
       analyticsLoading.value = false
+    }
+  }
+}
+
+/**
+ * 週次系列のみ再取得する（エリア変更用。サマリー・SKU実績の再取得とローディング表示を避ける）。
+ * 世代は analyticsRequestSeq を共有し、期間変更等の全体再取得が走った場合はそちらを優先する。
+ */
+async function loadWeeklyOnly(): Promise<void> {
+  const summary = detail.value?.summary
+  if (!summary || !isBuilt.value) return
+  const seq = ++analyticsRequestSeq
+  try {
+    const result = await get<WeeklySeriesResponse>('/api/mart/weekly-series', {
+      ...martQueryOf(summary),
+      area: area.value,
+    })
+    if (seq !== analyticsRequestSeq) return
+    weekly.value = result
+  } catch (error) {
+    if (seq === analyticsRequestSeq) {
+      analyticsError.value = apiErrorMessage(error)
     }
   }
 }
@@ -433,7 +459,8 @@ const crosstabError = ref<string | null>(null)
 let crosstabRequestSeq = 0
 
 async function loadCrosstab(): Promise<void> {
-  if (!detail.value || !isBuilt.value) {
+  const summary = detail.value?.summary
+  if (!summary || !isBuilt.value) {
     crosstab.value = null
     return
   }
@@ -442,7 +469,7 @@ async function loadCrosstab(): Promise<void> {
   crosstabError.value = null
   try {
     const result = await get<CrosstabMatrixResponse>('/api/mart/crosstab', {
-      ...martQuery(),
+      ...martQueryOf(summary),
       rowDimension: rowDimensionKey.value,
       columnDimension: columnDimensionKey.value,
     })
@@ -465,11 +492,17 @@ async function loadCrosstab(): Promise<void> {
 
 const initialized = ref(false)
 
-// 期間（年度）は全 mart 集計に効く。エリアは週次系列のみだが纏めて再取得する（リクエスト数は同じ）。
-watch([year, area], () => {
+// 期間（年度）は全 mart 集計（サマリー・週次・SKU実績・クロス集計）に効く。
+watch(year, () => {
   if (!initialized.value) return
   void loadAnalytics()
   void loadCrosstab()
+})
+
+// エリアは週次系列の気温にのみ効くため、週次系列だけを再取得する。
+watch(area, () => {
+  if (!initialized.value) return
+  void loadWeeklyOnly()
 })
 
 // 行・列の変更はクロス集計のみ再取得。同一になった場合は colChoices/rowChoices で防いでいる。
@@ -486,12 +519,26 @@ function goBack(): void {
   }
 }
 
-onMounted(async () => {
-  await loadOptions()
+/** マスタ取得から mart 集計まで全体を読み直す（初期表示・productId 変更時）。 */
+async function reloadAll(): Promise<void> {
   await loadMaster()
   if (detail.value) {
+    // loadCrosstab は同期的に isBuilt を判定するため、mart ページを経由しない直接アクセスでも
+    // クロス集計が無言で空にならないよう、構築状態を先に取得してから並行ロードする
+    // （refreshStatus は冪等。失敗時は loadAnalytics 側の catch でエラー表示される）。
+    await refreshStatus().catch(() => undefined)
     await Promise.all([loadAnalytics(), loadCrosstab()])
   }
+}
+
+// 同一ルートの再利用（別商品の詳細への遷移）でも表示を読み直す（商品マスタ詳細と同パターン）。
+watch(productId, () => {
+  void reloadAll()
+})
+
+onMounted(async () => {
+  await loadOptions()
+  await reloadAll()
   initialized.value = true
 })
 </script>
@@ -628,10 +675,11 @@ onMounted(async () => {
           <p v-else-if="!sharedOptions" class="text-xs text-slate-400">期間の選択肢を読み込み中...</p>
         </div>
 
-        <MartNotBuiltNotice v-if="!isBuilt" />
-
-        <StatusBlock v-else :loading="analyticsLoading" :error="analyticsError">
-          <div class="space-y-4">
+        <!-- StatusBlock を外側にし、エラーが「未構築」表示にマスクされないようにする
+             （mart 各ページと同じ入れ子。loading 中も未構築通知のフラッシュを防ぐ）。 -->
+        <StatusBlock :loading="analyticsLoading" :error="analyticsError">
+          <MartNotBuiltNotice v-if="!isBuilt" />
+          <div v-else class="space-y-4">
             <!-- サマリー -->
             <section>
               <h2 class="mb-2 text-sm font-semibold text-slate-700">サマリー</h2>
@@ -653,6 +701,9 @@ onMounted(async () => {
             <!-- SKU情報 -->
             <section>
               <h2 class="mb-2 text-sm font-semibold text-slate-700">SKU情報</h2>
+              <p class="mb-2 text-xs text-slate-400">
+                行は商品マスタ登録のSKU。マスタ未登録SKUの実績はサマリー・週次グラフには含まれますが本表には現れません。
+              </p>
               <DataTable
                 :columns="skuColumns"
                 :rows="skuRows"

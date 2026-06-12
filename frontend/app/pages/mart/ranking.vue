@@ -60,7 +60,7 @@ const EXCLUDED_DIMENSIONS: ReadonlySet<RankingDimensionKey> = new Set<RankingDim
 ])
 const MART_DIMENSIONS = RANKING_DIMENSIONS.filter((d) => !EXCLUDED_DIMENSIONS.has(d.key))
 
-// 複合スコアの既定重み（/ranking と同一。本ページは重み調整 UI を持たないため固定）。
+// 複合スコアの既定重み（本ページは重み調整 UI を持たないため固定）。
 function defaultWeights(): CompositeWeight[] {
   return [
     { key: 'amount', weight: 50 },
@@ -189,7 +189,7 @@ const comparisonYearChoices = computed(() =>
 
 // ---------------------------------------------------------------
 // 算出パイプライン（順位・複合スコア・ABC・順位変動・成長率）
-// /ranking と同一ロジック。utils/ranking の純粋関数を使う。
+// 表示射影は utils/ranking に集約。utils/ranking の純粋関数を使う。
 // ---------------------------------------------------------------
 
 /** 並び替え方向（指標の良い向き ⊕ 上位/下位）。 */

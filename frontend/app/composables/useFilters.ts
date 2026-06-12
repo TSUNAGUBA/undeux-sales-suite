@@ -16,8 +16,8 @@ function emptyFilter(): SalesFilterState {
  * 売上分析の共通フィルタ状態と選択肢を提供するコンポーザブル。
  *
  * @param scopeKey フィルタ状態を分離するキー。同じキーを指定したページ間で状態が共有される。
- *                 既定 'sales-filter' は /sales /products /inventory /crosstab で共有される
- *                 全社共通フィルタ。商品軸分析など別軸の画面では独自のキーを渡して分離する。
+ *                 分析ページ（/mart 配下）は 'mart-filter' を共有する。別軸の画面では
+ *                 独自のキーを渡して分離する（既定 'sales-filter' は旧ページ廃止に伴い現在未使用）。
  */
 export function useFilters(scopeKey: string = 'sales-filter') {
   const filter = useState<SalesFilterState>(scopeKey, emptyFilter)
