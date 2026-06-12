@@ -27,9 +27,10 @@ echo "==> ビルド前クリーンアップ（ビルドキャッシュ・未使�
 # 世代数に依らず有界になることを優先する。
 # 補助処理のため失敗してもデプロイは継続する（|| true）。
 # 注意: --volumes は付けないこと（永続データの保護。DB は RDS だが防御として維持）。
+echo "    ディスク使用状況（クリーンアップ前）: $(df -h / | tail -1)"
 docker builder prune -af || true
 docker image prune -f || true
-echo "    ディスク使用状況: $(df -h / | tail -1)"
+echo "    ディスク使用状況（クリーンアップ後）: $(df -h / | tail -1)"
 
 echo "==> イメージをビルド"
 "${compose[@]}" build
@@ -41,8 +42,9 @@ echo "==> API を起動（EC2 上の nginx-proxy 経由で公開。API が正常
 "${compose[@]}" up -d --wait --wait-timeout 180 --remove-orphans api
 
 echo "==> 不要になったイメージを削除"
-# 旧世代のイメージは新イメージ起動後に dangling になるため、ここでも掃除する
-# （ビルド前クリーンアップと両輪。こちらは成功時のみ実行される）。
-docker image prune -f
+# 旧世代のイメージは build でタグが移って dangling になるため、起動成功後にも掃除する
+# （ビルド前クリーンアップと両輪）。補助処理のため失敗してもデプロイ成功を覆さない
+# （|| true がないと set -e で非零終了し、deploy-all がフロント配信を偽陽性で中止する）。
+docker image prune -f || true
 
 echo "==> デプロイ完了"

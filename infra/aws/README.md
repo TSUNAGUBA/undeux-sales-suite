@@ -57,7 +57,7 @@ cd ~/undeux-sales-suite/infra/aws
 
 - **ヘルスチェック:** `GET /api/health`（稼働確認）、`GET /api/health/ready`（DB接続込み）。
 - **メトリクス:** CloudWatch で以下を収集し、しきい値アラート（SNS 通知）を設定することを推奨する。
-  - EC2: CPU 使用率・メモリ・ステータスチェック
+  - EC2: CPU 使用率・メモリ・ステータスチェック・**ディスク使用率**（ビルドキャッシュ/ログ蓄積によるディスク枯渇はデプロイ失敗に直結するため）
   - RDS: CPU・接続数・空きストレージ
 - **ログ:** API は標準出力に構造化ログを出力する。CloudWatch Logs エージェントで
   集約し、エラーコード（`UNDX-xxx-nnn`）や `fail` レベルで検索・アラートする。
