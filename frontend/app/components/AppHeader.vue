@@ -73,10 +73,14 @@ async function handleLogout(): Promise<void> {
       </ol>
     </nav>
 
-    <div class="ml-auto flex min-w-0 shrink-0 items-center gap-2">
+    <!--
+      右ブロックは shrink-0 にしない（モバイルでエラー文言が出てもヘッダーを
+      横溢れさせず、文言側を truncate で縮めて再試行ボタンの操作性を常に保つ）。
+    -->
+    <div class="ml-auto flex min-w-0 items-center gap-2">
       <span
         v-if="logoutFailed"
-        class="max-w-40 truncate text-xs text-rose-600 sm:max-w-none"
+        class="min-w-0 truncate text-xs text-rose-600"
         role="alert"
         title="ログアウトに失敗しました。通信環境を確認して再試行してください。"
       >
@@ -91,7 +95,7 @@ async function handleLogout(): Promise<void> {
       </span>
       <button
         type="button"
-        class="flex h-11 items-center gap-1.5 rounded-lg px-2.5 text-sm font-medium text-slate-500 transition-colors hover:bg-slate-100 hover:text-slate-800 disabled:cursor-not-allowed disabled:opacity-50"
+        class="flex h-11 shrink-0 items-center gap-1.5 rounded-lg px-2.5 text-sm font-medium text-slate-500 transition-colors hover:bg-slate-100 hover:text-slate-800 disabled:cursor-not-allowed disabled:opacity-50"
         :disabled="loggingOut"
         aria-label="ログアウト"
         title="ログアウト"
