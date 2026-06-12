@@ -22,3 +22,12 @@ body {
 ::-webkit-scrollbar-thumb {
   @apply rounded-full bg-slate-300;
 }
+
+/* タブバー等の横スクロール領域でスクロールバーを非表示にする（スクロール自体は可能） */
+@utility scrollbar-hide {
+  scrollbar-width: none;
+  -ms-overflow-style: none;
+  &::-webkit-scrollbar {
+    display: none;
+  }
+}

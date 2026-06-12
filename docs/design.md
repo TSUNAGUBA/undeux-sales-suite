@@ -11,7 +11,8 @@
 
 > **画面構成の現状（スタースキーマ適用後）:** プロトタイプ段階で生成した分析画面
 > （旧 `/sales` `/products` `/inventory` `/crosstab` `/ranking` `/scatter` `/simulation` `/product-analytics`）は
-> **廃止済み**で、分析画面の正は `/mart` 配下（docs/star-schema-design.md §14）。`/` は `/mart` へリダイレクトする。
+> **廃止済み**で、分析画面の正は `/mart` 配下（docs/star-schema-design.md §14）。`/` はホーム（目的別メニュー。
+> メニュー定義の SoT: `frontend/app/utils/navigation.ts`）で、目的カテゴリ→配下ページのタブで遷移する。
 > 本書に記載の sales 系 API（`/api/summary` ほか）は mart の構築元（SoT）・商品マスタ詳細・
 > 商品詳細分析の素材として引き続き稼働している。画面に関する記述は経緯資料として残す。
 

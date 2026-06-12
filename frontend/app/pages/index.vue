@@ -1,12 +1,28 @@
 <script setup lang="ts">
 /**
- * ルート（/）はスタースキーマ適用後の全社サマリー（/mart）へリダイレクトする。
- * プロトタイプ段階の旧・全社サマリーは廃止済み（分析ページの正は /mart 配下）。
- * ブックマーク・外部リンクからの旧 URL 流入を新トップへ誘導するためルート自体は残す。
+ * ホーム（目的別メニュー）。rakuten-ec-suite のポータル型ナビゲーションに倣い、
+ * 目的（カテゴリ）を選んでドリルダウンし、配下ページへタブで移動する構成の入口。
+ * 旧仕様の `/` → `/mart` リダイレクトは本ページに置き換えた（全社サマリーへは
+ * 業績モニタリングカードの先頭タブとして到達できる）。
  */
-definePageMeta({ redirect: '/mart' })
+useHead({ title: 'ホーム | UndeuxSales' })
 </script>
 
 <template>
-  <div />
+  <div class="mx-auto w-full max-w-5xl">
+    <div class="mb-6">
+      <h1 class="text-xl font-bold text-slate-800">ホーム</h1>
+      <p class="mt-1 text-sm text-slate-500">
+        目的を選んでください。選んだ先では、関連するページだけがタブで並びます。
+      </p>
+    </div>
+
+    <div class="grid grid-cols-1 gap-4 sm:grid-cols-2">
+      <HomeCategoryCard
+        v-for="category in NAV_CATEGORIES"
+        :key="category.id"
+        :category="category"
+      />
+    </div>
+  </div>
 </template>
