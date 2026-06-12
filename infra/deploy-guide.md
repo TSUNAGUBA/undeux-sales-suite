@@ -11,11 +11,15 @@ GitHub Actions で自動デプロイするための、初回セットアップ�
 
 ```mermaid
 graph LR
-    Dev[開発者] -->|gh workflow run| GHA[GitHub Actions]
-    GHA -->|deploy-frontend| FH[Firebase Hosting]
-    GHA -->|deploy-backend / SSH| EC2[AWS EC2 Ubuntu]
+    Dev[開発者] -->|gh workflow run| ALL[deploy-all 一括デプロイ]
+    ALL -->|1. 呼び出し| BE[deploy-backend]
+    ALL -->|2. backend 成功後| FE[deploy-frontend]
+    Dev -. 個別実行も可 .-> BE
+    Dev -. 個別実行も可 .-> FE
+    FE --> FH[Firebase Hosting]
+    BE -->|SSH| EC2[AWS EC2 Ubuntu]
     EC2 --> RDS[(AWS RDS PostgreSQL)]
-    GHA -. 設定値 .-> SEC[Repository Secrets]
+    ALL -. 設定値 .-> SEC[Repository Secrets]
 ```
 
 ## 事前に用意するもの
