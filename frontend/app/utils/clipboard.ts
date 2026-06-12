@@ -39,6 +39,11 @@ function fallbackCopy(html: string): boolean {
  * HTML（text/html）とプレーンテキスト（text/plain）の両形式でクリップボードへコピーする。
  * Clipboard API が使えない場合（権限・非対応・非セキュアコンテキスト）は execCommand へ
  * フォールバックする。戻り値は成否（呼び出し側がフィードバック表示を行う）。
+ *
+ * **契約: `html` はエスケープ済み（または信頼済み DOM 由来）であること。**
+ * フォールバック経路で一時要素の innerHTML に挿入されるため、生の外部データを
+ * 渡すと自己 XSS の温床になる。ユーザーデータを含める場合は呼び出し側で
+ * 必ず HTML エスケープしてから渡すこと。
  */
 export async function copyHtmlToClipboard(html: string, text: string): Promise<boolean> {
   let ok = false

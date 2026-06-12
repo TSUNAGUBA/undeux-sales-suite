@@ -164,13 +164,19 @@ const tableColumns = [
 // 取得失敗・遅延がサマリー本体の表示をブロックしないよう load() からは待たずに起動する。
 const inventoryActions = ref<InventoryActionsResponse | null>(null)
 const inventoryActionsFailed = ref(false)
+// フィルタ連打で旧フィルタの応答が後着してもダイジェストを上書きしないためのリクエスト世代。
+let inventoryDigestRequestSeq = 0
 
 async function loadInventoryDigest(): Promise<void> {
+  const seq = ++inventoryDigestRequestSeq
   inventoryActionsFailed.value = false
   try {
-    inventoryActions.value = await get<InventoryActionsResponse>(
+    const response = await get<InventoryActionsResponse>(
       '/api/mart/inventory/actions', toQuery())
+    if (seq !== inventoryDigestRequestSeq) return
+    inventoryActions.value = response
   } catch (error) {
+    if (seq !== inventoryDigestRequestSeq) return
     console.error('[mart] 在庫アクションダイジェストの取得に失敗しました:', error)
     inventoryActions.value = null
     inventoryActionsFailed.value = true
