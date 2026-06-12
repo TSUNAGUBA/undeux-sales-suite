@@ -160,13 +160,18 @@ const analyticsLoading = ref(true)
 const analyticsError = ref<string | null>(null)
 
 // 期間・エリア切替の連打で古い応答が後着しても表示を上書きしないためのリクエスト世代。
+// analyticsRequestSeq は全体ロード、weeklyRequestSeq は週次のみ取得（loadWeeklyOnly）用。
+// 分離する理由は loadWeeklyOnly の doc コメントを参照。
 let analyticsRequestSeq = 0
+let weeklyRequestSeq = 0
 
 async function loadAnalytics(): Promise<void> {
   // await を跨いでも商品スコープが変わらないよう、呼出時点の summary を捕捉する。
   const summary = detail.value?.summary
   if (!summary) return
   const seq = ++analyticsRequestSeq
+  // 全体ロードは週次系列も取得するため、in-flight の週次のみ取得（loadWeeklyOnly）を無効化する。
+  ++weeklyRequestSeq
   analyticsLoading.value = true
   analyticsError.value = null
   try {
@@ -207,21 +212,27 @@ async function loadAnalytics(): Promise<void> {
 
 /**
  * 週次系列のみ再取得する（エリア変更用。サマリー・SKU実績の再取得とローディング表示を避ける）。
- * 世代は analyticsRequestSeq を共有し、期間変更等の全体再取得が走った場合はそちらを優先する。
+ *
+ * 世代は analyticsRequestSeq と「分離」する: 共有すると、全体ロードの実行中に本関数が
+ * 世代を進めた場合、全体ロード側の finally が自分の世代でなくなり analyticsLoading が
+ * 解除されない（スピナー固着）。現状の UI ではエリア選択は analytics ロード中は非描画で
+ * 到達しないが、セレクト配置の変更で顕在化し得るため構造的に防ぐ。
+ * 逆方向（本関数の実行中に全体ロードが開始）は、全体ロード開始時に weeklyRequestSeq も
+ * 進めて本関数の古い応答を破棄し、全体ロード側の週次結果（最新条件）を正とする。
  */
 async function loadWeeklyOnly(): Promise<void> {
   const summary = detail.value?.summary
   if (!summary || !isBuilt.value) return
-  const seq = ++analyticsRequestSeq
+  const seq = ++weeklyRequestSeq
   try {
     const result = await get<WeeklySeriesResponse>('/api/mart/weekly-series', {
       ...martQueryOf(summary),
       area: area.value,
     })
-    if (seq !== analyticsRequestSeq) return
+    if (seq !== weeklyRequestSeq) return
     weekly.value = result
   } catch (error) {
-    if (seq === analyticsRequestSeq) {
+    if (seq === weeklyRequestSeq) {
       analyticsError.value = apiErrorMessage(error)
     }
   }
