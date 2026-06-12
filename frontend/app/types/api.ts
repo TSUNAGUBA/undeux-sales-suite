@@ -12,6 +12,8 @@ export interface KpiCardItem {
   value: string
   icon: Component
   accentClass: string
+  /** 補足行（前週差・注記等）。KpiCard の sub プロップに対応する。 */
+  sub?: string
 }
 
 export interface CodeName {

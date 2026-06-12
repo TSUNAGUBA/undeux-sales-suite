@@ -18,6 +18,8 @@ import type {
   InventoryItemRow,
   InventoryItemsPage,
   InventoryStatus,
+  InventoryStatusCounts,
+  KpiCardItem,
 } from '~/types/api'
 
 /**
@@ -71,9 +73,17 @@ function setTab(tab: TabKey): void {
   void router.replace({ query })
 }
 
-// ---- mart 構築ガード ----
+// ---- mart 構築ガード・ページ初期化エラー ----
 
 const martChecked = ref(false)
+const pageError = ref<string | null>(null)
+
+// ---- タブバッジ・最新週の単一参照元 ----
+// 「最後に成功したロード」の値だけを参照する（複数レスポンスのフォールバック連鎖にすると、
+// フィルタ適用後に旧フィルタの件数が混ざる陳腐化が起きるため。フィルタ適用時に破棄する）。
+
+const lastStatusCounts = ref<InventoryStatusCounts | null>(null)
+const lastLatestWeek = ref<string | null>(null)
 
 // ---- ダッシュボード（/api/mart/inventory/actions） ----
 
@@ -81,18 +91,29 @@ const actions = ref<InventoryActionsResponse | null>(null)
 const actionsLoading = ref(false)
 const actionsError = ref<string | null>(null)
 const actionsLoaded = ref(false)
+// 連打・高速切替で古い応答が後着しても表示を上書きしないためのリクエスト世代
+// （products/[productId].vue・introductions.vue で確立済みのパターン）。
+let actionsRequestSeq = 0
 
 async function loadActions(): Promise<void> {
+  const seq = ++actionsRequestSeq
   actionsLoading.value = true
   actionsError.value = null
   try {
-    actions.value = await get<InventoryActionsResponse>('/api/mart/inventory/actions', toQuery())
+    const response = await get<InventoryActionsResponse>('/api/mart/inventory/actions', toQuery())
+    if (seq !== actionsRequestSeq) return
+    actions.value = response
     actionsLoaded.value = true
+    lastStatusCounts.value = response.statusCounts
+    lastLatestWeek.value = response.latestWeek
   } catch (error) {
+    if (seq !== actionsRequestSeq) return
     console.error('[inventory] 在庫アクションサマリーの取得に失敗しました:', error)
     actionsError.value = apiErrorMessage(error)
   } finally {
-    actionsLoading.value = false
+    if (seq === actionsRequestSeq) {
+      actionsLoading.value = false
+    }
   }
 }
 
@@ -117,6 +138,9 @@ const listStates = reactive<Record<ListTabKey, ListState>>({
   stagnant: emptyListState(),
   dormant: emptyListState(),
 })
+
+// タブ別のリクエスト世代（後着応答の破棄用。リアクティブ不要のため素のオブジェクト）。
+const listRequestSeq: Record<ListTabKey, number> = { items: 0, stagnant: 0, dormant: 0 }
 
 /** 在庫一覧タブの状態チップ絞込（null = すべて）。滞留・不動タブは固定絞込のため対象外。 */
 const itemsStatusFilter = ref<InventoryStatus | null>(null)
@@ -143,16 +167,24 @@ function listQuery(tab: ListTabKey): Record<string, unknown> {
 
 async function loadList(tab: ListTabKey): Promise<void> {
   const state = listStates[tab]
+  const seq = ++listRequestSeq[tab]
   state.loading = true
   state.error = null
   try {
-    state.response = await get<InventoryItemsPage>('/api/mart/inventory/items', listQuery(tab))
+    const page = await get<InventoryItemsPage>('/api/mart/inventory/items', listQuery(tab))
+    if (seq !== listRequestSeq[tab]) return
+    state.response = page
     state.loaded = true
+    lastStatusCounts.value = page.statusCounts
+    lastLatestWeek.value = page.latestWeek
   } catch (error) {
+    if (seq !== listRequestSeq[tab]) return
     console.error(`[inventory] 在庫明細（${tab}）の取得に失敗しました:`, error)
     state.error = apiErrorMessage(error)
   } finally {
-    state.loading = false
+    if (seq === listRequestSeq[tab]) {
+      state.loading = false
+    }
   }
 }
 
@@ -166,9 +198,15 @@ async function ensureTabLoaded(tab: TabKey): Promise<void> {
   }
 }
 
-/** フィルタ適用時: 全タブのキャッシュを無効化し、表示中タブだけ再取得する。 */
+/**
+ * フィルタ適用時: 全タブのキャッシュを無効化し、表示中タブだけ再取得する。
+ * バッジ・最新週の単一参照元（lastStatusCounts 等）も破棄し、旧フィルタの件数が
+ * 新フィルタの明細と同一画面に混在しないようにする。
+ */
 async function handleFilterApply(): Promise<void> {
   actionsLoaded.value = false
+  lastStatusCounts.value = null
+  lastLatestWeek.value = null
   for (const key of ['items', 'stagnant', 'dormant'] as const) {
     listStates[key].loaded = false
     listStates[key].page = 1
@@ -180,19 +218,10 @@ watch(activeTab, (tab) => {
   void ensureTabLoaded(tab)
 })
 
-// ---- タブバッジ（状態別件数）。読み込み済みのいずれかのレスポンスから採用する ----
-
-const statusCounts = computed(
-  () =>
-    actions.value?.statusCounts
-    ?? listStates.items.response?.statusCounts
-    ?? listStates.stagnant.response?.statusCounts
-    ?? listStates.dormant.response?.statusCounts
-    ?? null,
-)
+// ---- タブバッジ（状態別件数）。単一参照元 lastStatusCounts から描画する ----
 
 function tabBadge(tab: TabKey): { text: string; hot: boolean } | null {
-  const counts = statusCounts.value
+  const counts = lastStatusCounts.value
   if (!counts) return null
   if (tab === 'items') return { text: `${formatNumber(counts.total)} SKU`, hot: false }
   if (tab === 'stagnant') return { text: formatNumber(counts.stagnant), hot: counts.stagnant > 0 }
@@ -200,31 +229,21 @@ function tabBadge(tab: TabKey): { text: string; hot: boolean } | null {
   return null
 }
 
-const latestWeek = computed(
-  () =>
-    actions.value?.latestWeek
-    ?? listStates[activeTab.value === 'dashboard' ? 'items' : activeTab.value].response?.latestWeek
-    ?? null,
-)
+const latestWeek = computed(() => lastLatestWeek.value)
 
 // ---- ダッシュボードの KPI（前週差はフロント射影） ----
+
+/** 前週差の表示は toFixed(1)。丸めると 0.0 になる半単位未満は「±0.0」として扱う。 */
+const DELTA_DISPLAY_EPSILON = 0.05
 
 function deltaText(current: number, previous: number | undefined, unit: 'pt' | '日'): string | undefined {
   if (previous === undefined) return undefined
   const delta = unit === 'pt' ? (current - previous) * 100 : current - previous
-  if (Math.abs(delta) < 0.05) return `前週 ±0.0${unit}`
+  if (Math.abs(delta) < DELTA_DISPLAY_EPSILON) return `前週 ±0.0${unit}`
   return `前週 ${delta > 0 ? '+' : '−'}${Math.abs(delta).toFixed(1)}${unit}`
 }
 
-interface DashboardKpi {
-  label: string
-  value: string
-  icon: Component
-  accentClass: string
-  sub?: string
-}
-
-const kpiItems = computed<DashboardKpi[]>(() => {
+const kpiItems = computed<KpiCardItem[]>(() => {
   const data = actions.value
   if (!data) return []
   const kpi = data.kpi
@@ -324,7 +343,9 @@ function handleRowClick(row: InventoryItemRow): void {
 // ---- 在庫一覧タブの状態チップ・検索 ----
 
 const statusChips = computed(() => {
-  const counts = listStates.items.response?.statusCounts ?? statusCounts.value
+  // チップ件数は在庫一覧タブ自身のレスポンス（検索適用後・状態絞込前）だけを参照する。
+  // 他タブ由来の件数は検索条件が異なるため混ぜない（未取得時は件数非表示でチップのみ）。
+  const counts = listStates.items.response?.statusCounts ?? null
   return [
     { status: null as InventoryStatus | null, label: 'すべて', count: counts?.total ?? null },
     ...INVENTORY_STATUS_ORDER.map((status) => ({
@@ -380,7 +401,9 @@ const copyState = reactive<Record<ListTabKey, 'idle' | 'copied' | 'failed'>>({
   stagnant: 'idle',
   dormant: 'idle',
 })
-let copyTimer: ReturnType<typeof setTimeout> | null = null
+// フィードバック解除タイマーはタブ別に持つ（共有すると別タブのコピーで clearTimeout され、
+// 元タブの「コピーしました」表示が解除されず残留するため）。
+const copyTimers: Partial<Record<ListTabKey, ReturnType<typeof setTimeout>>> = {}
 
 async function copyList(tab: ListTabKey): Promise<void> {
   const rows = listStates[tab].response?.items ?? []
@@ -408,23 +431,34 @@ async function copyList(tab: ListTabKey): Promise<void> {
 
   const ok = await copyHtmlToClipboard(html, text)
   copyState[tab] = ok ? 'copied' : 'failed'
-  if (copyTimer) clearTimeout(copyTimer)
-  copyTimer = setTimeout(() => {
+  const previous = copyTimers[tab]
+  if (previous) clearTimeout(previous)
+  copyTimers[tab] = setTimeout(() => {
     copyState[tab] = 'idle'
   }, ok ? 2000 : 3000)
 }
 
 onBeforeUnmount(() => {
-  if (copyTimer) clearTimeout(copyTimer)
+  for (const timer of Object.values(copyTimers)) {
+    if (timer) clearTimeout(timer)
+  }
 })
 
 // ---- 初期化 ----
 
 onMounted(async () => {
-  await loadOptions()
-  await refreshStatus()
-  martChecked.value = true
-  await ensureTabLoaded(activeTab.value)
+  try {
+    await loadOptions()
+    await refreshStatus()
+    // 各タブのロードは内部で catch するため、ここに到達する例外は初期化（ステータス確認等）のみ。
+    await ensureTabLoaded(activeTab.value)
+  } catch (error) {
+    console.error('[inventory] ページ初期化に失敗しました:', error)
+    pageError.value = apiErrorMessage(error)
+  } finally {
+    // 失敗時も StatusBlock の error 表示へ切り替える（無言の永久ローディングにしない）。
+    martChecked.value = true
+  }
 })
 </script>
 
@@ -440,7 +474,7 @@ onMounted(async () => {
 
     <FilterBar :scope-key="MART_SCOPE" @apply="handleFilterApply" />
 
-    <StatusBlock :loading="!martChecked" :error="null">
+    <StatusBlock :loading="!martChecked" :error="pageError">
       <MartNotBuiltNotice v-if="!isBuilt" />
       <div v-else class="space-y-4">
         <!-- ページ内タブ（?tab= 同期） -->
