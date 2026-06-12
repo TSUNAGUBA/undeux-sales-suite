@@ -10,8 +10,6 @@ import {
   Clock,
   AlertTriangle,
   AlertOctagon,
-  CheckCircle,
-  Minus,
   ExternalLink,
   RotateCcw,
 } from 'lucide-vue-next'
@@ -21,6 +19,7 @@ import type {
   ProductAnalyticsResponse,
   ProductSkuPerformance,
 } from '~/types/api'
+import type { BadgePresentation, SkuBadgeKind } from '~/utils/skuStatus'
 
 useHead({ title: '商品詳細 | UndeuxSales' })
 
@@ -176,18 +175,13 @@ function isPeriodSelected(value: number | null): boolean {
 // 売上 API 側で FULL OUTER JOIN により「マスタにあって売上にない SKU」も
 // 0 埋めで返るため、フロント側の追加 0 埋めは不要。
 // ============================================================
-interface SkuBadge {
-  kind:
-    | 'hot' // 売れ筋
-    | 'near-stockout' // 在庫切れ間近
-    | 'stagnant' // 滞留（在庫あり・売上ゼロ）
-    | 'sold-out' // 完売
-    | 'aging' // 滞留疑い（在庫日数高め）
-    | 'inactive' // 期間内活動なし（売上ゼロ・在庫ゼロ）
-    | 'normal' // 通常
-  label: string
-  icon: typeof TrendingUp
-  className: string
+/**
+ * SKU バッジ。kind の判定（クライアント推計＝選択期間の販売ペース由来）は本ページが担い、
+ * 表現（ラベル・アイコン・色）は utils/skuStatus.ts の SKU_BADGES（表示カタログの SoT）を参照する。
+ * 在庫マネジメントのサーバ判定（スナップショット実測）とは入力が異なる別概念のため判定は統合しない。
+ */
+interface SkuBadge extends BadgePresentation {
+  kind: SkuBadgeKind
 }
 
 interface SkuMatrixRow extends ProductSkuPerformance {
@@ -212,6 +206,39 @@ function deriveStockDays(quantity: number, stock: number): number | null {
   return stock / (quantity / periodDays.value)
 }
 
+/** SKU バッジ種別の判定（クライアント推計）。表現は SKU_BADGES カタログが担う。 */
+function computeBadgeKind(
+  quantity: number,
+  stock: number,
+  sharePercent: number,
+  estimatedStockDays: number | null,
+  isInactive: boolean,
+): SkuBadgeKind {
+  if (isInactive) {
+    return 'inactive'
+  }
+  if (quantity > 0 && sharePercent >= THRESHOLD_SHARE_HOT) {
+    return 'hot'
+  }
+  if (
+    quantity > 0
+    && stock > 0
+    && stock <= Math.max(quantity * THRESHOLD_NEAR_STOCKOUT_RATIO, NEAR_STOCKOUT_MIN_STOCK)
+  ) {
+    return 'near-stockout'
+  }
+  if (stock > 0 && quantity === 0) {
+    return 'stagnant'
+  }
+  if (stock === 0 && quantity > 0) {
+    return 'sold-out'
+  }
+  if (estimatedStockDays !== null && estimatedStockDays >= THRESHOLD_STOCK_DAYS_CAUTION) {
+    return 'aging'
+  }
+  return 'normal'
+}
+
 function computeBadge(
   quantity: number,
   stock: number,
@@ -219,65 +246,8 @@ function computeBadge(
   estimatedStockDays: number | null,
   isInactive: boolean,
 ): SkuBadge {
-  if (isInactive) {
-    return {
-      kind: 'inactive',
-      label: '期間内活動なし',
-      icon: Minus,
-      // text-slate-500 で WCAG AA を確保（slate-50 上で 4.5:1+）。
-      className: 'bg-slate-50 text-slate-500',
-    }
-  }
-  if (quantity > 0 && sharePercent >= THRESHOLD_SHARE_HOT) {
-    return {
-      kind: 'hot',
-      label: '売れ筋',
-      icon: TrendingUp,
-      className: 'bg-emerald-100 text-emerald-700',
-    }
-  }
-  if (
-    quantity > 0
-    && stock > 0
-    && stock <= Math.max(quantity * THRESHOLD_NEAR_STOCKOUT_RATIO, NEAR_STOCKOUT_MIN_STOCK)
-  ) {
-    return {
-      kind: 'near-stockout',
-      label: '在庫切れ間近',
-      icon: AlertTriangle,
-      className: 'bg-amber-100 text-amber-700',
-    }
-  }
-  if (stock > 0 && quantity === 0) {
-    return {
-      kind: 'stagnant',
-      label: '要警戒（滞留）',
-      icon: AlertOctagon,
-      className: 'bg-rose-100 text-rose-700',
-    }
-  }
-  if (stock === 0 && quantity > 0) {
-    return {
-      kind: 'sold-out',
-      label: '完売',
-      icon: CheckCircle,
-      className: 'bg-slate-100 text-slate-700',
-    }
-  }
-  if (estimatedStockDays !== null && estimatedStockDays >= THRESHOLD_STOCK_DAYS_CAUTION) {
-    return {
-      kind: 'aging',
-      label: '滞留疑い',
-      icon: Clock,
-      className: 'bg-amber-50 text-amber-700',
-    }
-  }
-  return {
-    kind: 'normal',
-    label: '通常',
-    icon: Activity,
-    className: 'bg-slate-50 text-slate-600',
-  }
+  const kind = computeBadgeKind(quantity, stock, sharePercent, estimatedStockDays, isInactive)
+  return { kind, ...SKU_BADGES[kind] }
 }
 
 const skuMatrixRows = computed<SkuMatrixRow[]>(() => {

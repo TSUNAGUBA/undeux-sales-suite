@@ -71,6 +71,56 @@ public sealed class MartController : ControllerBase
         [FromQuery] SalesQueryFilter filter, CancellationToken cancellationToken)
         => _martRepository.GetInventoryAsync(filter, cancellationToken);
 
+    /// <summary>
+    /// 在庫アクションサマリー（KPI・前週比較・状態別件数・今週のアクション・部門別健全性）を取得する。
+    /// 在庫マネジメントのダッシュボードタブと全社サマリーのダイジェストが共用する。
+    /// 滞留・不動の判定閾値は <see cref="InventoryHealthRules"/>（SoT）で、適用値はレスポンスに含まれる。
+    /// </summary>
+    [HttpGet("inventory/actions")]
+    public Task<InventoryActionsResponse> InventoryActions(
+        [FromQuery] SalesQueryFilter filter, CancellationToken cancellationToken)
+        => _martRepository.GetInventoryActionsAsync(filter, cancellationToken);
+
+    /// <summary>
+    /// 在庫アクション明細（SKU単位・最新週スナップショット基準）をページングで取得する。
+    /// statuses（healthy / caution / stagnant / dormant）で状態を絞り込む（未知値は無視＝
+    /// 在日バケットと同じグレースフル方式）。並び替え未指定時の既定値は絞込状態に応じて変える
+    /// （不動のみ→出荷ゼロ週数、滞留のみ→在庫日数、それ以外→在庫数。いずれも降順）。
+    /// </summary>
+    [HttpGet("inventory/items")]
+    public Task<InventoryItemsPage> InventoryItems(
+        [FromQuery] SalesQueryFilter filter,
+        [FromQuery] string[]? statuses,
+        [FromQuery] string? search,
+        [FromQuery] string? sort,
+        [FromQuery] string? order,
+        [FromQuery] int page,
+        [FromQuery] int pageSize,
+        CancellationToken cancellationToken)
+    {
+        var normalized = InventoryHealthRules.NormalizeStatuses(statuses);
+        return _martRepository.GetInventoryItemsAsync(
+            filter,
+            normalized,
+            search,
+            RequestParsing.InventoryItemSort(sort, DefaultInventoryItemSort(normalized)),
+            RequestParsing.IsAscending(order),
+            page <= 0 ? DefaultPage : page,
+            pageSize <= 0 ? DefaultPageSize : pageSize,
+            cancellationToken);
+    }
+
+    /// <summary>在庫アクション明細の既定並び替えキー（単一状態への絞込時は「最も見るべき順」）。</summary>
+    private static InventoryItemSortKey DefaultInventoryItemSort(IReadOnlyList<string> statuses)
+        => statuses.Count == 1
+            ? statuses[0] switch
+            {
+                InventoryHealthRules.StatusDormant => InventoryItemSortKey.ZeroSalesWeeks,
+                InventoryHealthRules.StatusStagnant => InventoryItemSortKey.StockDays,
+                _ => InventoryItemSortKey.Stock,
+            }
+            : InventoryItemSortKey.Stock;
+
     /// <summary>商品（SKU）別の売上・在庫一覧をページングで mart から取得する。</summary>
     [HttpGet("products")]
     public Task<ProductPage> Products(

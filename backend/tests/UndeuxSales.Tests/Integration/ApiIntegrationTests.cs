@@ -107,8 +107,14 @@ public sealed class ApiIntegrationTests
         var filters = await client.GetFromJsonAsync<FilterOptions>("/api/filters");
 
         Assert.NotNull(filters);
-        Assert.Equal(2, filters!.Departments.Count);
-        Assert.Equal(2, filters.Weeks.Count);
+        // 件数の厳密一致ではなく包含で検証する。/api/filters は無フィルタの全選択肢を返すため、
+        // 取込テスト（部門09・2026-06-01）や在庫アクションテスト（部門90・2026-01〜03の週）が
+        // 投入する行でも件数が増える。xUnit のテストクラス実行順は仕様保証がないため、
+        // 実行順に依存しない形で固定シード（部門01/02・2026-05の2週）の存在のみを検証する。
+        Assert.Contains(filters!.Departments, d => d.Code == "01");
+        Assert.Contains(filters.Departments, d => d.Code == "02");
+        Assert.Contains(filters.Weeks, w => w == DateOnly.Parse("2026-05-04"));
+        Assert.Contains(filters.Weeks, w => w == DateOnly.Parse("2026-05-11"));
     }
 
     [Fact]

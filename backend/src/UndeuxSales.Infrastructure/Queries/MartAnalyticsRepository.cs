@@ -320,6 +320,359 @@ public sealed class MartAnalyticsRepository
         return new InventoryResponse(kpi, byDepartment);
     }
 
+    /// <summary>
+    /// 在庫アクションサマリー（KPI・前週比較・状態別件数・今週のアクション・部門別健全性）を
+    /// mart（最新週スナップショット基準）から取得する。在庫マネジメントのダッシュボードタブと
+    /// 全社サマリーのダイジェストが共用する。判定閾値の SoT は <see cref="InventoryHealthRules"/>。
+    /// </summary>
+    public async Task<InventoryActionsResponse> GetInventoryActionsAsync(
+        SalesQueryFilter filter, CancellationToken cancellationToken = default)
+    {
+        filter.EnsureValid();
+        await using var connection = await _connectionFactory.OpenConnectionAsync(cancellationToken);
+
+        var parameters = new DynamicParameters();
+        MartFilterSql.AddParameters(filter, parameters);
+        var thresholds = InventoryHealthRules.Thresholds();
+
+        var latestWeek = await QueryLatestWeekAsync(connection, filter, parameters, cancellationToken);
+        if (!latestWeek.HasValue)
+        {
+            return new InventoryActionsResponse(
+                null, null, thresholds, EmptyActionsKpi, null,
+                new InventoryStatusCounts(0, 0, 0, 0, 0),
+                Array.Empty<InventoryActionItem>(),
+                Array.Empty<InventoryDepartmentHealthRow>());
+        }
+
+        InventoryHealthSql.AddThresholdParameters(parameters);
+        var cte = InventoryHealthSql.ClassifiedCte(MartFilterSql.AndClause(filter, "inv"));
+
+        // 最新週の全体集約と部門別健全性。
+        var aggregate = await QueryInventoryActionsAggregateAsync(
+            connection, cte, parameters, latestWeek.Value, cancellationToken);
+
+        var departmentSql = cte + $"""
+
+            SELECT COALESCE(NULLIF(dp.department_code, ''), '(未設定)') AS key,
+                   COALESCE(NULLIF(dp.department_name, ''),
+                            NULLIF(dp.department_code, ''), '(未設定)') AS label,
+                   COALESCE(SUM(c.stock), 0)::bigint            AS stock,
+                   COALESCE(SUM(c.stock_value_cost), 0)::bigint AS stock_value_cost,
+                   COALESCE(SUM(c.cum_sales), 0)::bigint        AS cumulative_sales,
+                   COALESCE(SUM(c.cum_delivery), 0)::bigint     AS cumulative_delivery,
+                   COALESCE(AVG(c.stock_days), 0)::float8       AS average_stock_days,
+                   COALESCE(SUM(c.stock) FILTER (WHERE c.status = '{InventoryHealthRules.StatusHealthy}'), 0)::bigint  AS healthy_stock,
+                   COALESCE(SUM(c.stock) FILTER (WHERE c.status = '{InventoryHealthRules.StatusCaution}'), 0)::bigint  AS caution_stock,
+                   COALESCE(SUM(c.stock) FILTER (WHERE c.status = '{InventoryHealthRules.StatusStagnant}'), 0)::bigint AS stagnant_stock,
+                   COALESCE(SUM(c.stock) FILTER (WHERE c.status = '{InventoryHealthRules.StatusDormant}'), 0)::bigint  AS dormant_stock
+            FROM classified c
+            JOIN mart.dim_sku     ds ON ds.sku_key     = c.sku_key
+            JOIN mart.dim_product dp ON dp.product_key = ds.product_key
+            GROUP BY COALESCE(NULLIF(dp.department_code, ''), '(未設定)'),
+                     COALESCE(NULLIF(dp.department_name, ''),
+                              NULLIF(dp.department_code, ''), '(未設定)')
+            ORDER BY stock DESC, key;
+            """;
+        var departmentsRaw = (await connection.QueryAsync<InventoryDepartmentHealthRawRow>(
+            new CommandDefinition(departmentSql, parameters, cancellationToken: cancellationToken))).ToList();
+
+        // 前週（存在すれば）の集約。CTE・パラメータを使い回し、アンカー週だけ差し替えて再実行する。
+        var previousWeek = await QueryPreviousSnapshotWeekAsync(
+            connection, filter, parameters, latestWeek.Value, cancellationToken);
+        InventoryActionsAggregateRow? previousAggregate = null;
+        if (previousWeek.HasValue)
+        {
+            previousAggregate = await QueryInventoryActionsAggregateAsync(
+                connection, cte, parameters, previousWeek.Value, cancellationToken);
+        }
+
+        var kpi = MapActionsKpi(aggregate);
+        var previousKpi = previousAggregate is null ? null : MapActionsKpi(previousAggregate);
+
+        var byDepartment = departmentsRaw
+            .Select(row => new InventoryDepartmentHealthRow(
+                row.Key, row.Label, row.Stock, row.StockValueCost,
+                AggregateMath.Ratio(row.CumulativeSales, row.CumulativeDelivery),
+                row.AverageStockDays,
+                row.HealthyStock, row.CautionStock, row.StagnantStock, row.DormantStock))
+            .ToList();
+
+        var actions = InventoryHealthRules.BuildActions(new InventoryActionInput(
+            aggregate.StagnantCount,
+            aggregate.StagnantWithOrderCount,
+            aggregate.DormantCount,
+            aggregate.DormantStock,
+            aggregate.TotalStock,
+            kpi.StagnantDormantStockRatio,
+            previousKpi?.StagnantDormantStockRatio,
+            kpi.SellThroughRate,
+            byDepartment
+                .Select(d => new InventoryDepartmentHealthInput(d.Label, d.Stock, d.SellThroughRate))
+                .ToList()));
+
+        return new InventoryActionsResponse(
+            latestWeek, previousWeek, thresholds, kpi, previousKpi,
+            new InventoryStatusCounts(
+                aggregate.HealthyCount, aggregate.CautionCount,
+                aggregate.StagnantCount, aggregate.DormantCount, aggregate.TotalCount),
+            actions, byDepartment);
+    }
+
+    /// <summary>
+    /// 在庫アクション明細（SKU 単位・最新週スナップショット基準）をページングで取得する。
+    /// 在庫一覧・滞留・不動の3タブが statuses 絞込だけを変えて共用する（SQL 骨格の三重化を避ける）。
+    /// </summary>
+    /// <param name="statuses"><see cref="InventoryHealthRules.NormalizeStatuses"/> 済みの状態コード。空なら全状態。</param>
+    public async Task<InventoryItemsPage> GetInventoryItemsAsync(
+        SalesQueryFilter filter,
+        IReadOnlyList<string> statuses,
+        string? search,
+        InventoryItemSortKey sortKey,
+        bool ascending,
+        int page,
+        int pageSize,
+        CancellationToken cancellationToken = default)
+    {
+        filter.EnsureValid();
+        page = Math.Max(page, 1);
+        pageSize = Math.Clamp(pageSize, 1, MaxPageSize);
+
+        await using var connection = await _connectionFactory.OpenConnectionAsync(cancellationToken);
+
+        var parameters = new DynamicParameters();
+        MartFilterSql.AddParameters(filter, parameters);
+        var thresholds = InventoryHealthRules.Thresholds();
+        var emptyCounts = new InventoryStatusCounts(0, 0, 0, 0, 0);
+        var emptyAging = new[] { 0, 0, 0 };
+
+        var latestWeek = await QueryLatestWeekAsync(connection, filter, parameters, cancellationToken);
+        if (!latestWeek.HasValue)
+        {
+            return new InventoryItemsPage(
+                Array.Empty<InventoryItemRow>(), 0, page, pageSize, null,
+                emptyCounts, emptyAging, emptyAging, thresholds);
+        }
+
+        InventoryHealthSql.AddThresholdParameters(parameters);
+        parameters.Add("anchorWeek", latestWeek.Value);
+        parameters.Add("scanStartWeek", ScanStartWeek(latestWeek.Value));
+        var cte = InventoryHealthSql.ClassifiedCte(MartFilterSql.AndClause(filter, "inv"));
+
+        // 検索・状態絞込の条件（検索は dp/ds を参照するため、件数クエリにも次元結合が必要）。
+        var conditions = new List<string>();
+        var searchCondition = InventoryHealthSql.SearchCondition(search, parameters);
+        if (searchCondition is not null)
+        {
+            conditions.Add(searchCondition);
+        }
+        var countsWhere = conditions.Count == 0 ? string.Empty : "WHERE " + string.Join(" AND ", conditions);
+
+        if (statuses.Count > 0)
+        {
+            parameters.Add("statuses", statuses.ToArray());
+            conditions.Add("c.status = ANY(@statuses)");
+        }
+        var rowsWhere = conditions.Count == 0 ? string.Empty : "WHERE " + string.Join(" AND ", conditions);
+
+        // 状態別件数・経過バケット件数（statuses 絞込前。チップ・タブバッジ・バケット表示用）。
+        // ページの分母（TotalCount）はここから C# 側で合算するため COUNT(*) OVER は使わない。
+        parameters.Add("stagnantAgingMid", InventoryHealthRules.StagnantAgingBoundaries[1]);
+        parameters.Add("stagnantAgingHigh", InventoryHealthRules.StagnantAgingBoundaries[2]);
+        parameters.Add("dormantAgingMid", InventoryHealthRules.DormantAgingBoundaries[1]);
+        parameters.Add("dormantAgingHigh", InventoryHealthRules.DormantAgingBoundaries[2]);
+        var countsSql = cte + $"""
+
+            SELECT COUNT(*) FILTER (WHERE c.status = '{InventoryHealthRules.StatusHealthy}')::int  AS healthy_count,
+                   COUNT(*) FILTER (WHERE c.status = '{InventoryHealthRules.StatusCaution}')::int  AS caution_count,
+                   COUNT(*) FILTER (WHERE c.status = '{InventoryHealthRules.StatusStagnant}')::int AS stagnant_count,
+                   COUNT(*) FILTER (WHERE c.status = '{InventoryHealthRules.StatusDormant}')::int  AS dormant_count,
+                   COUNT(*)::int AS total_count,
+                   COUNT(*) FILTER (WHERE c.status = '{InventoryHealthRules.StatusStagnant}'
+                                    AND c.stock_days <= @stagnantAgingMid)::int AS stagnant_aging1,
+                   COUNT(*) FILTER (WHERE c.status = '{InventoryHealthRules.StatusStagnant}'
+                                    AND c.stock_days > @stagnantAgingMid
+                                    AND c.stock_days <= @stagnantAgingHigh)::int AS stagnant_aging2,
+                   COUNT(*) FILTER (WHERE c.status = '{InventoryHealthRules.StatusStagnant}'
+                                    AND c.stock_days > @stagnantAgingHigh)::int AS stagnant_aging3,
+                   COUNT(*) FILTER (WHERE c.status = '{InventoryHealthRules.StatusDormant}'
+                                    AND c.zero_sales_weeks < @dormantAgingMid)::int AS dormant_aging1,
+                   COUNT(*) FILTER (WHERE c.status = '{InventoryHealthRules.StatusDormant}'
+                                    AND c.zero_sales_weeks >= @dormantAgingMid
+                                    AND c.zero_sales_weeks < @dormantAgingHigh)::int AS dormant_aging2,
+                   COUNT(*) FILTER (WHERE c.status = '{InventoryHealthRules.StatusDormant}'
+                                    AND c.zero_sales_weeks >= @dormantAgingHigh)::int AS dormant_aging3
+            FROM classified c
+            JOIN mart.dim_sku     ds ON ds.sku_key     = c.sku_key
+            JOIN mart.dim_product dp ON dp.product_key = ds.product_key
+            {countsWhere};
+            """;
+        var counts = await connection.QuerySingleAsync<InventoryItemsCountRow>(
+            new CommandDefinition(countsSql, parameters, cancellationToken: cancellationToken));
+
+        var totalCount = statuses.Count == 0
+            ? counts.TotalCount
+            : statuses.Sum(status => status switch
+            {
+                InventoryHealthRules.StatusHealthy => counts.HealthyCount,
+                InventoryHealthRules.StatusCaution => counts.CautionCount,
+                InventoryHealthRules.StatusStagnant => counts.StagnantCount,
+                InventoryHealthRules.StatusDormant => counts.DormantCount,
+                _ => 0,
+            });
+
+        parameters.Add("limit", pageSize);
+        // page は外部入力のため long で乗算し、巨大値でも負の OFFSET（int オーバーフロー）にしない。
+        parameters.Add("offset", (long)(page - 1) * pageSize);
+        var direction = ascending ? "ASC" : "DESC";
+
+        // 行クエリ。商品マスタID（詳細遷移用）の結合は GetProductsAsync と同一方式。
+        var rowsSql = cte + $"""
+
+            SELECT dp.channel_code AS gyotai_code,
+                   dp.product_sign AS shohin_kigou,
+                   dp.product_code AS hinban_code,
+                   ds.unit_code    AS tanpin_code,
+                   COALESCE(dp.product_name, '') AS hinmei,
+                   c.stock,
+                   c.stock_value_cost,
+                   c.stock_days,
+                   c.cum_sales        AS cumulative_sales,
+                   c.cum_delivery     AS cumulative_delivery,
+                   c.order_qty        AS order_quantity,
+                   c.advance_qty      AS advance_quantity,
+                   c.zero_sales_weeks,
+                   c.status,
+                   mp.product_id      AS master_product_id,
+                   dp.product_name    AS product_name,
+                   dp.brand           AS brand,
+                   ds.image_url       AS primary_image_url
+            FROM classified c
+            JOIN mart.dim_sku     ds ON ds.sku_key     = c.sku_key
+            JOIN mart.dim_product dp ON dp.product_key = ds.product_key
+            LEFT JOIN (
+                SELECT DISTINCT ON (business_category_cd, product_sign, product_type_crd)
+                       business_category_cd, product_sign, product_type_crd, product_id
+                FROM m_product
+                ORDER BY business_category_cd, product_sign, product_type_crd, updated_at DESC, product_id
+            ) mp ON mp.business_category_cd = dp.channel_code
+                AND mp.product_sign         = dp.product_sign
+                AND mp.product_type_crd     = dp.product_code
+            {rowsWhere}
+            ORDER BY {InventoryItemSortExpression(sortKey)} {direction} NULLS LAST, dp.product_code, ds.unit_code
+            LIMIT @limit OFFSET @offset;
+            """;
+        var rawRows = await connection.QueryAsync<InventoryItemRawRow>(
+            new CommandDefinition(rowsSql, parameters, cancellationToken: cancellationToken));
+
+        var items = rawRows
+            .Select(row => new InventoryItemRow(
+                row.GyotaiCode, row.ShohinKigou, row.HinbanCode, row.TanpinCode, row.Hinmei,
+                row.Stock, row.StockValueCost, row.StockDays,
+                AggregateMath.Ratio(row.CumulativeSales, row.CumulativeDelivery),
+                row.OrderQuantity, row.AdvanceQuantity, row.ZeroSalesWeeks, row.Status,
+                InventoryHealthRules.Recommend(row.Status, row.OrderQuantity, row.ZeroSalesWeeks),
+                row.MasterProductId, row.ProductName, row.Brand, row.PrimaryImageUrl))
+            .ToList();
+
+        return new InventoryItemsPage(
+            items, totalCount, page, pageSize, latestWeek,
+            new InventoryStatusCounts(
+                counts.HealthyCount, counts.CautionCount,
+                counts.StagnantCount, counts.DormantCount, counts.TotalCount),
+            new[] { counts.StagnantAging1, counts.StagnantAging2, counts.StagnantAging3 },
+            new[] { counts.DormantAging1, counts.DormantAging2, counts.DormantAging3 },
+            thresholds);
+    }
+
+    /// <summary>対象データなし時の在庫アクション KPI（ゼロ値）。</summary>
+    private static readonly InventoryActionsKpi EmptyActionsKpi = new(0, 0, 0, 0, 0, 0, 0m, 0, 0);
+
+    /// <summary>不動判定の走査開始週（アンカー週から DormantScanWeeks 週前）。</summary>
+    private static DateOnly ScanStartWeek(DateOnly anchorWeek)
+        => anchorWeek.AddDays(-7 * InventoryHealthRules.DormantScanWeeks);
+
+    /// <summary>指定アンカー週の在庫アクション全体集約を取得する（最新週・前週で使い回す）。</summary>
+    private static async Task<InventoryActionsAggregateRow> QueryInventoryActionsAggregateAsync(
+        NpgsqlConnection connection,
+        string classifiedCte,
+        DynamicParameters parameters,
+        DateOnly anchorWeek,
+        CancellationToken cancellationToken)
+    {
+        // DynamicParameters.Add は同名キーを上書きするため、アンカー週の差替えで CTE を再利用できる。
+        parameters.Add("anchorWeek", anchorWeek);
+        parameters.Add("scanStartWeek", ScanStartWeek(anchorWeek));
+
+        var sql = classifiedCte + $"""
+
+            SELECT COUNT(*) FILTER (WHERE c.status = '{InventoryHealthRules.StatusHealthy}')::int  AS healthy_count,
+                   COUNT(*) FILTER (WHERE c.status = '{InventoryHealthRules.StatusCaution}')::int  AS caution_count,
+                   COUNT(*) FILTER (WHERE c.status = '{InventoryHealthRules.StatusStagnant}')::int AS stagnant_count,
+                   COUNT(*) FILTER (WHERE c.status = '{InventoryHealthRules.StatusDormant}')::int  AS dormant_count,
+                   COUNT(*)::int AS total_count,
+                   COALESCE(SUM(c.stock), 0)::bigint            AS total_stock,
+                   COALESCE(SUM(c.stock_value_cost), 0)::bigint AS stock_value_cost,
+                   COALESCE(SUM(c.stock) FILTER (WHERE c.status = '{InventoryHealthRules.StatusHealthy}'), 0)::bigint AS healthy_stock,
+                   COALESCE(SUM(c.stock) FILTER (WHERE c.status IN ('{InventoryHealthRules.StatusStagnant}', '{InventoryHealthRules.StatusDormant}')), 0)::bigint AS stagnant_dormant_stock,
+                   COALESCE(SUM(c.cum_sales), 0)::bigint        AS cumulative_sales,
+                   COALESCE(SUM(c.cum_delivery), 0)::bigint     AS cumulative_delivery,
+                   COALESCE(SUM(c.order_qty), 0)                AS total_order_quantity,
+                   COALESCE(SUM(c.advance_qty), 0)::bigint      AS total_advance_quantity,
+                   COALESCE(AVG(c.stock_days), 0)::float8       AS average_stock_days,
+                   COUNT(*) FILTER (WHERE c.status = '{InventoryHealthRules.StatusStagnant}' AND c.order_qty > 0)::int AS stagnant_with_order_count,
+                   COALESCE(SUM(c.stock) FILTER (WHERE c.status = '{InventoryHealthRules.StatusDormant}'), 0)::bigint AS dormant_stock
+            FROM classified c;
+            """;
+        return await connection.QuerySingleAsync<InventoryActionsAggregateRow>(
+            new CommandDefinition(sql, parameters, cancellationToken: cancellationToken));
+    }
+
+    /// <summary>最新週より前で在庫スナップショットが存在する直近の週を返す（前週比較用。なければ null）。</summary>
+    private static async Task<DateOnly?> QueryPreviousSnapshotWeekAsync(
+        NpgsqlConnection connection,
+        SalesQueryFilter filter,
+        DynamicParameters parameters,
+        DateOnly latestWeek,
+        CancellationToken cancellationToken)
+    {
+        parameters.Add("latestWeekExclusive", latestWeek);
+        var sql = $"""
+            SELECT MAX(dd.week_monday)
+            FROM mart.fact_inventory_snapshot inv
+            JOIN mart.dim_date     dd ON dd.date_key     = inv.date_key
+            JOIN mart.dim_product  dp ON dp.product_key  = inv.product_key
+            JOIN mart.dim_retailer dr ON dr.retailer_key = inv.retailer_key
+            WHERE dd.week_monday < @latestWeekExclusive{MartFilterSql.AndClause(filter, "inv")};
+            """;
+        return await connection.ExecuteScalarAsync<DateOnly?>(
+            new CommandDefinition(sql, parameters, cancellationToken: cancellationToken));
+    }
+
+    /// <summary>集約行を在庫アクション KPI（比率はここで算出）へ射影する。</summary>
+    private static InventoryActionsKpi MapActionsKpi(InventoryActionsAggregateRow row) => new(
+        row.TotalStock,
+        row.StockValueCost,
+        AggregateMath.Ratio(row.HealthyStock, row.TotalStock),
+        AggregateMath.Ratio(row.CumulativeSales, row.CumulativeDelivery),
+        row.AverageStockDays,
+        AggregateMath.Ratio(row.StagnantDormantStock, row.TotalStock),
+        row.TotalOrderQuantity,
+        row.TotalAdvanceQuantity,
+        row.CumulativeDelivery);
+
+    /// <summary>在庫アクション明細の並び替えキーを SQL 式に解決する（classified エイリアス c 固定）。</summary>
+    private static string InventoryItemSortExpression(InventoryItemSortKey sortKey) => sortKey switch
+    {
+        InventoryItemSortKey.Stock => "c.stock",
+        InventoryItemSortKey.StockValueCost => "c.stock_value_cost",
+        InventoryItemSortKey.StockDays => "c.stock_days",
+        InventoryItemSortKey.SellThroughRate => "c.sell_through_rate",
+        InventoryItemSortKey.ZeroSalesWeeks => "c.zero_sales_weeks",
+        InventoryItemSortKey.OrderQuantity => "c.order_qty",
+        _ => "c.stock",
+    };
+
     /// <summary>商品別分析の一覧（ページング）を mart から取得する。</summary>
     public async Task<ProductPage> GetProductsAsync(
         SalesQueryFilter filter,

@@ -208,38 +208,6 @@ function buildPlainText(source: HTMLTableElement): string {
   return grid.map((row) => Array.from(row, (v) => v ?? '').join('\t')).join('\n')
 }
 
-/** execCommand によるフォールバックコピー（Clipboard API 非対応・非セキュアコンテキスト用）。 */
-function fallbackCopy(html: string): boolean {
-  const container = document.createElement('div')
-  container.setAttribute('contenteditable', 'true')
-  container.style.position = 'fixed'
-  container.style.left = '-9999px'
-  container.style.top = '0'
-  container.innerHTML = html
-  document.body.appendChild(container)
-
-  const selection = window.getSelection()
-  // ユーザーが既に持っている選択範囲を退避し、コピー後に復元する。
-  const savedRanges: Range[] = selection
-    ? Array.from({ length: selection.rangeCount }, (_, i) => selection.getRangeAt(i))
-    : []
-  const range = document.createRange()
-  range.selectNodeContents(container)
-  selection?.removeAllRanges()
-  selection?.addRange(range)
-
-  let ok = false
-  try {
-    ok = document.execCommand('copy')
-  } catch {
-    ok = false
-  }
-  selection?.removeAllRanges()
-  for (const saved of savedRanges) selection?.addRange(saved)
-  document.body.removeChild(container)
-  return ok
-}
-
 function showFeedback(success: boolean): void {
   if (feedbackTimer) clearTimeout(feedbackTimer)
   copied.value = success
@@ -250,30 +218,12 @@ function showFeedback(success: boolean): void {
   }, success ? 2000 : 3000)
 }
 
-/** テーブルをクリップボードへコピーする（text/html ＋ text/plain）。 */
+/** テーブルをクリップボードへコピーする（text/html ＋ text/plain。utils/clipboard.ts 共通実装）。 */
 async function copyForExcel(): Promise<void> {
   const table = tableRef.value
   if (!table || !canCopy.value) return
 
-  const html = buildStyledHtml(table)
-  const text = buildPlainText(table)
-
-  let ok = false
-  try {
-    if (navigator.clipboard?.write && typeof ClipboardItem !== 'undefined') {
-      await navigator.clipboard.write([
-        new ClipboardItem({
-          'text/html': new Blob([html], { type: 'text/html' }),
-          'text/plain': new Blob([text], { type: 'text/plain' }),
-        }),
-      ])
-      ok = true
-    }
-  } catch {
-    ok = false
-  }
-  // 主要パスが失敗（権限・非対応・非セキュア）したら execCommand へフォールバック。
-  if (!ok) ok = fallbackCopy(html)
+  const ok = await copyHtmlToClipboard(buildStyledHtml(table), buildPlainText(table))
   showFeedback(ok)
 }
 
