@@ -10,7 +10,7 @@ const props = withDefaults(
   { scopeKey: 'sales-filter' },
 )
 
-const { filter, options, optionsError, loadOptions, years } = useFilters(props.scopeKey)
+const { filter, options, optionsError, loadOptions, years, businessTypeChipOptions } = useFilters(props.scopeKey)
 
 // 棚割1・平均在庫日数（在日）は sales 系・mart 系の両方が解釈する
 // （mart は dim_product.attributes / fact_inventory_snapshot.stock_days に適用）。
@@ -26,16 +26,6 @@ function toSelectOptions(items: CodeName[]): { value: string; text: string }[] {
 }
 
 const departmentOptions = computed(() => toSelectOptions(options.value?.departments ?? []))
-const businessTypeOptions = computed(() =>
-  (options.value?.businessTypes ?? []).map((b) => ({
-    value: b.code,
-    text: b.name
-      ? b.shortName
-        ? `${b.code}: ${b.name} (${b.shortName})`
-        : `${b.code}: ${b.name}`
-      : b.code,
-  })),
-)
 const seasonOptions = computed(() => toSelectOptions(options.value?.seasons ?? []))
 const tanawari1Options = computed(() =>
   (options.value?.tanawari1 ?? []).map((t) => ({ value: t, text: t })),
@@ -57,12 +47,18 @@ function removeHinban(value: string): void {
     </p>
 
     <!-- 並び順は 業態 → 部門 → 年度 → 季節（→ 棚割1 → 平均在庫日数）。 -->
-    <div class="grid grid-cols-1 gap-3 sm:grid-cols-2 lg:grid-cols-3">
-      <MultiSelect
-        v-model="filter.businessTypes"
-        label="業態"
-        :options="businessTypeOptions"
+    <!-- 業態はタグ（チップ・複数選択）。少数の選択肢をワンタップで切り替えられるようにする。 -->
+    <div class="mb-3">
+      <p class="mb-1 text-xs font-medium text-slate-500">業態</p>
+      <CrossTabMultiSelectChips
+        :options="businessTypeChipOptions"
+        :model-value="filter.businessTypes"
+        empty-label="業態候補がありません"
+        @update:model-value="(v: string[]) => (filter.businessTypes = v)"
       />
+    </div>
+
+    <div class="grid grid-cols-1 gap-3 sm:grid-cols-2 lg:grid-cols-3">
       <MultiSelect
         v-model="filter.departments"
         label="部門"

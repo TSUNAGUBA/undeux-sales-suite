@@ -45,7 +45,7 @@ const router = useRouter()
 const { get } = useApi()
 const { isBuilt, refreshStatus } = useMart()
 // 年度の選択肢（/api/filters）だけを共有から読む。共有フィルタ state は変更しない。
-const { options: sharedOptions, loadOptions, years } = useFilters('mart-filter')
+const { options: sharedOptions, optionsError, loadOptions, years } = useFilters('mart-filter')
 
 const productId = computed(() => String(route.params.productId ?? ''))
 
@@ -148,12 +148,17 @@ const skuPerformance = ref<ProductPage | null>(null)
 const analyticsLoading = ref(true)
 const analyticsError = ref<string | null>(null)
 
+// 期間・エリア切替の連打で古い応答が後着しても表示を上書きしないためのリクエスト世代。
+let analyticsRequestSeq = 0
+
 async function loadAnalytics(): Promise<void> {
   if (!detail.value) return
+  const seq = ++analyticsRequestSeq
   analyticsLoading.value = true
   analyticsError.value = null
   try {
     await refreshStatus()
+    if (seq !== analyticsRequestSeq) return
     if (!isBuilt.value) {
       martSummary.value = null
       weekly.value = null
@@ -172,13 +177,18 @@ async function loadAnalytics(): Promise<void> {
         pageSize: 200,
       }),
     ])
+    if (seq !== analyticsRequestSeq) return
     martSummary.value = summaryResult
     weekly.value = weeklyResult
     skuPerformance.value = skuResult
   } catch (error) {
-    analyticsError.value = apiErrorMessage(error)
+    if (seq === analyticsRequestSeq) {
+      analyticsError.value = apiErrorMessage(error)
+    }
   } finally {
-    analyticsLoading.value = false
+    if (seq === analyticsRequestSeq) {
+      analyticsLoading.value = false
+    }
   }
 }
 
@@ -419,23 +429,33 @@ const crosstab = ref<CrosstabMatrixResponse | null>(null)
 const crosstabLoading = ref(false)
 const crosstabError = ref<string | null>(null)
 
+// 行・列切替の連打に対する世代ガード（loadAnalytics と同様）。
+let crosstabRequestSeq = 0
+
 async function loadCrosstab(): Promise<void> {
   if (!detail.value || !isBuilt.value) {
     crosstab.value = null
     return
   }
+  const seq = ++crosstabRequestSeq
   crosstabLoading.value = true
   crosstabError.value = null
   try {
-    crosstab.value = await get<CrosstabMatrixResponse>('/api/mart/crosstab', {
+    const result = await get<CrosstabMatrixResponse>('/api/mart/crosstab', {
       ...martQuery(),
       rowDimension: rowDimensionKey.value,
       columnDimension: columnDimensionKey.value,
     })
+    if (seq !== crosstabRequestSeq) return
+    crosstab.value = result
   } catch (error) {
-    crosstabError.value = apiErrorMessage(error)
+    if (seq === crosstabRequestSeq) {
+      crosstabError.value = apiErrorMessage(error)
+    }
   } finally {
-    crosstabLoading.value = false
+    if (seq === crosstabRequestSeq) {
+      crosstabLoading.value = false
+    }
   }
 }
 
@@ -602,7 +622,10 @@ onMounted(async () => {
               <option v-for="y in years" :key="y" :value="y">{{ y }}年</option>
             </select>
           </div>
-          <p v-if="!sharedOptions" class="text-xs text-slate-400">期間の選択肢を読み込み中...</p>
+          <p v-if="optionsError" class="text-xs text-amber-600">
+            期間の選択肢の取得に失敗しました（全期間で表示しています）: {{ optionsError }}
+          </p>
+          <p v-else-if="!sharedOptions" class="text-xs text-slate-400">期間の選択肢を読み込み中...</p>
         </div>
 
         <MartNotBuiltNotice v-if="!isBuilt" />

@@ -5,7 +5,7 @@
  * 商品（業態×記号×品番）単位で導入日（sales_weekly.donyu_date 由来。mart の
  * dim_sku.attributes->>'donyu'）を一覧し、導入時期での絞り込み・把握を行う。
  *
- * フィルタ構成（要望対応）: 業態（タブ切り替え）・部門・ブランド・服種（品番CD）・担当者・
+ * フィルタ構成（要望対応）: 業態（タグ・複数選択）・部門・ブランド・服種（品番CD）・担当者・
  * キーワード・導入時期（年月のクイック指定）／導入日 From-To。
  * フィルタの選択肢: 業態・部門は /api/filters、ブランド・服種・担当者は
  * /api/mart/introduction-options（mart の商品次元から導出）。
@@ -27,10 +27,10 @@ const { isBuilt, refreshStatus } = useMart()
 const { options: sharedOptions, optionsError, loadOptions } = useFilters('mart-filter')
 
 // ---------------------------------------------------------------
-// フィルタ state（業態はタブ＝単一選択、他は複数選択 or テキスト）
+// フィルタ state（業態はタグ＝複数選択、他も複数選択 or テキスト）
 // ---------------------------------------------------------------
 
-const businessType = ref<string | null>(null)
+const businessTypes = ref<string[]>([])
 const departments = ref<string[]>([])
 const brands = ref<string[]>([])
 const hinbans = ref<string[]>([])
@@ -50,7 +50,7 @@ const result = ref<MartIntroductionPage | null>(null)
 const loading = ref(true)
 const errorMessage = ref<string | null>(null)
 
-const businessTypeTabs = computed(() =>
+const businessTypeChipOptions = computed(() =>
   (sharedOptions.value?.businessTypes ?? []).map((b) => ({
     value: b.code,
     label: b.name ? (b.shortName ? `${b.name}（${b.shortName}）` : b.name) : b.code,
@@ -92,7 +92,7 @@ function toQuery(): Record<string, unknown> {
     page: page.value,
     pageSize,
   }
-  if (businessType.value) query.businessTypes = [businessType.value]
+  if (businessTypes.value.length > 0) query.businessTypes = businessTypes.value
   if (departments.value.length > 0) query.departments = departments.value
   if (brands.value.length > 0) query.brands = brands.value
   if (hinbans.value.length > 0) query.hinbans = hinbans.value
@@ -134,7 +134,7 @@ function reload(): void {
 }
 
 function resetFilters(): void {
-  businessType.value = null
+  businessTypes.value = []
   departments.value = []
   brands.value = []
   hinbans.value = []
@@ -145,13 +145,6 @@ function resetFilters(): void {
   donyuTo.value = ''
   reload()
 }
-
-const initialized = ref(false)
-
-// 業態タブの切り替えは即時再検索（タブUIの期待動作）。
-watch(businessType, () => {
-  if (initialized.value) reload()
-})
 
 const totalPages = computed(() => {
   const total = result.value?.totalCount ?? 0
@@ -229,7 +222,6 @@ onMounted(async () => {
     introductionOptions.value = null
   }
   await load()
-  initialized.value = true
 })
 </script>
 
@@ -243,14 +235,6 @@ onMounted(async () => {
       </p>
     </div>
 
-    <!-- 業態（タブ切り替え） -->
-    <TabSwitcher
-      :options="businessTypeTabs"
-      :model-value="businessType"
-      aria-label="業態"
-      @update:model-value="(v) => (businessType = v)"
-    />
-
     <CollapsiblePanel title="フィルター">
       <p
         v-if="optionsError"
@@ -258,6 +242,17 @@ onMounted(async () => {
       >
         フィルタ選択肢の取得に失敗しました: {{ optionsError }}
       </p>
+
+      <!-- 業態（タグ・複数選択）。先頭に置き「フィルタ → 集計単位 → 表示集計値」の導線に合わせる -->
+      <div class="mb-3">
+        <p class="mb-1 text-xs font-medium text-slate-500">業態</p>
+        <CrossTabMultiSelectChips
+          :options="businessTypeChipOptions"
+          :model-value="businessTypes"
+          empty-label="業態候補がありません"
+          @update:model-value="(v: string[]) => (businessTypes = v)"
+        />
+      </div>
 
       <div class="grid grid-cols-1 gap-3 sm:grid-cols-2 lg:grid-cols-3">
         <MultiSelect v-model="departments" label="部門" :options="departmentOptions" />
