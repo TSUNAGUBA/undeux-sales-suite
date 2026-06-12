@@ -383,6 +383,7 @@ GitHub の **Actions** タブの「Run workflow」ボタンからも実行でき
 | 症状 | 対処 |
 |------|------|
 | `deploy-backend` がビルドで失敗 | EC2 のメモリ不足の可能性。インスタンスタイプを `t3.medium` 以上にする |
+| ビルドが `no space left on device` で失敗 | デプロイ世代ごとのビルドキャッシュ蓄積が原因。`deploy-ec2.sh` がビルド前に自動クリーンアップする（再実行すれば回復する）。それでも不足する場合は EC2 に SSH して `docker system prune -af`（`--volumes` は付けない）を実行し、EBS ボリュームの拡張を検討する |
 | API に HTTPS で繋がらない | DNS の A レコードが EC2 の固定IPを指しているか、反映済みか確認。nginx-proxy（acme-companion）の証明書取得には 80/443 の開放とDNS反映が必要 |
 | フロントから API 呼び出しが CORS エラー | `FRONTEND_ORIGIN` シークレットが実際のフロントURLと一致しているか確認し、`deploy-backend` を再実行 |
 | ログインできない | Firebase の Authentication でメール/パスワードが有効か、利用者が登録済みか確認 |
