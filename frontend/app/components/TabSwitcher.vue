@@ -28,22 +28,26 @@ function select(value: string | null): void {
 }
 </script>
 
+<!--
+  ARIA は tablist/tab ではなく「トグルボタン群」（role=group + aria-pressed）とする。
+  tabs パターンは矢印キー移動・tabpanel 関連付けが必須要件になるが、本コンポーネントは
+  タブパネルを持たないフィルタ切替であり、Tab キー + aria-pressed の方が実態に即す。
+-->
 <template>
   <div
     class="flex flex-wrap gap-1 rounded-lg bg-slate-100 p-1"
-    role="tablist"
+    role="group"
     :aria-label="ariaLabel"
   >
     <button
       type="button"
-      role="tab"
       class="rounded-md px-3 py-1.5 text-sm transition-colors"
       :class="
         modelValue === null
           ? 'bg-white font-semibold text-indigo-700 shadow-sm'
           : 'text-slate-600 hover:bg-white/60'
       "
-      :aria-selected="modelValue === null"
+      :aria-pressed="modelValue === null"
       @click="select(null)"
     >
       {{ allLabel }}
@@ -52,14 +56,13 @@ function select(value: string | null): void {
       v-for="opt in options"
       :key="opt.value"
       type="button"
-      role="tab"
       class="rounded-md px-3 py-1.5 text-sm transition-colors"
       :class="
         modelValue === opt.value
           ? 'bg-white font-semibold text-indigo-700 shadow-sm'
           : 'text-slate-600 hover:bg-white/60'
       "
-      :aria-selected="modelValue === opt.value"
+      :aria-pressed="modelValue === opt.value"
       @click="select(opt.value)"
     >
       {{ opt.label }}

@@ -158,11 +158,11 @@ public sealed class MartAnalyticsRepository
                 WHERE dd.week_monday = @latestWeek{MartFilterSql.AndClause(filter, "inv")};
                 """, parameters, cancellationToken: cancellationToken));
             currentStock = snapshot.Stock;
-            sellThroughRate = Ratio(snapshot.CumulativeSales, snapshot.CumulativeDelivery);
+            sellThroughRate = AggregateMath.Ratio(snapshot.CumulativeSales, snapshot.CumulativeDelivery);
         }
 
         var kpi = new MartKpi(
-            quantity, amount, grossProfit, Ratio(grossProfit, amount),
+            quantity, amount, grossProfit, AggregateMath.Ratio(grossProfit, amount),
             counts.ProductCount, counts.SkuCount, currentStock, sellThroughRate, latestWeek);
 
         return new MartSummaryResponse(kpi, weeklyTrend);
@@ -308,13 +308,13 @@ public sealed class MartAnalyticsRepository
         var byDepartment = breakdownRaw
             .Select(row => new InventoryBreakdownRow(
                 row.Key, row.Label, row.Stock, row.OrderQuantity, row.AdvanceQuantity,
-                Ratio(row.CumulativeSales, row.CumulativeDelivery)))
+                AggregateMath.Ratio(row.CumulativeSales, row.CumulativeDelivery)))
             .ToList();
 
         var kpi = new InventoryKpi(
             kpiRow.TotalStock, kpiRow.TotalOrderQuantity, kpiRow.TotalAdvanceQuantity,
             kpiRow.CumulativeSales, kpiRow.CumulativeDelivery,
-            Ratio(kpiRow.CumulativeSales, kpiRow.CumulativeDelivery),
+            AggregateMath.Ratio(kpiRow.CumulativeSales, kpiRow.CumulativeDelivery),
             kpiRow.AverageStockDays, latestWeek);
 
         return new InventoryResponse(kpi, byDepartment);
@@ -346,7 +346,8 @@ public sealed class MartAnalyticsRepository
 
         parameters.Add("latestWeek", latestWeek.Value);
         parameters.Add("limit", pageSize);
-        parameters.Add("offset", (page - 1) * pageSize);
+        // page は外部入力のため long で乗算し、巨大値でも負の OFFSET（int オーバーフロー）にしない。
+        parameters.Add("offset", (long)(page - 1) * pageSize);
 
         var sortExpression = MartProductSortExpression(sortKey);
         var direction = ascending ? "ASC" : "DESC";
@@ -427,7 +428,7 @@ public sealed class MartAnalyticsRepository
             .Select(row => new ProductRow(
                 row.GyotaiCode, row.ShohinKigou, row.HinbanCode, row.TanpinCode,
                 row.Hinmei, row.Kisetsu, row.SalesQuantity, row.SalesAmount, row.GrossProfit,
-                row.Stock, Ratio(row.CumulativeSales, row.CumulativeDelivery), row.AverageStockDays,
+                row.Stock, AggregateMath.Ratio(row.CumulativeSales, row.CumulativeDelivery), row.AverageStockDays,
                 row.MasterProductId, row.ProductName, row.Brand, row.PrimaryImageUrl))
             .ToList();
 
@@ -455,8 +456,10 @@ public sealed class MartAnalyticsRepository
 
     /// <summary>クロス集計マトリクス（行×列の2次元集計）を mart から取得する。</summary>
     /// <remarks>
-    /// 帳票区分・棚割は mart に保持しないため、それらを行/列に指定すると 400（未対応）を返す
-    /// （フロントは対応軸のみ提示する）。フロー指標は期間内集計、在庫系は最新週スナップショット基準。
+    /// 帳票区分・棚割は mart の<b>集計軸（ディメンション）としては</b>保持しないため、それらを
+    /// 行/列に指定すると 400（未対応）を返す（フロントは対応軸のみ提示する。棚割1は
+    /// <see cref="MartFilterSql"/> のフィルタとしては対応済み）。
+    /// フロー指標は期間内集計、在庫系は最新週スナップショット基準。
     /// </remarks>
     public async Task<CrosstabMatrixResponse> GetCrosstabMatrixAsync(
         SalesQueryFilter filter,
@@ -774,7 +777,7 @@ public sealed class MartAnalyticsRepository
                     Round1(temp.Average), Round1(temp.Maximum), Round1(temp.Minimum),
                     snapshot?.Stock ?? 0,
                     snapshot?.StockDays ?? 0,
-                    snapshot is null ? 0 : Ratio(snapshot.CumSales, snapshot.CumDelivery));
+                    snapshot is null ? 0 : AggregateMath.Ratio(snapshot.CumSales, snapshot.CumDelivery));
             })
             .ToList();
 
@@ -903,26 +906,38 @@ public sealed class MartAnalyticsRepository
         var parameters = new DynamicParameters();
         MartIntroductionFilterSql.AddParameters(query, parameters);
         parameters.Add("limit", pageSize);
-        parameters.Add("offset", (page - 1) * pageSize);
+        // page は外部入力のため long で乗算し、巨大値でも負の OFFSET（int オーバーフロー）にしない。
+        parameters.Add("offset", (long)(page - 1) * pageSize);
 
-        var whereClause = MartIntroductionFilterSql.WhereClause(query);
+        var productWhere = MartIntroductionFilterSql.ProductWhereClause(query);
+        var donyuWhere = MartIntroductionFilterSql.DonyuWhereClause(query);
         var direction = ascending ? "ASC" : "DESC";
 
-        // SKU 集約（導入日・SKU数・代表画像）と全期間フロー（売上数量）を商品単位に結合する。
+        // まず商品次元の条件で商品集合（filtered）を絞り、SKU 集約（導入日・SKU数・代表画像）と
+        // 全期間フロー（売上数量）は絞り込んだ商品に対してのみ集計する（全表集約の回避）。
+        // 導入日条件は SKU 集約後の値に対するため外側で適用する。
         // 業態表示名は dim_retailer の channel 列から重複排除して引く（business_type マスタ由来）。
         var sql = $"""
-            WITH sku AS (
+            WITH filtered AS (
+                SELECT dp.product_key, dp.channel_code, dp.department_code, dp.department_name,
+                       dp.product_sign, dp.product_code, dp.product_name, dp.brand, dp.manager
+                FROM mart.dim_product dp
+                {productWhere}
+            ),
+            sku AS (
                 SELECT ds.product_key,
                        COUNT(*)::int                AS sku_count,
                        MIN(ds.attributes->>'donyu') AS donyu,
                        MIN(ds.image_url)            AS image_url
                 FROM mart.dim_sku ds
+                JOIN filtered fp ON fp.product_key = ds.product_key
                 GROUP BY ds.product_key
             ),
             flow AS (
                 SELECT f.product_key,
                        COALESCE(SUM(f.quantity), 0)::bigint AS sales_quantity
                 FROM mart.fact_sales_weekly f
+                JOIN filtered fp ON fp.product_key = f.product_key
                 GROUP BY f.product_key
             ),
             channel AS (
@@ -944,11 +959,11 @@ public sealed class MartAnalyticsRepository
                    COALESCE(flow.sales_quantity, 0) AS sales_quantity,
                    sku.image_url AS primary_image_url,
                    (COUNT(*) OVER ())::int AS total_count
-            FROM mart.dim_product dp
+            FROM filtered dp
             JOIN sku ON sku.product_key = dp.product_key
             LEFT JOIN flow ON flow.product_key = dp.product_key
             LEFT JOIN channel ch ON ch.channel_code = dp.channel_code
-            {whereClause}
+            {donyuWhere}
             ORDER BY sku.donyu {direction} NULLS LAST,
                      dp.product_code, dp.product_sign, dp.channel_code
             LIMIT @limit OFFSET @offset;
@@ -979,15 +994,20 @@ public sealed class MartAnalyticsRepository
         CancellationToken cancellationToken)
     {
         var sql = $"""
-            WITH sku AS (
+            WITH filtered AS (
+                SELECT dp.product_key
+                FROM mart.dim_product dp
+                {MartIntroductionFilterSql.ProductWhereClause(query)}
+            ),
+            sku AS (
                 SELECT ds.product_key, MIN(ds.attributes->>'donyu') AS donyu
                 FROM mart.dim_sku ds
+                JOIN filtered fp ON fp.product_key = ds.product_key
                 GROUP BY ds.product_key
             )
             SELECT COUNT(*)::int
-            FROM mart.dim_product dp
-            JOIN sku ON sku.product_key = dp.product_key
-            {MartIntroductionFilterSql.WhereClause(query)};
+            FROM sku
+            {MartIntroductionFilterSql.DonyuWhereClause(query)};
             """;
         return await connection.ExecuteScalarAsync<int>(
             new CommandDefinition(sql, parameters, cancellationToken: cancellationToken));
@@ -1084,7 +1104,8 @@ public sealed class MartAnalyticsRepository
 
     /// <summary>
     /// クロス集計の <see cref="CrosstabDimension"/> を mart の SQL 式（text を返す式）に解決する。
-    /// 帳票区分・棚割は mart に保持しないため未対応（400）。エイリアスは dd/dr/dp/ds 固定。
+    /// 帳票区分・棚割は mart の集計軸としては保持しないため未対応（400。棚割1のフィルタは対応済み）。
+    /// エイリアスは dd/dr/dp/ds 固定。
     /// </summary>
     private static string ResolveMartCrosstabDimensionSql(CrosstabDimension dim) => dim switch
     {
@@ -1102,13 +1123,14 @@ public sealed class MartAnalyticsRepository
         CrosstabDimension.CategoryChohyoKubun or CrosstabDimension.CategoryTanawari1
             or CrosstabDimension.CategoryTanawari2 => throw new AppException(
             ErrorCodes.UnknownDimension, 400,
-            "帳票区分・棚割はスタースキーマ分析では未対応です。"),
+            "帳票区分・棚割はスタースキーマ分析の集計軸では未対応です（棚割1はフィルタで指定できます）。"),
         _ => throw new AppException(ErrorCodes.UnknownDimension, 400),
     };
 
     /// <summary>
     /// ランキングの <see cref="BreakdownDimension"/> を mart の (GroupBy, KeyExpr, LabelExpr) に解決する。
-    /// 帳票区分・棚割は mart に保持しないため未対応（400）。エイリアスは dr/dp/ds 固定。
+    /// 帳票区分・棚割は mart の集計軸としては保持しないため未対応（400。棚割1のフィルタは対応済み）。
+    /// エイリアスは dr/dp/ds 固定。
     /// </summary>
     private static (string GroupBy, string KeyExpr, string LabelExpr) ResolveMartRankingDimension(
         BreakdownDimension dimension) => dimension switch
@@ -1127,7 +1149,7 @@ public sealed class MartAnalyticsRepository
         BreakdownDimension.ChohyoKubun or BreakdownDimension.Tanawari1
             or BreakdownDimension.Tanawari2 => throw new AppException(
             ErrorCodes.UnknownDimension, 400,
-            "帳票区分・棚割はスタースキーマ分析では未対応です。"),
+            "帳票区分・棚割はスタースキーマ分析の集計軸では未対応です（棚割1はフィルタで指定できます）。"),
         _ => throw new AppException(ErrorCodes.UnknownDimension, 400),
     };
 
@@ -1201,14 +1223,6 @@ public sealed class MartAnalyticsRepository
         return total == 0 ? 0 : (double)value / total * 100.0;
     }
 
-    /// <summary>
-    /// 分子÷分母の比率（0..1、分母0は0）。粗利率・消化率の共通式。
-    /// 返却モデル（<see cref="MartKpi"/>/<see cref="InventoryKpi"/>/<see cref="ProductRow"/> 等）は sales 系と
-    /// 共有され、フロントは比率（0..1）を受け取る <c>formatRatioAsPercent</c> で描画するため、
-    /// ここでは ×100 せず比率のまま返す（sales 系 <c>SalesAnalyticsRepository.Ratio</c> と同一契約）。
-    /// </summary>
-    private static double Ratio(long numerator, long denominator)
-        => denominator == 0 ? 0 : (double)numerator / denominator;
 }
 
 /// <summary><see cref="SalesQueryFilter"/> から mart 次元に対する WHERE 条件を組み立てる。</summary>

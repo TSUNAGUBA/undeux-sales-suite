@@ -155,7 +155,7 @@ public sealed class ProductAnalyticsRepository
                 flow.Quantity,
                 flow.Amount,
                 flow.GrossProfit,
-                Ratio(flow.GrossProfit, flow.Amount),
+                AggregateMath.Ratio(flow.GrossProfit, flow.Amount),
                 0,
                 0.0,
                 flow.AverageStockDays,
@@ -177,9 +177,9 @@ public sealed class ProductAnalyticsRepository
             flow.Quantity,
             flow.Amount,
             flow.GrossProfit,
-            Ratio(flow.GrossProfit, flow.Amount),
+            AggregateMath.Ratio(flow.GrossProfit, flow.Amount),
             snapshot.Stock,
-            Ratio(snapshot.CumulativeSales, snapshot.CumulativeDelivery),
+            AggregateMath.Ratio(snapshot.CumulativeSales, snapshot.CumulativeDelivery),
             flow.AverageStockDays,
             latestWeek);
     }
@@ -342,8 +342,6 @@ public sealed class ProductAnalyticsRepository
             .ToList();
     }
 
-    private static double Ratio(long numerator, long denominator)
-        => denominator == 0 ? 0.0 : (double)numerator / denominator;
 
     private static double SharePercent(long amount, long totalAmount)
         => totalAmount == 0 ? 0.0 : (double)amount / totalAmount * 100.0;

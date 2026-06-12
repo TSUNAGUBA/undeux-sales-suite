@@ -164,6 +164,14 @@ const needsRebuildHint = computed(() => {
   return items.length > 0 && items.every((item) => item.donyuDate === null)
 })
 
+// 導入日で絞り込んで0件の場合、旧 mart データ（導入日未反映）の可能性がある。
+// 「絞り込み過ぎ」との切り分けができないため、可能性として案内する。
+const emptyWithDonyuFilter = computed(
+  () =>
+    (result.value?.items.length ?? 0) === 0
+    && (donyuFrom.value !== '' || donyuTo.value !== ''),
+)
+
 const columns = [
   { key: 'thumbnail', label: '画像', format: (_row: MartIntroductionRow) => '' },
   { key: 'productCode', label: '品番CD（服種）' },
@@ -255,7 +263,7 @@ onMounted(async () => {
           <input
             v-model="keyword"
             type="search"
-            placeholder="品番・商品名・ブランド・担当者"
+            placeholder="品番・記号・商品名・ブランド・担当者"
             class="w-full rounded-lg border border-slate-300 bg-white px-3 py-2 text-sm text-slate-700"
             @keydown.enter="reload"
           >
@@ -325,6 +333,10 @@ onMounted(async () => {
         class="rounded-xl border border-slate-200 bg-white p-8 text-center text-sm text-slate-400"
       >
         該当する商品がありません。フィルタを見直してください。
+        <p v-if="emptyWithDonyuFilter" class="mt-2 text-xs text-amber-600">
+          ※ mart が改修前に構築されたままの場合、導入日が未反映で0件になることがあります。
+          全社サマリー（スタースキーマ）から「mart を再構築」を実行してからお試しください。
+        </p>
       </div>
       <div v-else class="space-y-3">
         <p

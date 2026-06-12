@@ -68,7 +68,7 @@ public sealed class AnalysisRepository
                 return new WeeklySeriesPoint(
                     r.Week, r.Quantity, r.Amount, r.GrossProfit,
                     Round1(temp.Average), Round1(temp.Maximum), Round1(temp.Minimum),
-                    r.Stock, r.StockDays, Ratio(r.CumSales, r.CumDelivery));
+                    r.Stock, r.StockDays, AggregateMath.Ratio(r.CumSales, r.CumDelivery));
             })
             .ToList();
 
@@ -169,9 +169,6 @@ public sealed class AnalysisRepository
 
     private static double Round1(double value) => Math.Round(value, 1, MidpointRounding.AwayFromZero);
 
-    /// <summary>分子÷分母の比率（0..1、分母0は0）。SalesAnalyticsRepository.Ratio と同一契約。</summary>
-    private static double Ratio(long numerator, long denominator)
-        => denominator == 0 ? 0 : (double)numerator / denominator;
 
     private sealed record WeeklyFlowRow(
         DateOnly Week, long Quantity, long Amount, long GrossProfit,

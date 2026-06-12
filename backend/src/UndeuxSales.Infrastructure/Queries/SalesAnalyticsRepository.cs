@@ -55,10 +55,10 @@ public sealed class SalesAnalyticsRepository
             quantity,
             amount,
             grossProfit,
-            Ratio(grossProfit, amount),
+            AggregateMath.Ratio(grossProfit, amount),
             productCount,
             snapshot.Stock,
-            Ratio(snapshot.CumulativeSales, snapshot.CumulativeDelivery),
+            AggregateMath.Ratio(snapshot.CumulativeSales, snapshot.CumulativeDelivery),
             snapshot.LatestWeek);
 
         return new SummaryResponse(kpi, weeklyTrend);
@@ -367,7 +367,7 @@ public sealed class SalesAnalyticsRepository
                 row.Stock,
                 row.OrderQuantity,
                 row.AdvanceQuantity,
-                Ratio(row.CumulativeSales, row.CumulativeDelivery)))
+                AggregateMath.Ratio(row.CumulativeSales, row.CumulativeDelivery)))
             .ToList();
 
         var kpi = new InventoryKpi(
@@ -376,7 +376,7 @@ public sealed class SalesAnalyticsRepository
             kpiRow.TotalAdvanceQuantity,
             kpiRow.CumulativeSales,
             kpiRow.CumulativeDelivery,
-            Ratio(kpiRow.CumulativeSales, kpiRow.CumulativeDelivery),
+            AggregateMath.Ratio(kpiRow.CumulativeSales, kpiRow.CumulativeDelivery),
             kpiRow.AverageStockDays,
             latestWeek);
 
@@ -506,7 +506,7 @@ public sealed class SalesAnalyticsRepository
                 row.SalesAmount,
                 row.GrossProfit,
                 row.Stock,
-                Ratio(row.CumulativeSales, row.CumulativeDelivery),
+                AggregateMath.Ratio(row.CumulativeSales, row.CumulativeDelivery),
                 row.AverageStockDays,
                 row.MasterProductId,
                 row.ProductName,
@@ -952,15 +952,12 @@ public sealed class SalesAnalyticsRepository
 
     private static double SharePercent(BreakdownRawRow row, SalesMetric metric) => metric switch
     {
-        SalesMetric.Quantity => Ratio(row.Quantity, row.TotalQuantity) * 100.0,
-        SalesMetric.Amount => Ratio(row.Amount, row.TotalAmount) * 100.0,
-        SalesMetric.GrossProfit => Ratio(row.GrossProfit, row.TotalGrossProfit) * 100.0,
+        SalesMetric.Quantity => AggregateMath.Ratio(row.Quantity, row.TotalQuantity) * 100.0,
+        SalesMetric.Amount => AggregateMath.Ratio(row.Amount, row.TotalAmount) * 100.0,
+        SalesMetric.GrossProfit => AggregateMath.Ratio(row.GrossProfit, row.TotalGrossProfit) * 100.0,
         _ => 0.0,
     };
 
-    // 分母0は0を返す（ゼロ除算の防止）。
-    private static double Ratio(long numerator, long denominator)
-        => denominator == 0 ? 0.0 : (double)numerator / denominator;
 
     private sealed record SnapshotRow(long Stock, long CumulativeSales, long CumulativeDelivery);
 

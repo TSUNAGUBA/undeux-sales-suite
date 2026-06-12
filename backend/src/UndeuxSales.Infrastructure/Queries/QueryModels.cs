@@ -492,7 +492,9 @@ public sealed record MarkdownScatterResponse(
 /// <param name="ProductName">商品名。</param>
 /// <param name="Brand">ブランド（商品マスタ由来）。</param>
 /// <param name="Manager">担当者（商品マスタ由来）。</param>
-/// <param name="DonyuDate">導入日（SKU の最も早い導入日。未設定・不正値は null）。</param>
+/// <param name="DonyuDate">
+/// 導入日。各SKUの現在値（SCD1: 最新取込行の導入日）のうち商品内で最小の日。未設定・不正値は null。
+/// </param>
 /// <param name="SkuCount">SKU 数。</param>
 /// <param name="SalesQuantity">全期間の売上数量。</param>
 /// <param name="PrimaryImageUrl">代表画像URL（無ければ null）。</param>
