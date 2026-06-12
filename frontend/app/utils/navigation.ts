@@ -67,7 +67,7 @@ export const NAV_CATEGORIES: NavCategory[] = [
     pages: [
       { path: '/mart', label: '全社サマリー', icon: LayoutDashboard },
       { path: '/mart/sales', label: '売上分析', icon: TrendingUp },
-      { path: '/mart/inventory', label: '在庫・発注分析', icon: Boxes },
+      { path: '/mart/inventory', label: '在庫マネジメント', icon: Boxes },
     ],
   },
   {

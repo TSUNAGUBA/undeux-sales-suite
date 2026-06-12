@@ -108,6 +108,139 @@ export interface InventoryResponse {
   byDepartment: InventoryBreakdownRow[]
 }
 
+/** 在庫健全性の状態コード（判定の SoT はバックエンド InventoryHealthRules）。 */
+export type InventoryStatus = 'healthy' | 'caution' | 'stagnant' | 'dormant'
+
+/** 推奨アクションコード（表示ラベル・CTA は utils/skuStatus.ts のカタログが射影）。 */
+export type RecommendedActionCode =
+  | 'reduce-order'
+  | 'markdown-candidate'
+  | 'review-shelf'
+  | 'clearance'
+  | 'observe'
+
+/** アクションフィードの重大度。 */
+export type InventoryActionSeverity = 'danger' | 'warning' | 'info'
+
+/** アクションフィードの遷移先（在庫マネジメントのページ内タブ）。 */
+export type InventoryActionTargetTab = 'dashboard' | 'items' | 'stagnant' | 'dormant'
+
+/**
+ * 適用中の在庫健全性閾値。SoT はバックエンド（InventoryHealthRules）で、
+ * 定義バナー・経過バケットのラベルは必ず本値から描画する（フロントに閾値リテラルを置かない）。
+ */
+export interface InventoryThresholds {
+  cautionStockDays: number
+  stagnantStockDays: number
+  stagnantSellThroughCeiling: number
+  dormantLookbackWeeks: number
+  dormantScanWeeks: number
+  stagnantAgingBoundaries: number[]
+  dormantAgingBoundaries: number[]
+}
+
+/** 状態別の SKU 件数（タブバッジ・フィルタチップ用）。 */
+export interface InventoryStatusCounts {
+  healthy: number
+  caution: number
+  stagnant: number
+  dormant: number
+  total: number
+}
+
+/** 在庫アクションサマリーの KPI（比率は在庫点数ベース）。 */
+export interface InventoryActionsKpi {
+  totalStock: number
+  /** 在庫金額（原価ベース。原価未設定 SKU は 0 円加算のため下振れしうる）。 */
+  stockValueCost: number
+  healthyStockRatio: number
+  sellThroughRate: number
+  averageStockDays: number
+  stagnantDormantStockRatio: number
+  totalOrderQuantity: number
+  totalAdvanceQuantity: number
+  cumulativeDelivery: number
+}
+
+/** 「今週のアクション」フィードの1件。 */
+export interface InventoryActionItem {
+  code: string
+  severity: InventoryActionSeverity
+  message: string
+  targetTab: InventoryActionTargetTab
+  count: number | null
+}
+
+/** 部門別の在庫健全性1行（4象限バブル・鮮度積上げ帯の素材）。 */
+export interface InventoryDepartmentHealthRow {
+  key: string
+  label: string
+  stock: number
+  stockValueCost: number
+  sellThroughRate: number
+  averageStockDays: number
+  healthyStock: number
+  cautionStock: number
+  stagnantStock: number
+  dormantStock: number
+}
+
+/** GET /api/mart/inventory/actions のレスポンス。 */
+export interface InventoryActionsResponse {
+  latestWeek: string | null
+  previousWeek: string | null
+  thresholds: InventoryThresholds
+  kpi: InventoryActionsKpi
+  /** 前週の KPI（差分計算はフロント射影）。前週スナップショットが無ければ null。 */
+  previousKpi: InventoryActionsKpi | null
+  statusCounts: InventoryStatusCounts
+  actions: InventoryActionItem[]
+  byDepartment: InventoryDepartmentHealthRow[]
+}
+
+/**
+ * 在庫アクション明細の1行（SKU 単位・最新週スナップショット基準）。
+ * 真のユニークキーは (gyotaiCode, shohinKigou, hinbanCode, tanpinCode) の4組（ProductRow と同じ）。
+ */
+export interface InventoryItemRow {
+  gyotaiCode: string
+  shohinKigou: string
+  hinbanCode: string
+  tanpinCode: string
+  hinmei: string
+  stock: number
+  stockValueCost: number
+  stockDays: number
+  sellThroughRate: number
+  orderQuantity: number
+  advanceQuantity: number
+  /** 直近で出荷ゼロが続く週数（thresholds.dormantScanWeeks でキャップ）。 */
+  zeroSalesWeeks: number
+  status: InventoryStatus
+  recommendedAction: RecommendedActionCode | null
+  masterProductId: string | null
+  productName: string | null
+  brand: string | null
+  primaryImageUrl: string | null
+}
+
+/** GET /api/mart/inventory/items のレスポンス。 */
+export interface InventoryItemsPage {
+  items: InventoryItemRow[]
+  /** statuses 絞込後の総件数（ページングの分母）。 */
+  totalCount: number
+  page: number
+  pageSize: number
+  latestWeek: string | null
+  /** statuses 絞込前（フィルタ・検索適用後）の状態別件数。 */
+  statusCounts: InventoryStatusCounts
+  /** 滞留の経過バケット件数（thresholds.stagnantAgingBoundaries の3区分に対応）。 */
+  stagnantAgingCounts: number[]
+  /** 不動の経過バケット件数（thresholds.dormantAgingBoundaries の3区分に対応）。 */
+  dormantAgingCounts: number[]
+  thresholds: InventoryThresholds
+}
+
 /**
  * 商品別分析の1行。
  * 真のユニークキーは (gyotaiCode, shohinKigou, hinbanCode, tanpinCode) の4組。

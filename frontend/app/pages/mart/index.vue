@@ -16,6 +16,8 @@ import type {
   MartSummaryResponse,
   MartBreakdownResponse,
   BreakdownRow,
+  InventoryActionsResponse,
+  InventoryActionTargetTab,
 } from '~/types/api'
 
 useHead({ title: '全社サマリー | UndeuxSales' })
@@ -158,6 +160,28 @@ const tableColumns = [
   },
 ]
 
+// 在庫アクションダイジェスト（今週のアクション）。補助コンテンツのため、
+// 取得失敗・遅延がサマリー本体の表示をブロックしないよう load() からは待たずに起動する。
+const inventoryActions = ref<InventoryActionsResponse | null>(null)
+const inventoryActionsFailed = ref(false)
+
+async function loadInventoryDigest(): Promise<void> {
+  inventoryActionsFailed.value = false
+  try {
+    inventoryActions.value = await get<InventoryActionsResponse>(
+      '/api/mart/inventory/actions', toQuery())
+  } catch (error) {
+    console.error('[mart] 在庫アクションダイジェストの取得に失敗しました:', error)
+    inventoryActions.value = null
+    inventoryActionsFailed.value = true
+  }
+}
+
+/** ダイジェストからの遷移は push（戻るでサマリーへ帰れる）。既定タブは素の URL に正規化する。 */
+function handleDigestNavigate(tab: InventoryActionTargetTab): void {
+  void navigateTo(tab === 'dashboard' ? '/mart/inventory' : { path: '/mart/inventory', query: { tab } })
+}
+
 async function load(): Promise<void> {
   loading.value = true
   errorMessage.value = null
@@ -166,9 +190,11 @@ async function load(): Promise<void> {
     if (!isBuilt.value) {
       summary.value = null
       breakdown.value = null
+      inventoryActions.value = null
       return
     }
     const query = toQuery()
+    void loadInventoryDigest()
     const [summaryResult, breakdownResult] = await Promise.all([
       get<MartSummaryResponse>('/api/mart/summary', query),
       get<MartBreakdownResponse>('/api/mart/breakdown', {
@@ -267,6 +293,30 @@ onMounted(async () => {
 
         <p v-if="summary?.kpi.latestWeek" class="text-xs text-slate-400">
           最新取込週: {{ summary.kpi.latestWeek }}
+        </p>
+
+        <!-- 今週のアクション（在庫ダイジェスト）。気づき → 在庫マネジメントの該当タブへの導線。 -->
+        <div
+          v-if="inventoryActions && inventoryActions.actions.length > 0"
+          class="rounded-xl border border-slate-200 bg-white p-4"
+        >
+          <div class="mb-1 flex items-baseline justify-between gap-2">
+            <h2 class="text-sm font-bold text-slate-800">今週のアクション（在庫）</h2>
+            <NuxtLink
+              to="/mart/inventory"
+              class="shrink-0 text-xs font-medium text-indigo-600 hover:text-indigo-800"
+            >
+              在庫マネジメントで全て見る →
+            </NuxtLink>
+          </div>
+          <InventoryActionFeed
+            :actions="inventoryActions.actions"
+            compact
+            @navigate="handleDigestNavigate"
+          />
+        </div>
+        <p v-else-if="inventoryActionsFailed" class="text-xs text-slate-400">
+          在庫アクションの取得に失敗しました（サマリーの表示には影響ありません）。
         </p>
 
         <LineChartCard

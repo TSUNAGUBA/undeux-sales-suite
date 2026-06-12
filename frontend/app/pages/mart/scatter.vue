@@ -32,6 +32,13 @@ const { isBuilt, refreshStatus } = useMart()
 type Mode = 'temperature' | 'markdown'
 const mode = ref<Mode>('temperature')
 
+// 在庫マネジメントの推奨アクション「値下げ候補」から ?mode=markdown で直接
+// モードB（消化率×値引き率）を開けるようにする（不正値は既定モードのまま）。
+const route = useRoute()
+if (route.query.mode === 'markdown') {
+  mode.value = 'markdown'
+}
+
 // --- モードA: 気温×売上数量 ---
 const area = ref<TemperatureArea>('standard')
 type TempMeasure = 'avg' | 'max' | 'min'
