@@ -1,10 +1,20 @@
 name: deploy-frontend
 
 # フロントエンド（Nuxt SPA）を Firebase Hosting へデプロイする。
-# 実行方法: GitHub の Actions タブ → "deploy-frontend" → "Run workflow"
+# 実行方法:
+#   単独実行: GitHub の Actions タブ → "deploy-frontend" → "Run workflow"
+#   一括実行: "deploy-all"（backend → frontend の順で本ワークフローを呼び出す）
 # 必要なシークレットは infra/deploy-guide.md を参照。
 on:
   workflow_dispatch:
+  # deploy-all からの再利用呼び出し（secrets は inherit で受け取る）。
+  workflow_call:
+
+# デプロイ系ワークフローの同時実行を防ぐ共通グループ（deploy-backend / deploy-all と共有）。
+# 実行中があれば後続はキャンセルせずキューイングする。
+concurrency:
+  group: deploy
+  cancel-in-progress: false
 
 permissions:
   contents: read

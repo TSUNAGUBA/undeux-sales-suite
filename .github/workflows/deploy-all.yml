@@ -1,0 +1,37 @@
+name: deploy-all
+
+# フロントエンド（Firebase Hosting）とバックエンドAPI（AWS EC2）を一括でデプロイする。
+# 実行方法: GitHub の Actions タブ → "deploy-all" → "Run workflow"
+#
+# 実行順序はバックエンド → フロントエンドの直列。
+# 理由: フロントが参照する新しい API エンドポイントが先に存在しないと、
+# デプロイ完了までの間、公開中のフロントが 404 を踏むため（逆順は不可）。
+# バックエンドのデプロイが失敗した場合、フロントエンドのデプロイは実行されない
+# （新旧の組み合わせ事故を防ぐフェイルセーフ。フロントのみ先行させたい場合は
+# 単独の deploy-frontend を使用する）。
+#
+# 必要なシークレットは単独ワークフローと共通（secrets: inherit で引き継ぐ）。
+# 詳細は infra/deploy-guide.md を参照。
+on:
+  workflow_dispatch:
+
+# 単独の deploy-backend / deploy-frontend と同一グループでキューイングし、
+# デプロイ系ワークフローの同時実行（rsync --delete の多重実行等）を防ぐ。
+concurrency:
+  group: deploy
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+
+jobs:
+  backend:
+    name: バックエンド（AWS EC2）
+    uses: ./.github/workflows/deploy-backend.yml
+    secrets: inherit
+
+  frontend:
+    name: フロントエンド（Firebase Hosting）
+    needs: backend
+    uses: ./.github/workflows/deploy-frontend.yml
+    secrets: inherit

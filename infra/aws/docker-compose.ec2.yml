@@ -10,8 +10,18 @@
 # ============================================================
 name: undeux-sales-suite
 
+# コンテナログのローテート（json-file は既定で無上限に成長し、デプロイ間隔が長い運用では
+# ディスク枯渇要因になる。ビルドキャッシュの自動クリーンアップ（deploy-ec2.sh）と併せて
+# ディスク使用量を有界に保つ）。
+x-logging: &bounded-logging
+  driver: json-file
+  options:
+    max-size: "10m"
+    max-file: "3"
+
 services:
   dataloader:
+    logging: *bounded-logging
     build:
       context: ../../backend
       target: dataloader
@@ -30,6 +40,7 @@ services:
           memory: 768m
 
   api:
+    logging: *bounded-logging
     build:
       context: ../../backend
       target: api

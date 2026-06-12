@@ -11,11 +11,15 @@ GitHub Actions で自動デプロイするための、初回セットアップ�
 
 ```mermaid
 graph LR
-    Dev[開発者] -->|gh workflow run| GHA[GitHub Actions]
-    GHA -->|deploy-frontend| FH[Firebase Hosting]
-    GHA -->|deploy-backend / SSH| EC2[AWS EC2 Ubuntu]
+    Dev[開発者] -->|gh workflow run| ALL[deploy-all 一括デプロイ]
+    ALL -->|1. 呼び出し| BE[deploy-backend]
+    ALL -->|2. backend 成功後| FE[deploy-frontend]
+    Dev -. 個別実行も可 .-> BE
+    Dev -. 個別実行も可 .-> FE
+    FE --> FH[Firebase Hosting]
+    BE -->|SSH| EC2[AWS EC2 Ubuntu]
     EC2 --> RDS[(AWS RDS PostgreSQL)]
-    GHA -. 設定値 .-> SEC[Repository Secrets]
+    ALL -. 設定値 .-> SEC[Repository Secrets]
 ```
 
 ## 事前に用意するもの
@@ -302,14 +306,17 @@ Remove-Variable DbPassword, RdsConnectionString -ErrorAction SilentlyContinue
 > 先に Pull Request をマージしてから実行してください。
 
 ```powershell
-# バックエンド（EC2）→ フロントエンド（Firebase）の順に実行
-gh workflow run deploy-backend.yml  --repo $Repo --ref main
-gh workflow run deploy-frontend.yml --repo $Repo --ref main
+# 一括デプロイ（バックエンド → フロントエンドの順で自動実行）
+gh workflow run deploy-all.yml --repo $Repo --ref main
 
 # 進行状況の確認
 gh run list --repo $Repo --limit 5
 gh run watch --repo $Repo
 ```
+
+> 個別にデプロイしたい場合は `deploy-backend.yml` / `deploy-frontend.yml` を
+> 単独で実行できます（従来どおり）。deploy-all はバックエンド失敗時に
+> フロントエンドのデプロイを自動的に中止します。
 
 - **deploy-backend** は初回約8〜12分（イメージビルド＋初期データ約160万行の投入）。
 - **deploy-frontend** は約2〜3分。
@@ -337,6 +344,12 @@ Start-Process "https://$FirebaseProjectId.web.app"
 ## 2回目以降のデプロイ
 
 コードを更新したら、main にマージ後、次のコマンドを実行するだけです。
+
+```powershell
+gh workflow run deploy-all.yml --repo tsunaguba/undeux-sales-suite --ref main
+```
+
+個別にデプロイする場合（片方だけ更新したとき等）:
 
 ```powershell
 gh workflow run deploy-backend.yml  --repo tsunaguba/undeux-sales-suite --ref main
@@ -370,6 +383,7 @@ GitHub の **Actions** タブの「Run workflow」ボタンからも実行でき
 | 症状 | 対処 |
 |------|------|
 | `deploy-backend` がビルドで失敗 | EC2 のメモリ不足の可能性。インスタンスタイプを `t3.medium` 以上にする |
+| ビルドが `no space left on device` で失敗 | デプロイ世代ごとのビルドキャッシュ蓄積が原因。`deploy-ec2.sh` がビルド前に自動クリーンアップする（再実行すれば回復する）。それでも不足する場合は EC2 に SSH して、まず `docker builder prune -af && docker image prune -af` を実行する（共用 EC2 では `docker system prune -af` は停止中の他プロジェクトのコンテナも削除するため最終手段。いずれも `--volumes` は付けない）。恒常的に不足するなら EBS ボリュームの拡張を検討する |
 | API に HTTPS で繋がらない | DNS の A レコードが EC2 の固定IPを指しているか、反映済みか確認。nginx-proxy（acme-companion）の証明書取得には 80/443 の開放とDNS反映が必要 |
 | フロントから API 呼び出しが CORS エラー | `FRONTEND_ORIGIN` シークレットが実際のフロントURLと一致しているか確認し、`deploy-backend` を再実行 |
 | ログインできない | Firebase の Authentication でメール/パスワードが有効か、利用者が登録済みか確認 |
