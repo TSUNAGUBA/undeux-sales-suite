@@ -309,7 +309,7 @@ onMounted(async () => {
 
 <template>
   <div class="flex h-full flex-col gap-3">
-    <!-- mart 由来であることを示すページ見出し（共有パネルの h1 は固定文言のためページ側で表示）。 -->
+    <!-- ページ見出し。条件パネル（CrossTabConditionPanel）は他ページと同じ CollapsiblePanel 構成のため見出しを持たない。 -->
     <div>
       <h1 class="text-xl font-bold text-slate-800">クロス集計</h1>
       <p class="text-sm text-slate-500">

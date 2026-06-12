@@ -2,7 +2,8 @@
 /**
  * クロス集計（/mart/crosstab）の条件設定パネル。
  *
- * - 折り畳み式のヘッダ。モバイル時はデフォルト閉、PC時はデフォルト開。
+ * - 開閉は共有の CollapsiblePanel（他ページの FilterBar と同一の操作感: タイトル行全体が
+ *   クリック領域・初期状態は展開）。ヘッダにはサマリー（行×列・集計値数・フィルタ件数）を表示。
  * - 行/列ディメンション選択 + 行 ⇄ 列 入替ボタン
  * - 表示メトリクス選択（チェックボックス、availableMetrics 外は disabled）
  * - 表示モード切替（複数メトリクス時のみ表示: セル内縦並び / 列を増やして横並び / 行を増やして横並び）
@@ -14,7 +15,7 @@
  * クロス集計向けに集計単位・表示集計値の設定を加えた専用パネルとして構成している。
  */
 
-import { ArrowLeftRight, ChevronDown, Filter, RotateCcw, Search, Thermometer } from 'lucide-vue-next'
+import { ArrowLeftRight, RotateCcw, Search, Thermometer } from 'lucide-vue-next'
 import type {
   CrosstabDimensionInfo,
   CrosstabMetricInfo,
@@ -85,40 +86,6 @@ const temperatureAreaOptions = TEMPERATURE_AREAS
 function onTemperatureAreaSelect(event: Event): void {
   const value = (event.target as HTMLSelectElement).value
   emit('update:temperatureArea', value === '' ? null : (value as TemperatureArea))
-}
-
-// モバイル幅判定（〈768px）。初期判定はマウント前は PC 想定（SSR 安全）。
-// onMounted のクロージャに mql と listener を閉じ込め、onBeforeUnmount で確実に
-// 同一の listener 参照を removeEventListener する。再マウント時の参照ずれを防ぐ。
-const isMobile = ref(false)
-let detachListener: (() => void) | null = null
-
-onMounted(() => {
-  if (typeof window === 'undefined' || typeof window.matchMedia !== 'function') {
-    return
-  }
-  const mql = window.matchMedia('(max-width: 767px)')
-  const listener = (event: MediaQueryListEvent): void => {
-    isMobile.value = event.matches
-  }
-  isMobile.value = mql.matches
-  mql.addEventListener('change', listener)
-  detachListener = () => mql.removeEventListener('change', listener)
-})
-
-onBeforeUnmount(() => {
-  detachListener?.()
-  detachListener = null
-})
-
-// パネルの開閉状態。ユーザーが明示操作したらそれを優先、初期状態はデバイス幅で決まる。
-const panelOpenOverride = ref<boolean | null>(null)
-const panelOpen = computed(() =>
-  panelOpenOverride.value === null ? !isMobile.value : panelOpenOverride.value,
-)
-
-function togglePanel(): void {
-  panelOpenOverride.value = !panelOpen.value
 }
 
 // 詳細フィルタ（品番タグ群）の表示状態。
@@ -204,57 +171,22 @@ const summaryText = computed(() => {
 </script>
 
 <template>
-  <section
-    class="overflow-hidden rounded-xl border border-slate-200 bg-white shadow-sm"
-    aria-label="集計条件パネル"
+  <!-- フィルタ選択肢の取得失敗時の通知。FilterControls.vue / ProductMasterFilters.vue と同じパターン。
+       パネルの開閉に関わらず常時表示する（ユーザーが気付かないと「フィルタが効かない」状態に陥るため、
+       折りたたみの外側に置く）。 -->
+  <p
+    v-if="optionsError"
+    class="rounded-lg bg-amber-50 px-3 py-2 text-xs text-amber-700"
   >
-    <!-- ヘッダ -->
-    <div class="flex items-center justify-between gap-3 px-4 py-2.5">
-      <div class="flex min-w-0 items-baseline gap-3">
-        <h1 class="text-lg font-bold text-slate-800">クロス集計</h1>
-        <span class="truncate text-xs text-slate-500">{{ summaryText }}</span>
-      </div>
+    フィルタ選択肢の取得に失敗しました: {{ optionsError }}
+  </p>
 
-      <button
-        type="button"
-        class="inline-flex shrink-0 items-center gap-1.5 rounded-lg border border-slate-300 px-3 py-1.5 text-xs text-slate-700 hover:bg-slate-50"
-        :aria-expanded="panelOpen"
-        aria-controls="cross-tab-condition-panel-body"
-        @click="togglePanel"
-      >
-        <Filter class="h-3.5 w-3.5" />
-        条件設定
-        <span
-          v-if="activeFilterCount > 0"
-          class="inline-flex items-center justify-center rounded-full bg-indigo-50 px-1.5 text-xs font-semibold text-indigo-700"
-          :aria-label="`${activeFilterCount} 件のフィルター適用中`"
-          style="min-width: 1.125rem"
-        >
-          {{ activeFilterCount }}
-        </span>
-        <ChevronDown
-          class="h-3 w-3 text-slate-400 transition-transform"
-          :class="panelOpen ? 'rotate-180' : ''"
-          aria-hidden="true"
-        />
-      </button>
-    </div>
+  <!-- 開閉は他ページの FilterBar と同じ共有 CollapsiblePanel（タイトル行全体がクリック領域・
+       初期状態は展開）。ページ見出し（h1）は crosstab.vue 側にあるためここでは持たない。 -->
+  <CollapsiblePanel title="条件設定">
+    <template #summary>{{ summaryText }}</template>
 
-    <!-- フィルタ選択肢の取得失敗時の通知。FilterControls.vue:45-49 / ProductMasterFilters.vue:147-150 と同じパターン。
-         panel 開閉に関わらず常時表示する（ユーザーが気付かないと「フィルタが効かない」状態に陥るため）。 -->
-    <p
-      v-if="optionsError"
-      class="mx-4 mb-2 rounded-lg bg-amber-50 px-3 py-2 text-xs text-amber-700"
-    >
-      フィルタ選択肢の取得に失敗しました: {{ optionsError }}
-    </p>
-
-    <!-- 本体 -->
-    <div
-      v-if="panelOpen"
-      id="cross-tab-condition-panel-body"
-      class="border-t border-slate-100 px-4 pb-4 pt-3"
-    >
+    <div>
       <div class="grid grid-cols-1 gap-4 lg:grid-cols-3">
         <!-- フィルター（主要 + 詳細） -->
         <div class="lg:col-span-1">
@@ -591,5 +523,5 @@ const summaryText = computed(() => {
         </button>
       </div>
     </div>
-  </section>
+  </CollapsiblePanel>
 </template>
