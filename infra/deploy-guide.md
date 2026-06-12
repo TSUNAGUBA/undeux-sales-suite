@@ -302,14 +302,17 @@ Remove-Variable DbPassword, RdsConnectionString -ErrorAction SilentlyContinue
 > 先に Pull Request をマージしてから実行してください。
 
 ```powershell
-# バックエンド（EC2）→ フロントエンド（Firebase）の順に実行
-gh workflow run deploy-backend.yml  --repo $Repo --ref main
-gh workflow run deploy-frontend.yml --repo $Repo --ref main
+# 一括デプロイ（バックエンド → フロントエンドの順で自動実行）
+gh workflow run deploy-all.yml --repo $Repo --ref main
 
 # 進行状況の確認
 gh run list --repo $Repo --limit 5
 gh run watch --repo $Repo
 ```
+
+> 個別にデプロイしたい場合は `deploy-backend.yml` / `deploy-frontend.yml` を
+> 単独で実行できます（従来どおり）。deploy-all はバックエンド失敗時に
+> フロントエンドのデプロイを自動的に中止します。
 
 - **deploy-backend** は初回約8〜12分（イメージビルド＋初期データ約160万行の投入）。
 - **deploy-frontend** は約2〜3分。
@@ -337,6 +340,12 @@ Start-Process "https://$FirebaseProjectId.web.app"
 ## 2回目以降のデプロイ
 
 コードを更新したら、main にマージ後、次のコマンドを実行するだけです。
+
+```powershell
+gh workflow run deploy-all.yml --repo tsunaguba/undeux-sales-suite --ref main
+```
+
+個別にデプロイする場合（片方だけ更新したとき等）:
 
 ```powershell
 gh workflow run deploy-backend.yml  --repo tsunaguba/undeux-sales-suite --ref main
