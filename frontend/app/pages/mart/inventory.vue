@@ -2,7 +2,7 @@
 import { Boxes, PackagePlus, Hourglass, Truck, Gauge, CalendarClock } from 'lucide-vue-next'
 import type { InventoryBreakdownRow, InventoryResponse, KpiCardItem } from '~/types/api'
 
-useHead({ title: '在庫・発注分析（スタースキーマ） | UndeuxSales' })
+useHead({ title: '在庫・発注分析 | UndeuxSales' })
 
 const MART_SCOPE = 'mart-filter'
 const { toQuery, addToFilter, loadOptions } = useFilters(MART_SCOPE)
@@ -134,7 +134,7 @@ onMounted(async () => {
 <template>
   <div class="space-y-4">
     <div>
-      <h1 class="text-xl font-bold text-slate-800">在庫・発注分析（スタースキーマ）</h1>
+      <h1 class="text-xl font-bold text-slate-800">在庫・発注分析</h1>
       <p class="text-sm text-slate-500">
         分析 mart（fact_inventory_snapshot）の最新取込週スナップショット基準。
       </p>

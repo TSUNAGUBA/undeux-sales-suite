@@ -27,7 +27,7 @@ useHead({ title: '商品詳細 | UndeuxSales' })
 const route = useRoute()
 const router = useRouter()
 const { get } = useApi()
-// 商品単位の分析は売上参照スイート内で /product-analytics と同じスコープを共有する。
+// 商品単位の分析フィルタは本ページ専用のスコープで保持する。
 // 同期間で両画面を行き来できる利点を維持する（CLAUDE.md 原則3 既存パターンの再利用）。
 const {
   filter,
@@ -548,10 +548,10 @@ const showNoSalesNotice = computed(() => analyticsNoData.value || (analytics.val
       </NuxtLink>
       <NuxtLink
         v-if="detail"
-        :to="`/product-analytics/${productId}`"
+        :to="`/mart/products/${productId}`"
         class="ml-auto inline-flex min-h-[36px] items-center gap-1 rounded-lg border border-slate-300 px-3 py-2 text-xs text-slate-600 hover:bg-slate-50"
       >
-        商品分析の詳細を見る
+        商品の詳細分析を見る
         <ExternalLink class="h-3.5 w-3.5" />
       </NuxtLink>
     </div>

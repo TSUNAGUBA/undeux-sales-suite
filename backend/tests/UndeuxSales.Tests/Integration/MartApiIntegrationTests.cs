@@ -284,6 +284,25 @@ public sealed class MartApiIntegrationTests
     }
 
     [Fact]
+    public async Task Mart_Summary_ShohinKigoFilter_Applies()
+    {
+        await RebuildMartAsync();
+        var client = CreateAuthedClient();
+
+        // 商品記号 S100 = 品番100（数量15）。S999 は存在しないため0件。
+        // 業態×記号×品番の自然キーで単一商品に絞る商品詳細分析の前提を回帰で固定する。
+        var s100 = await client.GetFromJsonAsync<MartSummaryResponse>(
+            $"/api/mart/summary?{SeedRange}&shohinKigos=S100");
+        var none = await client.GetFromJsonAsync<MartSummaryResponse>(
+            $"/api/mart/summary?{SeedRange}&shohinKigos=S999");
+
+        Assert.NotNull(s100);
+        Assert.NotNull(none);
+        Assert.Equal(15, s100!.Kpi.Quantity);
+        Assert.Equal(0, none!.Kpi.Quantity);
+    }
+
+    [Fact]
     public async Task Mart_WeeklySeries_IncludesInventorySeries()
     {
         await RebuildMartAsync();

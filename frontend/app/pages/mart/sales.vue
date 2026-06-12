@@ -1,6 +1,6 @@
 <script setup lang="ts">
 /**
- * 売上分析（/mart/sales）ページ。分析 mart（スタースキーマ）版。
+ * 売上分析（/mart/sales）ページ。
  *
  * - 週次売上推移グラフ: 売上数量・売上金額=折れ線、店頭在庫=棒、気温=折れ線 の複合チャート。
  *   気温は週平均/最高/最低の3種とエリア（標準=東京/寒冷=札幌/温暖=那覇）を切り替えられる。
@@ -19,7 +19,7 @@ import type {
 } from '~/types/api'
 import type { ComboChartAxis, ComboChartSeries } from '~/components/ComboChartCard.vue'
 
-useHead({ title: '売上分析（スタースキーマ） | UndeuxSales' })
+useHead({ title: '売上分析 | UndeuxSales' })
 
 const MART_SCOPE = 'mart-filter'
 const { toQuery, addToFilter, loadOptions } = useFilters(MART_SCOPE)
@@ -254,12 +254,14 @@ onMounted(async () => {
 <template>
   <div class="space-y-4">
     <div>
-      <h1 class="text-xl font-bold text-slate-800">売上分析（スタースキーマ）</h1>
+      <h1 class="text-xl font-bold text-slate-800">売上分析</h1>
       <p class="text-sm text-slate-500">
         分析 mart（fact_sales_weekly / fact_inventory_snapshot）の週次推移と集計軸別の売上構成（日次は mart 非対応）。
         気温は mart の気温データ（実測 dim_climate、未カバー週は標準気候へフォールバック）。
       </p>
     </div>
+
+    <FilterBar :scope-key="MART_SCOPE" @apply="load" />
 
     <div class="flex flex-wrap items-center gap-2">
       <select
@@ -277,8 +279,6 @@ onMounted(async () => {
         <option v-for="m in tempMeasureOptions" :key="m.value" :value="m.value">{{ m.label }}</option>
       </select>
     </div>
-
-    <FilterBar :scope-key="MART_SCOPE" @apply="load" />
 
     <StatusBlock :loading="loading" :error="errorMessage">
       <MartNotBuiltNotice v-if="!isBuilt" />

@@ -1,9 +1,8 @@
 <script setup lang="ts">
 /**
- * 重回帰シミュレーター（/mart/simulation）ページ。分析 mart（スタースキーマ）版。
+ * 重回帰シミュレーター（/mart/simulation）ページ。
  *
- * 既存 /simulation のミラー。データ源を分析 mart（/api/mart/*）に切り替えたもので、UI・
- * 数式は同一。
+ * データ源は分析 mart（/api/mart/*）。
  * 提案1【未来の発注予測】「気象スライダー」: 売上数量 ≈ b0 + b1×気温 + b2×前週売上数量 を
  *   週次系列から重回帰で推定し、来週の予想気温・前週売上をスライダーで動かすと予測がリアルタイムに変わる。
  * 提案2【販促・値引き最適化】「値引き率スライダー」: 気温由来の基準数量に価格弾力性を掛けて
@@ -17,7 +16,7 @@ import { CloudSun, Coins, Package, TrendingUp } from 'lucide-vue-next'
 import type { KpiCardItem, TemperatureArea, WeeklySeriesResponse } from '~/types/api'
 import type { Observation } from '~/utils/regression'
 
-useHead({ title: '重回帰シミュレーター（スタースキーマ） | UndeuxSales' })
+useHead({ title: '重回帰シミュレーター | UndeuxSales' })
 
 // mart 専用のフィルタスコープ。既存 sales 系とは分離する。
 const MART_SCOPE = 'mart-filter'
@@ -241,12 +240,14 @@ onMounted(async () => {
 <template>
   <div class="space-y-4">
     <div>
-      <h1 class="text-xl font-bold text-slate-800">重回帰シミュレーター（スタースキーマ）</h1>
+      <h1 class="text-xl font-bold text-slate-800">重回帰シミュレーター</h1>
       <p class="text-sm text-slate-500">
         分析 mart の週次系列を学習。裏側は重回帰＋価格弾力性、表側はスライダー。来週の気温・前週売上・値引き率を動かすと予測が変わります。
         気温は mart の気温データ（実測 dim_climate、未カバー週は標準気候へフォールバック）。
       </p>
     </div>
+
+    <FilterBar :scope-key="MART_SCOPE" @apply="load" />
 
     <div class="flex flex-wrap items-center gap-2">
       <select
@@ -264,8 +265,6 @@ onMounted(async () => {
         <option v-for="m in tempMeasureOptions" :key="m.value" :value="m.value">{{ m.label }}</option>
       </select>
     </div>
-
-    <FilterBar :scope-key="MART_SCOPE" @apply="load" />
 
     <StatusBlock
       :loading="loading"

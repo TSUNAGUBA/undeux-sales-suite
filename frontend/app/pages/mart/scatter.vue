@@ -1,10 +1,10 @@
 <script setup lang="ts">
 /**
- * 散布図・回帰分析（/mart/scatter）ページ。分析 mart（スタースキーマ）版。
+ * 散布図・回帰分析（/mart/scatter）ページ。
  *
- * 既存 /scatter のミラー。データ源を分析 mart（/api/mart/*）に切り替えたもので、
+ * データ源は分析 mart（/api/mart/*）。
  * モードA【MD・発注向け】「週平均(最高/最低)気温 × 週売上数量」（点=各週）と
- * モードB【在庫・販促向け】「消化率 × 値引き率」（点=型番、バブル=売上数量）は同一。
+ * モードB【在庫・販促向け】「消化率 × 値引き率」（点=型番、バブル=売上数量）を提供する。
  *
  * データフロー（SoT）: mart は集計素材（週次系列・型番別指標）のみ返し、回帰直線・
  * 象限分類はフロント（utils/regression）で算出する表示射影。気温は mart の気温データ
@@ -21,7 +21,7 @@ import type {
 import type { Point } from '~/utils/regression'
 import type { ScatterDataset } from '~/components/ScatterChartCard.vue'
 
-useHead({ title: '散布図・回帰分析（スタースキーマ） | UndeuxSales' })
+useHead({ title: '散布図・回帰分析 | UndeuxSales' })
 
 // mart 専用のフィルタスコープ。既存 sales 系とは分離する。
 const MART_SCOPE = 'mart-filter'
@@ -283,12 +283,14 @@ onMounted(async () => {
 <template>
   <div class="space-y-4">
     <div>
-      <h1 class="text-xl font-bold text-slate-800">散布図・回帰分析（スタースキーマ）</h1>
+      <h1 class="text-xl font-bold text-slate-800">散布図・回帰分析</h1>
       <p class="text-sm text-slate-500">
         分析 mart の集計素材で、気温×売上で「スイッチ温度」を、消化率×値引き率で値下げ判断（4象限）を可視化します。
         気温は mart の気温データ（実測 dim_climate、未カバー週は標準気候へフォールバック）。
       </p>
     </div>
+
+    <FilterBar :scope-key="MART_SCOPE" @apply="load" />
 
     <!-- モード切替 -->
     <div class="flex flex-wrap items-center gap-2">
@@ -328,8 +330,6 @@ onMounted(async () => {
         </select>
       </template>
     </div>
-
-    <FilterBar :scope-key="MART_SCOPE" @apply="load" />
 
     <StatusBlock
       :loading="loading"

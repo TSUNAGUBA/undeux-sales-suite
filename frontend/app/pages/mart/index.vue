@@ -18,7 +18,7 @@ import type {
   BreakdownRow,
 } from '~/types/api'
 
-useHead({ title: '全社サマリー（スタースキーマ） | UndeuxSales' })
+useHead({ title: '全社サマリー | UndeuxSales' })
 
 // mart 専用のフィルタスコープ。既存 sales 系（'sales-filter'）とは分離する。
 const MART_SCOPE = 'mart-filter'
@@ -204,7 +204,7 @@ onMounted(async () => {
 <template>
   <div class="space-y-4">
     <div>
-      <h1 class="text-xl font-bold text-slate-800">全社サマリー（スタースキーマ）</h1>
+      <h1 class="text-xl font-bold text-slate-800">全社サマリー</h1>
       <p class="text-sm text-slate-500">
         分析用ディメンショナルモデル（mart）から集計。既存の売上参照（sales_weekly）とは別系統で、
         他小売・他メーカーにも展開可能な汎用構造。

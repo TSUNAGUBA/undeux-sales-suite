@@ -1,6 +1,6 @@
 <script setup lang="ts">
 /**
- * 商品導入管理（/mart/introductions）ページ。分析 mart（スタースキーマ）版。
+ * 商品導入管理（/mart/introductions）ページ。
  *
  * 商品（業態×記号×品番）単位で導入日（sales_weekly.donyu_date 由来。mart の
  * dim_sku.attributes->>'donyu'）を一覧し、導入時期での絞り込み・把握を行う。
@@ -18,7 +18,7 @@ import type {
   MartIntroductionRow,
 } from '~/types/api'
 
-useHead({ title: '商品導入管理（スタースキーマ） | UndeuxSales' })
+useHead({ title: '商品導入管理 | UndeuxSales' })
 
 const { get } = useApi()
 const { isBuilt, refreshStatus } = useMart()
@@ -236,7 +236,7 @@ onMounted(async () => {
 <template>
   <div class="space-y-4">
     <div>
-      <h1 class="text-xl font-bold text-slate-800">商品導入管理（スタースキーマ）</h1>
+      <h1 class="text-xl font-bold text-slate-800">商品導入管理</h1>
       <p class="text-sm text-slate-500">
         商品（業態×記号×品番）単位の導入日を一覧します。導入時期・導入日 From-To で絞り込み、
         新規導入の状況を把握できます（導入日は売上参照データの donyu_date 由来）。
@@ -341,7 +341,7 @@ onMounted(async () => {
         該当する商品がありません。フィルタを見直してください。
         <p v-if="emptyWithDonyuFilter" class="mt-2 text-xs text-amber-600">
           ※ mart が改修前に構築されたままの場合、導入日が未反映で0件になることがあります。
-          全社サマリー（スタースキーマ）から「mart を再構築」を実行してからお試しください。
+          全社サマリーから「mart を再構築」を実行してからお試しください。
         </p>
       </div>
       <div v-else class="space-y-3">
@@ -349,7 +349,7 @@ onMounted(async () => {
           v-if="needsRebuildHint"
           class="rounded-lg bg-amber-50 px-3 py-2 text-xs text-amber-700"
         >
-          導入日が未反映です。全社サマリー（スタースキーマ）から「mart を再構築」を実行すると導入日が反映されます。
+          導入日が未反映です。全社サマリーから「mart を再構築」を実行すると導入日が反映されます。
         </p>
 
         <DataTable

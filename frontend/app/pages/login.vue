@@ -35,7 +35,7 @@ async function handleSubmit(): Promise<void> {
   submitting.value = true
   try {
     await login(email.value, password.value)
-    await router.push('/')
+    await router.push('/mart')
   } catch (error) {
     errorMessage.value = firebaseAuthMessage(error)
   } finally {

@@ -8,7 +8,7 @@ export default defineNuxtRouteMiddleware(async (to) => {
   }
 
   if (to.path === '/login') {
-    return isAuthenticated.value ? navigateTo('/') : undefined
+    return isAuthenticated.value ? navigateTo('/mart') : undefined
   }
 
   if (!isAuthenticated.value) {

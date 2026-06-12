@@ -1248,6 +1248,7 @@ internal static class MartFilterSql
         if (filter.BusinessTypes is { Length: > 0 }) parameters.Add("businessTypes", filter.BusinessTypes);
         if (filter.Seasons is { Length: > 0 }) parameters.Add("seasons", filter.Seasons);
         if (filter.Hinbans is { Length: > 0 }) parameters.Add("hinbans", filter.Hinbans);
+        if (filter.ShohinKigos is { Length: > 0 }) parameters.Add("shohinKigos", filter.ShohinKigos);
         if (filter.Tanawari1 is { Length: > 0 }) parameters.Add("tanawari1", filter.Tanawari1);
     }
 
@@ -1269,6 +1270,7 @@ internal static class MartFilterSql
         if (filter.BusinessTypes is { Length: > 0 }) conditions.Add("dr.channel_code = ANY(@businessTypes)");
         if (filter.Seasons is { Length: > 0 }) conditions.Add("dp.season = ANY(@seasons)");
         if (filter.Hinbans is { Length: > 0 }) conditions.Add("dp.product_code = ANY(@hinbans)");
+        if (filter.ShohinKigos is { Length: > 0 }) conditions.Add("dp.product_sign = ANY(@shohinKigos)");
         if (filter.Tanawari1 is { Length: > 0 })
         {
             conditions.Add("COALESCE(dp.attributes->>'tanawari1', '') = ANY(@tanawari1)");

@@ -24,6 +24,12 @@ public sealed class SalesQueryFilter
     /// <summary>品番コード（いずれかに一致）。ドリルダウン時に設定される。</summary>
     public string[]? Hinbans { get; set; }
 
+    /// <summary>
+    /// 商品記号（いずれかに一致）。業態×記号×品番の自然キーで単一商品に絞る用途
+    /// （商品詳細分析）で品番・業態と併用する。
+    /// </summary>
+    public string[]? ShohinKigos { get; set; }
+
     /// <summary>棚割1（いずれかに一致）。NULL/空は <c>''</c> に正規化して比較する。</summary>
     public string[]? Tanawari1 { get; set; }
 
@@ -83,6 +89,11 @@ internal static class SalesFilterSql
             parameters.Add("hinbans", filter.Hinbans);
         }
 
+        if (filter.ShohinKigos is { Length: > 0 })
+        {
+            parameters.Add("shohinKigos", filter.ShohinKigos);
+        }
+
         if (filter.Tanawari1 is { Length: > 0 })
         {
             parameters.Add("tanawari1", filter.Tanawari1);
@@ -122,6 +133,11 @@ internal static class SalesFilterSql
         if (filter.Hinbans is { Length: > 0 })
         {
             conditions.Add($"{alias}.hinban_code = ANY(@hinbans)");
+        }
+
+        if (filter.ShohinKigos is { Length: > 0 })
+        {
+            conditions.Add($"{alias}.shohin_kigou = ANY(@shohinKigos)");
         }
 
         if (filter.Tanawari1 is { Length: > 0 })

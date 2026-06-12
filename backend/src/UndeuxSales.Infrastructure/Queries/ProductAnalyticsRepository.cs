@@ -295,6 +295,7 @@ public sealed class ProductAnalyticsRepository
             BusinessTypes = null,
             Seasons = filter.Seasons,
             Hinbans = filter.Hinbans,
+            ShohinKigos = filter.ShohinKigos,
         };
 
         var parameters = new DynamicParameters();
