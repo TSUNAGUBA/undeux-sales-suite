@@ -121,3 +121,25 @@ public enum ProductSortKey
     /// <summary>在庫日数（在日）。</summary>
     StockDays,
 }
+
+/// <summary>在庫アクション明細（inventory/items）の並び替えキー。</summary>
+public enum InventoryItemSortKey
+{
+    /// <summary>在庫数。</summary>
+    Stock,
+
+    /// <summary>在庫金額（原価ベース）。</summary>
+    StockValueCost,
+
+    /// <summary>在庫日数（在日）。</summary>
+    StockDays,
+
+    /// <summary>消化率。</summary>
+    SellThroughRate,
+
+    /// <summary>出荷ゼロ継続週数。</summary>
+    ZeroSalesWeeks,
+
+    /// <summary>発注残。</summary>
+    OrderQuantity,
+}

@@ -117,6 +117,24 @@ public static class RequestParsing
             $"並び替えキー '{value}' は不正です。");
     }
 
+    /// <summary>在庫アクション明細の並び替えキーを解析する（未指定時は呼び出し側の既定値）。</summary>
+    public static InventoryItemSortKey InventoryItemSort(string? value, InventoryItemSortKey fallback)
+    {
+        if (string.IsNullOrWhiteSpace(value))
+        {
+            return fallback;
+        }
+
+        if (Enum.TryParse<InventoryItemSortKey>(value, ignoreCase: true, out var sortKey)
+            && Enum.IsDefined(sortKey))
+        {
+            return sortKey;
+        }
+
+        throw new AppException(ErrorCodes.InvalidRequest, 400,
+            $"並び替えキー '{value}' は不正です。");
+    }
+
     /// <summary>並び順を解析する。"asc" のみ昇順、それ以外（未指定含む）は降順。</summary>
     public static bool IsAscending(string? order)
         => string.Equals(order, "asc", StringComparison.OrdinalIgnoreCase);
