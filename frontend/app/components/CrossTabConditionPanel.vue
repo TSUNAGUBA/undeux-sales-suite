@@ -15,7 +15,7 @@
  * クロス集計向けに集計単位・表示集計値の設定を加えた専用パネルとして構成している。
  */
 
-import { ArrowLeftRight, RotateCcw, Search, Thermometer } from 'lucide-vue-next'
+import { ArrowLeftRight, ChevronDown, RotateCcw, Search, Thermometer } from 'lucide-vue-next'
 import type {
   CrosstabDimensionInfo,
   CrosstabMetricInfo,
@@ -171,9 +171,9 @@ const summaryText = computed(() => {
 </script>
 
 <template>
-  <!-- フィルタ選択肢の取得失敗時の通知。FilterControls.vue / ProductMasterFilters.vue と同じパターン。
-       パネルの開閉に関わらず常時表示する（ユーザーが気付かないと「フィルタが効かない」状態に陥るため、
-       折りたたみの外側に置く）。 -->
+  <!-- フィルタ選択肢の取得失敗時の通知。見た目・文言は FilterControls.vue / ProductMasterFilters.vue と
+       同パターンだが、配置は意図的に異なる: 両者はパネル内（折りたたむと隠れる）に対し、本画面は
+       「閉じていても常時表示」の保証を維持するため折りたたみの外側に置く。 -->
   <p
     v-if="optionsError"
     class="rounded-lg bg-amber-50 px-3 py-2 text-xs text-amber-700"
@@ -186,8 +186,7 @@ const summaryText = computed(() => {
   <CollapsiblePanel title="条件設定">
     <template #summary>{{ summaryText }}</template>
 
-    <div>
-      <div class="grid grid-cols-1 gap-4 lg:grid-cols-3">
+    <div class="grid grid-cols-1 gap-4 lg:grid-cols-3">
         <!-- フィルター（主要 + 詳細） -->
         <div class="lg:col-span-1">
           <h3 class="mb-2 text-xs uppercase tracking-wider text-slate-500">
@@ -522,6 +521,5 @@ const summaryText = computed(() => {
           リセット
         </button>
       </div>
-    </div>
   </CollapsiblePanel>
 </template>
