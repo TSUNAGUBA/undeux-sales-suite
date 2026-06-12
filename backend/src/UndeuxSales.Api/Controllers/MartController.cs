@@ -128,6 +128,7 @@ public sealed class MartController : ControllerBase
                 BusinessTypes = filter.BusinessTypes,
                 Seasons = filter.Seasons,
                 Hinbans = filter.Hinbans,
+                ShohinKigos = filter.ShohinKigos,
             };
         }
 

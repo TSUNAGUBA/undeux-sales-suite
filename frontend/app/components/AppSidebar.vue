@@ -59,35 +59,20 @@ const route = useRoute()
 const router = useRouter()
 const { user, logout } = useAuth()
 
-// 商品軸分析（/product-analytics）はサイドバーから隠す。ルート自体は残っており、
-// 必要に応じて直接 URL でアクセスできる。
-// 既存の売上参照（sales_weekly 直参照）と、分析mart（スタースキーマ）を別グループで提示する。
+// 分析ページはスタースキーマ（/mart 配下）が正。プロトタイプ段階の旧ページは廃止済み。
 const navGroups = [
   {
     header: null as string | null,
     items: [
-      { to: '/', label: '全社サマリー', icon: LayoutDashboard },
-      { to: '/sales', label: '売上分析', icon: TrendingUp },
-      { to: '/products', label: '商品別分析', icon: Package },
-      { to: '/inventory', label: '在庫・発注分析', icon: Boxes },
-      { to: '/crosstab', label: 'クロス集計', icon: LayoutGrid },
-      { to: '/ranking', label: 'ランキング分析', icon: ListOrdered },
-      { to: '/scatter', label: '散布図・回帰分析', icon: ScatterChart },
-      { to: '/simulation', label: '重回帰シミュレーター', icon: SlidersHorizontal },
-    ],
-  },
-  {
-    header: 'スタースキーマ分析',
-    items: [
-      { to: '/mart', label: '全社サマリー（スタースキーマ）', icon: LayoutDashboard },
-      { to: '/mart/sales', label: '売上分析（スタースキーマ）', icon: TrendingUp },
-      { to: '/mart/products', label: '商品別分析（スタースキーマ）', icon: Package },
-      { to: '/mart/inventory', label: '在庫・発注分析（スタースキーマ）', icon: Boxes },
-      { to: '/mart/crosstab', label: 'クロス集計（スタースキーマ）', icon: LayoutGrid },
-      { to: '/mart/ranking', label: 'ランキング分析（スタースキーマ）', icon: ListOrdered },
-      { to: '/mart/scatter', label: '散布図・回帰分析（スタースキーマ）', icon: ScatterChart },
-      { to: '/mart/simulation', label: '重回帰シミュレーター（スタースキーマ）', icon: SlidersHorizontal },
-      { to: '/mart/introductions', label: '商品導入管理（スタースキーマ）', icon: CalendarPlus },
+      { to: '/mart', label: '全社サマリー', icon: LayoutDashboard },
+      { to: '/mart/sales', label: '売上分析', icon: TrendingUp },
+      { to: '/mart/products', label: '商品別分析', icon: Package },
+      { to: '/mart/inventory', label: '在庫・発注分析', icon: Boxes },
+      { to: '/mart/crosstab', label: 'クロス集計', icon: LayoutGrid },
+      { to: '/mart/ranking', label: 'ランキング分析', icon: ListOrdered },
+      { to: '/mart/scatter', label: '散布図・回帰分析', icon: ScatterChart },
+      { to: '/mart/simulation', label: '重回帰シミュレーター', icon: SlidersHorizontal },
+      { to: '/mart/introductions', label: '商品導入管理', icon: CalendarPlus },
     ],
   },
   {
@@ -99,13 +84,16 @@ const navGroups = [
   },
 ]
 
+/** サブルート（詳細ページ）でも親メニューをアクティブ表示するパス。 */
+const SUBROUTE_ACTIVE_PATHS = new Set(['/product-master', '/mart/products'])
+
 /**
- * サイドバー項目のアクティブ判定。サブルートを持つメニュー（商品マスタ）は
+ * サイドバー項目のアクティブ判定。詳細サブルートを持つメニュー（商品マスタ・商品別分析）は
  * 親パス + '/' 以下のサブルートでもアクティブ表示する。完全一致のみのページは === で判定。
- * 全社サマリー（スタースキーマ）`/mart` は厳密一致のため、`/mart/sales` 等の配下では非アクティブになる。
+ * 全社サマリー `/mart` は厳密一致のため、`/mart/sales` 等の配下では非アクティブになる。
  */
 function isActive(path: string): boolean {
-  if (path === '/product-master') {
+  if (SUBROUTE_ACTIVE_PATHS.has(path)) {
     return route.path === path || route.path.startsWith(`${path}/`)
   }
   return route.path === path

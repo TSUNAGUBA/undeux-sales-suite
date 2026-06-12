@@ -2,20 +2,16 @@
 /**
  * ランキング分析（スタースキーマ / mart）ページ。
  *
- * 既存の /ranking を分析 mart（スタースキーマ）へ向けたミラー。エンドポイントは
- * /api/mart/ranking を使い、データソースは分析 mart（fact_*・dim_*）。順位・複合スコア・
- * 構成比・累積・ABC・順位変動・成長率の算出（utils/ranking）と表示射影は既存ページと同等で、
+ * エンドポイントは /api/mart/ranking、データソースは分析 mart（fact_*・dim_*）。順位・複合スコア・
+ * 構成比・累積・ABC・順位変動・成長率の算出（utils/ranking）は表示射影で、
  * 純粋な表示コンポーネント（RankingTable / RankingParetoChart / RankingMoversChart / KpiCard）を再利用する。
  *
- * mart 固有の差分:
- * - フィルタスコープを 'mart-filter' に分離（既存 sales 系 'sales-filter' とは別系統）。
+ * - フィルタスコープは 'mart-filter'。
  * - mart 未構築時は MartNotBuiltNotice を表示し、データ取得を行わない。
  * - mart が集計軸として保持しない軸（帳票区分・棚割1・棚割2）は集計軸の候補から除外する
  *   （API は未対応軸に HTTP 400 を返すため、UI 側で選ばせない。棚割1のフィルタは対応済み）。
- * - 共有の RankingConditionPanel は集計軸 select に RANKING_DIMENSIONS（全軸）を直接埋め込んでおり
- *   props で軸を制限できないため、本ページでは props で制限できる範囲のシンプルな自前コントロール
- *   （集計軸・並び替え・並び順・件数・期間比較の各 select／ボタン）を構築し、フィルタは共通の
- *   FilterBar（mart スコープ）を使う。複合スコアの重み調整 UI と ABC 閾値編集 UI は省略し、
+ * - 条件コントロールは集計軸・並び替え・並び順・件数・期間比較のシンプルな自前 select／ボタンで構成し、
+ *   フィルタは共通の FilterBar を使う。複合スコアの重み調整 UI と ABC 閾値編集 UI は省略し、
  *   既定値（重み amount50/粗利30/消化20、ABC 70/90）で算出する（順位・ABC・パレート・順位変動は機能を維持）。
  *
  * データフロー（SoT）: mart は集計素材（行ごとの主期間/比較期間の指標）のみ返す。
@@ -39,7 +35,7 @@ import type {
   RankingViewRow,
 } from '~/utils/ranking'
 
-useHead({ title: 'ランキング分析（スタースキーマ） | UndeuxSales' })
+useHead({ title: 'ランキング分析 | UndeuxSales' })
 
 // mart 専用のフィルタスコープ。既存 sales 系（'sales-filter'）とは分離する。
 const MART_SCOPE = 'mart-filter'
@@ -509,14 +505,16 @@ onMounted(async () => {
 <template>
   <div class="space-y-4">
     <div>
-      <h1 class="text-xl font-bold text-slate-800">ランキング分析（スタースキーマ）</h1>
+      <h1 class="text-xl font-bold text-slate-800">ランキング分析</h1>
       <p class="text-sm text-slate-500">
         分析 mart（fact_sales / dim_*）の集計素材から、順位・複合スコア・ABC/パレート・順位変動を算出。
         既存の売上参照（sales_weekly）とは別系統で、汎用ディメンショナルモデルを基盤とする。
       </p>
     </div>
 
-    <!-- 集計・並び替えコントロール（自前。共有 RankingConditionPanel は集計軸を制限できないため） -->
+    <FilterBar :scope-key="MART_SCOPE" @apply="applyAndLoad" />
+
+    <!-- 集計・並び替えコントロール（フィルタ → 集計単位 → 表示集計値 の導線に合わせ FilterBar の後段に置く） -->
     <div class="rounded-xl border border-slate-200 bg-white p-3 shadow-sm">
       <div class="flex flex-wrap items-end gap-3">
         <div>
@@ -606,8 +604,6 @@ onMounted(async () => {
         複合スコアの重み（売上50/粗利30/消化20）と ABC 閾値（70/90）は既定値で算出します。
       </p>
     </div>
-
-    <FilterBar :scope-key="MART_SCOPE" @apply="applyAndLoad" />
 
     <div class="flex min-h-0 flex-1 flex-col gap-3">
       <StatusBlock

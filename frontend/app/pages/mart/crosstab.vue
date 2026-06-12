@@ -2,12 +2,10 @@
 /**
  * クロス集計（スタースキーマ / mart）ページ。
  *
- * 既存の /crosstab を分析 mart（スタースキーマ）へ向けたミラー。エンドポイントは
- * /api/mart/crosstab を使い、データソースは分析 mart（fact_*・dim_*）。UI・表示射影は
- * 既存ページと同等で、共有コンポーネント（CrossTabConditionPanel / CrossTabTable）を再利用する。
+ * エンドポイントは /api/mart/crosstab、データソースは分析 mart（fact_*・dim_*）。
+ * 共有コンポーネント（CrossTabConditionPanel / CrossTabTable）で行×列マトリクスを表示する。
  *
- * mart 固有の差分:
- * - フィルタスコープを 'mart-filter' に分離（既存 sales 系 'sales-filter' とは別系統）。
+ * - フィルタスコープは 'mart-filter'。
  * - mart 未構築時は MartNotBuiltNotice を表示し、データ取得を行わない。
  * - mart が集計軸として保持しない軸（帳票区分・棚割1・棚割2）はディメンション候補から除外する
  *   （API は未対応軸に HTTP 400 を返すため、UI 側で選ばせない。棚割1のフィルタは対応済み）。
@@ -27,7 +25,7 @@ import type {
   TemperatureArea,
 } from '~/types/api'
 
-useHead({ title: 'クロス集計（スタースキーマ） | UndeuxSales' })
+useHead({ title: 'クロス集計 | UndeuxSales' })
 
 // mart 専用のフィルタスコープ。既存 sales 系（'sales-filter'）とは分離する。
 const MART_SCOPE = 'mart-filter'
@@ -314,7 +312,7 @@ onMounted(async () => {
   <div class="flex h-full flex-col gap-3">
     <!-- mart 由来であることを示すページ見出し（共有パネルの h1 は固定文言のためページ側で表示）。 -->
     <div>
-      <h1 class="text-xl font-bold text-slate-800">クロス集計（スタースキーマ）</h1>
+      <h1 class="text-xl font-bold text-slate-800">クロス集計</h1>
       <p class="text-sm text-slate-500">
         分析 mart（fact_sales / dim_*）から行 × 列マトリクスを集計。既存の売上参照（sales_weekly）とは
         別系統で、汎用ディメンショナルモデルを基盤とする。
