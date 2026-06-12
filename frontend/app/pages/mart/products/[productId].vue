@@ -58,13 +58,20 @@ const masterLoading = ref(true)
 const masterError = ref<string | null>(null)
 const notFound = ref(false)
 
+// productId の高速往復（back/forward）で旧商品の応答が後着しても表示を上書きしないための世代。
+let masterRequestSeq = 0
+
 async function loadMaster(): Promise<void> {
+  const seq = ++masterRequestSeq
   masterLoading.value = true
   masterError.value = null
   notFound.value = false
   try {
-    detail.value = await get<MasterProductDetail>(`/api/product-master/${productId.value}`)
+    const result = await get<MasterProductDetail>(`/api/product-master/${productId.value}`)
+    if (seq !== masterRequestSeq) return
+    detail.value = result
   } catch (error) {
+    if (seq !== masterRequestSeq) return
     // UNDX-DATA-002 = productId 不正/未登録（商品マスタ詳細ページと同じ判定）。
     if (extractApiError(error)?.errorCode === 'UNDX-DATA-002') {
       notFound.value = true
@@ -73,7 +80,9 @@ async function loadMaster(): Promise<void> {
       masterError.value = apiErrorMessage(error)
     }
   } finally {
-    masterLoading.value = false
+    if (seq === masterRequestSeq) {
+      masterLoading.value = false
+    }
   }
 }
 

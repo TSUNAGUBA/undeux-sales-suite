@@ -17,7 +17,9 @@ function emptyFilter(): SalesFilterState {
  *
  * @param scopeKey フィルタ状態を分離するキー。同じキーを指定したページ間で状態が共有される。
  *                 分析ページ（/mart 配下）は 'mart-filter' を共有する。別軸の画面では
- *                 独自のキーを渡して分離する（既定 'sales-filter' は旧ページ廃止に伴い現在未使用）。
+ *                 独自のキーを渡して分離する。既定 'sales-filter' のフィルタ state は
+ *                 旧ページ廃止に伴い現在未使用（スコープ非依存の選択肢ヘルパーのみを
+ *                 既定スコープ経由で使う呼び出しはある。filter を使う場合は明示スコープを渡すこと）。
  */
 export function useFilters(scopeKey: string = 'sales-filter') {
   const filter = useState<SalesFilterState>(scopeKey, emptyFilter)
