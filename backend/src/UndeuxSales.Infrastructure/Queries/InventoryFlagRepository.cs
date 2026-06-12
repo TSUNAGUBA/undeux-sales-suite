@@ -56,6 +56,13 @@ public sealed class InventoryFlagRepository
     /// <summary>一括登録の1リクエスト上限（フロントのページサイズ上限 200 に余裕を持たせた値）。</summary>
     public const int MaxBulkItems = 500;
 
+    /// <summary>
+    /// note の最大文字数。bulk では単一の note が最大 <see cref="MaxBulkItems"/> 行へ複製保存される
+    /// 増幅経路があるため、無制限のままにするとストレージ枯渇の攻撃面・事故面になる（安全ゲート指摘）。
+    /// 運用メモ用途には十分な長さを確保しつつ上限を設ける。
+    /// </summary>
+    public const int MaxNoteLength = 1000;
+
     private readonly IDbConnectionFactory _connectionFactory;
 
     public InventoryFlagRepository(IDbConnectionFactory connectionFactory)
@@ -100,6 +107,8 @@ public sealed class InventoryFlagRepository
                     "items に自然キー（gyotaiCode/shohinKigou/hinbanCode/tanpinCode）が空の行があります。");
             }
         }
+
+        ValidateNoteLength(request.Note);
 
         await using var connection = await _connectionFactory.OpenConnectionAsync(cancellationToken);
 
@@ -156,6 +165,7 @@ public sealed class InventoryFlagRepository
             throw new AppException(ErrorCodes.InvalidRequest, 400,
                 $"status '{request.Status}' は不正です（{string.Join(" / ", InventoryFlagRules.AllStatuses)}）。");
         }
+        ValidateNoteLength(request.Note);
 
         await using var connection = await _connectionFactory.OpenConnectionAsync(cancellationToken);
         await using var transaction = await connection.BeginTransactionAsync(cancellationToken);
@@ -262,18 +272,33 @@ public sealed class InventoryFlagRepository
         return new InventoryFlagSummary(rows, orphanCount, latestWeek);
     }
 
-    /// <summary>id 配列の共通検証（null/空/非正値/重複を排除して返す）。</summary>
+    /// <summary>id 配列の共通検証（null/空/非正値/件数上限/重複を排除して返す）。</summary>
     private static long[] ValidateIds(IReadOnlyList<long>? ids)
     {
         if (ids is null || ids.Count == 0)
         {
             throw new AppException(ErrorCodes.InvalidRequest, 400, "ids が指定されていません。");
         }
+        if (ids.Count > MaxBulkItems)
+        {
+            throw new AppException(ErrorCodes.InvalidRequest, 400,
+                $"一括操作は {MaxBulkItems} 件までです（指定: {ids.Count} 件）。");
+        }
         if (ids.Any(id => id <= 0))
         {
             throw new AppException(ErrorCodes.InvalidRequest, 400, "ids に不正な値が含まれています。");
         }
         return ids.Distinct().ToArray();
+    }
+
+    /// <summary>note の最大長検証（<see cref="MaxNoteLength"/>。null/空は許容）。</summary>
+    private static void ValidateNoteLength(string? note)
+    {
+        if (note is not null && note.Length > MaxNoteLength)
+        {
+            throw new AppException(ErrorCodes.InvalidRequest, 400,
+                $"note は {MaxNoteLength} 文字までです（指定: {note.Length} 文字）。");
+        }
     }
 
     /// <summary>在庫スナップショットの最新週（無フィルタ）。mart 未構築なら null。</summary>

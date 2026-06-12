@@ -43,7 +43,7 @@ public sealed class InventoryFlagsIntegrationTests
         await connection.ExecuteAsync(new CommandDefinition("SELECT mart.rebuild();", commandTimeout: 120));
     }
 
-    /// <summary>シナリオ行（品番910〜916・部門91）を取込サービス経由でシードする（UPSERT・冪等）。</summary>
+    /// <summary>シナリオ行（品番910〜918・部門91）を取込サービス経由でシードする（UPSERT・冪等）。</summary>
     private async Task SeedScenarioAsync()
     {
         var connectionFactory = new NpgsqlConnectionFactory(_fixture.ConnectionString);
@@ -60,7 +60,7 @@ public sealed class InventoryFlagsIntegrationTests
         // T1: 滞留（在日70×消化率0.2）と健全の2 SKU
         Make("910", "0001", zaikosu: 30, zainiti: 70, ruikeiUriage: 20, ruikeiNohin: 100),
         Make("910", "0002", zaikosu: 20, zainiti: 10, ruikeiUriage: 90, ruikeiNohin: 100),
-        // T2〜T7: 各テスト専用の1〜2 SKU
+        // 以降: 各テスト専用の1〜2 SKU（911〜918）
         Make("911", "0001", zaikosu: 15, zainiti: 65, ruikeiUriage: 30, ruikeiNohin: 100),
         Make("912", "0001", zaikosu: 15, zainiti: 65, ruikeiUriage: 30, ruikeiNohin: 100),
         Make("913", "0001", zaikosu: 15, zainiti: 65, ruikeiUriage: 30, ruikeiNohin: 100),
@@ -363,5 +363,42 @@ public sealed class InventoryFlagsIntegrationTests
             $"markdown×candidate は 918 + 孤児の2件以上のはず（実際: {markdownCandidates.Count}）");
         Assert.True(summary.OrphanCount >= 1,
             $"mart に存在しない SKU のフラグが1件以上のはず（実際: {summary.OrphanCount}）");
+    }
+
+    [Fact]
+    public async Task Validation_RejectsOversizedNoteAndTooManyIds()
+    {
+        await SeedScenarioAsync();
+        await RebuildMartAsync();
+        var client = CreateAuthedClient();
+
+        // note は最大長超過で 400（bulk では単一 note が最大500行へ複製されるため、
+        // 無制限のままだと1リクエストで巨大な永続書込が可能になる増幅経路を塞ぐ）。
+        var longNote = new string('あ', InventoryFlagRepository.MaxNoteLength + 1);
+        var bulk = await client.PostAsJsonAsync("/api/inventory-flags/bulk", new
+        {
+            flagType = "markdown",
+            note = longNote,
+            items = new[]
+            {
+                new
+                {
+                    gyotaiCode = "G1", shohinKigou = "S910",
+                    hinbanCode = "910", tanpinCode = "0001", currentStatus = "stagnant",
+                },
+            },
+        });
+        Assert.Equal(HttpStatusCode.BadRequest, bulk.StatusCode);
+
+        var status = await client.PostAsJsonAsync("/api/inventory-flags/status",
+            new { ids = new[] { 1L }, status = "done", note = longNote });
+        Assert.Equal(HttpStatusCode.BadRequest, status.StatusCode);
+
+        // ids の件数上限超過で 400（存在チェックより前に弾く）。
+        var tooManyIds = Enumerable.Range(1, InventoryFlagRepository.MaxBulkItems + 1)
+            .Select(i => (long)i).ToArray();
+        var bigDelete = await client.PostAsJsonAsync("/api/inventory-flags/delete",
+            new { ids = tooManyIds });
+        Assert.Equal(HttpStatusCode.BadRequest, bigDelete.StatusCode);
     }
 }

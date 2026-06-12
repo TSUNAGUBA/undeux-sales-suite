@@ -1,5 +1,6 @@
 using Microsoft.AspNetCore.Authorization;
 using Microsoft.AspNetCore.Mvc;
+using Microsoft.Extensions.Logging;
 using UndeuxSales.Infrastructure.Queries;
 
 namespace UndeuxSales.Api.Controllers;
@@ -18,9 +19,15 @@ namespace UndeuxSales.Api.Controllers;
 public sealed class InventoryFlagsController : ControllerBase
 {
     private readonly InventoryFlagRepository _repository;
+    private readonly ILogger<InventoryFlagsController> _logger;
 
-    public InventoryFlagsController(InventoryFlagRepository repository)
-        => _repository = repository;
+    public InventoryFlagsController(
+        InventoryFlagRepository repository,
+        ILogger<InventoryFlagsController> logger)
+    {
+        _repository = repository;
+        _logger = logger;
+    }
 
     /// <summary>
     /// フラグを一括登録する（冪等）。既存フラグはスキップされ、対応状況は巻き戻らない。
@@ -43,11 +50,16 @@ public sealed class InventoryFlagsController : ControllerBase
     }
 
     /// <summary>フラグを一括削除する（誤操作の訂正用。対応の終了は status の done / dismissed が正）。</summary>
+    /// <remarks>物理削除のため行の監査列（updated_by 等）ごと消える。削除操作自体の証跡として
+    /// 実行者と対象 id をサーバログに記録する（最終的な復元手段は RDS のバックアップ/PITR）。</remarks>
     [HttpPost("delete")]
     public async Task<IActionResult> Delete(
         [FromBody] InventoryFlagDeleteRequest request, CancellationToken cancellationToken)
     {
         await _repository.DeleteAsync(request, cancellationToken);
+        _logger.LogInformation(
+            "在庫アクションフラグを削除しました（実行者: {AuditUser}, 対象ID: {FlagIds}）。",
+            RequestIdentity.AuditUserOf(User), string.Join(",", request.Ids ?? Array.Empty<long>()));
         return NoContent();
     }
 
