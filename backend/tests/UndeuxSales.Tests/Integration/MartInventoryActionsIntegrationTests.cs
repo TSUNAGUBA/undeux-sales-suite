@@ -65,6 +65,9 @@ public sealed class MartInventoryActionsIntegrationTests
     /// <item>品番901: 最新週に販売あり・在日70×消化率0.3＝滞留。発注残あり→発注抑制</item>
     /// <item>品番902: 在日50（45超60以下）×消化率0.9＝注意</item>
     /// <item>品番903: 在日10＝健全</item>
+    /// <item>品番904〜906: SQL 側判定（StatusCaseExpression）の境界回帰網。C# 側 Classify と
+    /// 同一論理であることを「ちょうど境界値」の実データで固定する（904: 在日45ちょうど＝健全、
+    /// 905: 在日60ちょうど×消化率0.74＝注意（滞留でない）、906: 在日61×消化率0.75ちょうど＝注意）</item>
     /// </list>
     /// </summary>
     private static IReadOnlyList<SalesRecord> ScenarioRecords() => new[]
@@ -83,6 +86,15 @@ public sealed class MartInventoryActionsIntegrationTests
         // 健全
         Make("2026-03-02", "903", "0001", [2, 0, 0, 0, 0, 0, 0], zaikosu: 5, zainiti: 10,
             ruikeiUriage: 95, ruikeiNohin: 100, hatchu: 0m),
+        // 境界: 在日45ちょうど → 健全（注意は「45日超」。> を >= に書き換えると本行が caution になり検出）
+        Make("2026-03-02", "904", "0001", [1, 0, 0, 0, 0, 0, 0], zaikosu: 10, zainiti: 45,
+            ruikeiUriage: 90, ruikeiNohin: 100, hatchu: 0m),
+        // 境界: 在日60ちょうど×消化率0.74 → 注意（滞留は「60日超」。>= 化すると本行が stagnant になり検出）
+        Make("2026-03-02", "905", "0001", [1, 0, 0, 0, 0, 0, 0], zaikosu: 20, zainiti: 60,
+            ruikeiUriage: 74, ruikeiNohin: 100, hatchu: 0m),
+        // 境界: 在日61×消化率0.75ちょうど → 注意（滞留は「0.75未満」。<= 化すると本行が stagnant になり検出）
+        Make("2026-03-02", "906", "0001", [1, 0, 0, 0, 0, 0, 0], zaikosu: 15, zainiti: 61,
+            ruikeiUriage: 75, ruikeiNohin: 100, hatchu: 0m),
     };
 
     private static SalesRecord Make(
@@ -173,11 +185,13 @@ public sealed class MartInventoryActionsIntegrationTests
         Assert.Equal(DateOnly.Parse("2026-03-02"), response!.LatestWeek);
         Assert.Equal(1, response.StatusCounts.Dormant);
         Assert.Equal(1, response.StatusCounts.Stagnant);
-        Assert.Equal(1, response.StatusCounts.Caution);
-        Assert.Equal(1, response.StatusCounts.Healthy);
-        Assert.Equal(4, response.StatusCounts.Total);
-        // 最新週（2026-03-02）の在庫合計 = 48 + 40 + 30 + 5。
-        Assert.Equal(123, response.Kpi.TotalStock);
+        // 注意 = 902（在日50）+ 境界の905（在日60ちょうど）+ 906（消化率0.75ちょうど）。
+        // 健全 = 903 + 境界の904（在日45ちょうど）。SQL 側 CASE の > / < 境界の回帰網。
+        Assert.Equal(3, response.StatusCounts.Caution);
+        Assert.Equal(2, response.StatusCounts.Healthy);
+        Assert.Equal(7, response.StatusCounts.Total);
+        // 最新週（2026-03-02）の在庫合計 = 48 + 40 + 30 + 5 + 10 + 20 + 15。
+        Assert.Equal(168, response.Kpi.TotalStock);
 
         var dormant = Assert.Single(response.Actions, a => a.Code == "dormant-detected");
         Assert.Equal("danger", dormant.Severity);
@@ -212,7 +226,7 @@ public sealed class MartInventoryActionsIntegrationTests
         // 在庫金額（原価）= 48 × 400。
         Assert.Equal(19200, item.StockValueCost);
         // StatusCounts は statuses 絞込前の全体件数（チップ・タブバッジ用）。
-        Assert.Equal(4, page.StatusCounts.Total);
+        Assert.Equal(7, page.StatusCounts.Total);
         Assert.Equal(1, page.StatusCounts.Dormant);
         // 不動の経過バケット: 8週は [8,12) の先頭バケット。
         Assert.Equal(new[] { 1, 0, 0 }, page.DormantAgingCounts);

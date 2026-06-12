@@ -113,6 +113,26 @@ public sealed class InventoryHealthRulesTests
         Assert.Equal(new[] { "stagnant", "dormant" }, actual);
     }
 
+    // ---- 閾値と経過バケット境界の不変条件 ----
+
+    [Fact]
+    public void AgingBoundaries_FirstElementsMatchStatusThresholds()
+    {
+        // SQL のバケット集計は下限を status 条件で代替するため、境界配列の先頭は
+        // 状態判定の閾値と一致していなければならない（片方だけ変えると表示と判定が乖離する）。
+        Assert.Equal(InventoryHealthRules.StagnantStockDays, InventoryHealthRules.StagnantAgingBoundaries[0]);
+        Assert.Equal(InventoryHealthRules.DormantLookbackWeeks, InventoryHealthRules.DormantAgingBoundaries[0]);
+    }
+
+    [Fact]
+    public void DormantWeekThresholds_AreOrderedWithinScanWindow()
+    {
+        // 不動の推奨段階（8 → 12 → 16週）が走査上限（26週）内に収まり、順序が保たれていること。
+        Assert.True(InventoryHealthRules.DormantLookbackWeeks < InventoryHealthRules.DormantMarkdownWeeks);
+        Assert.True(InventoryHealthRules.DormantMarkdownWeeks < InventoryHealthRules.DormantClearanceWeeks);
+        Assert.True(InventoryHealthRules.DormantClearanceWeeks <= InventoryHealthRules.DormantScanWeeks);
+    }
+
     // ---- BuildActions: フィード生成ルール ----
 
     [Fact]
@@ -193,6 +213,8 @@ public sealed class InventoryHealthRulesTests
         var dept = Assert.Single(actions, a => a.Code == "department-low-sell-through");
         Assert.Contains("部門A", dept.Message);
         Assert.Equal(InventoryHealthRules.TabItems, dept.TargetTab);
+        // 警告が出ている以上「良好」は併存させない（U-2: 出力の直感性）。
+        Assert.DoesNotContain(actions, a => a.Code == "all-clear");
     }
 
     private static InventoryActionInput EmptyInput() => new(

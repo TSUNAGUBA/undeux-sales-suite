@@ -41,10 +41,18 @@ public static class InventoryHealthRules
     /// <summary>不動がこの週数以上続いたら「値下げ候補」を推奨。</summary>
     public const int DormantMarkdownWeeks = 12;
 
-    /// <summary>滞留タブの経過バケット境界（在庫日数）。[60,90,120] → 60〜90 / 90〜120 / 120超。</summary>
+    /// <summary>
+    /// 滞留タブの経過バケット境界（在庫日数）。[60,90,120] → 60〜90 / 90〜120 / 120超。
+    /// 先頭要素は <see cref="StagnantStockDays"/> と一致していなければならない
+    /// （SQL のバケット集計は下限を status 条件で代替するため。単体テストで固定）。
+    /// </summary>
     public static readonly IReadOnlyList<int> StagnantAgingBoundaries = new[] { 60, 90, 120 };
 
-    /// <summary>不動タブの経過バケット境界（出荷ゼロ週数）。[8,12,16] → 8〜12 / 12〜16 / 16以上。</summary>
+    /// <summary>
+    /// 不動タブの経過バケット境界（出荷ゼロ週数）。[8,12,16] → 8〜12 / 12〜16 / 16以上。
+    /// 先頭要素は <see cref="DormantLookbackWeeks"/> と一致していなければならない
+    /// （SQL のバケット集計は下限を status 条件で代替するため。単体テストで固定）。
+    /// </summary>
     public static readonly IReadOnlyList<int> DormantAgingBoundaries = new[] { 8, 12, 16 };
 
     /// <summary>部門アラート: 在庫構成比がこの割合以上の部門のみ消化率低下を指摘する。</summary>
@@ -200,7 +208,9 @@ public static class InventoryHealthRules
                 TabItems, null));
         }
 
-        if (input.DormantCount == 0 && input.StagnantCount == 0)
+        // 「良好」は他のアクション（警告含む）が1件もないときのみ出す。
+        // 部門消化率の警告等と「良好」が併存すると業務文脈で矛盾して見えるため（U-2: 出力の直感性）。
+        if (actions.Count == 0)
         {
             actions.Add(new InventoryActionItem(
                 "all-clear", "info",

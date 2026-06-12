@@ -134,12 +134,12 @@ internal static class InventoryHealthSql
     /// </summary>
     private const string StatusCaseExpression = $"""
         CASE
-            WHEN i.stock <= 0 THEN 'healthy'
-            WHEN i.zero_sales_weeks >= @dormantLookbackWeeks THEN 'dormant'
+            WHEN i.stock <= 0 THEN '{InventoryHealthRules.StatusHealthy}'
+            WHEN i.zero_sales_weeks >= @dormantLookbackWeeks THEN '{InventoryHealthRules.StatusDormant}'
             WHEN i.stock_days > @stagnantStockDays
-                 AND i.sell_through_rate < @stagnantSellThroughCeiling THEN 'stagnant'
-            WHEN i.stock_days > @cautionStockDays THEN 'caution'
-            ELSE 'healthy'
+                 AND i.sell_through_rate < @stagnantSellThroughCeiling THEN '{InventoryHealthRules.StatusStagnant}'
+            WHEN i.stock_days > @cautionStockDays THEN '{InventoryHealthRules.StatusCaution}'
+            ELSE '{InventoryHealthRules.StatusHealthy}'
         END
         """;
 
