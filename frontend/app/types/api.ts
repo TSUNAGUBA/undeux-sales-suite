@@ -307,8 +307,13 @@ export interface CrosstabMatrixResponse {
   columnTruncated: boolean
 }
 
-/** 複数メトリクスのセル表示モード。 */
-export type MetricDisplayMode = 'stacked' | 'inlineColumns'
+/**
+ * 複数メトリクスのセル表示モード。
+ * - `stacked`: セル内で縦並び
+ * - `inlineColumns`: 列を増やして横並び（列×メトリクスのサブ列）
+ * - `metricRows`: 行を増やして横並び（行×メトリクスのサブ行）
+ */
+export type MetricDisplayMode = 'stacked' | 'inlineColumns' | 'metricRows'
 
 // ============================================================
 // ランキング分析（単軸ランキング + 期間比較 + ABC/複合スコア）
@@ -520,7 +525,7 @@ export interface ProductAnalyticsResponse {
 // バックエンドは集計素材のみ返し、回帰・予測・象限分類はフロント（utils/regression）で算出する。
 // ============================================================
 
-/** 週次系列の1点（売上フロー指標 + その週・エリアの標準気温）。 */
+/** 週次系列の1点（売上フロー指標 + その週・エリアの標準気温 + 当週在庫スナップショット）。 */
 export interface WeeklySeriesPoint {
   /** 取込日（月曜）。表す週は前週 月〜日。 */
   week: string
@@ -530,6 +535,12 @@ export interface WeeklySeriesPoint {
   tempAvg: number
   tempMax: number
   tempMin: number
+  /** 当週の店頭在庫数（在庫スナップショットの時点値）。 */
+  stock: number
+  /** 当週の在日（平均）。 */
+  stockDays: number
+  /** 当週の消化率（0..1）。formatRatioAsPercent で描画する。 */
+  sellThroughRate: number
 }
 
 /** 週次系列レスポンス（散布図 気温×売上 と重回帰シミュレーションの素材）。 */
@@ -552,6 +563,12 @@ export interface MarkdownScatterPoint {
   markdownRate: number
   /** 期間内売上数量（バブルサイズ用）。 */
   quantity: number
+  /** 季節区分（未設定は null）。 */
+  season: string | null
+  /** 店頭在庫数（最新週スナップショット）。 */
+  stock: number
+  /** 平均在庫日数＝在日（最新週スナップショットの平均）。 */
+  stockDays: number
 }
 
 /** 消化率×値引き率 散布図のレスポンス。 */
@@ -590,6 +607,42 @@ export interface MartSummaryResponse {
 export interface MartBreakdownResponse {
   dimension: string
   rows: BreakdownRow[]
+}
+
+/** 商品導入管理（mart）の1行（商品＝業態×記号×品番 単位）。 */
+export interface MartIntroductionRow {
+  channelCode: string
+  channelName: string | null
+  departmentCode: string | null
+  departmentName: string | null
+  productSign: string
+  /** 品番CD（服種）。 */
+  productCode: string
+  productName: string | null
+  brand: string | null
+  manager: string | null
+  /** 導入日（ISO yyyy-MM-dd。未設定は null）。 */
+  donyuDate: string | null
+  skuCount: number
+  /** 全期間の売上数量。 */
+  salesQuantity: number
+  primaryImageUrl: string | null
+}
+
+/** 商品導入管理一覧のページ。 */
+export interface MartIntroductionPage {
+  items: MartIntroductionRow[]
+  totalCount: number
+  page: number
+  pageSize: number
+}
+
+/** 商品導入管理のフィルタ選択肢（業態・部門は FilterOptions を再利用する）。 */
+export interface MartIntroductionOptions {
+  brands: string[]
+  managers: string[]
+  /** 服種＝品番CD の実値。 */
+  hinbans: string[]
 }
 
 /** mart（スタースキーマ）の構築状態。フロントの鮮度表示・再構築UIに使う。 */

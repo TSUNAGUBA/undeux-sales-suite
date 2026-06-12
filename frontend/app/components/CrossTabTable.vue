@@ -3,7 +3,8 @@
  * クロス集計マトリクスの表コンポーネント。
  *
  * - スタックモード: セル内に複数メトリクスを縦積み表示
- * - インライン列モード: メトリクスを列として展開
+ * - インライン列モード: メトリクスを列として展開（列を増やして横並び）
+ * - メトリクス行モード: メトリクスを行として展開（行を増やして横並び。行ラベル × 集計値の2列が左端固定）
  * - スティッキーヘッダ（上端 / 左端）
  * - 行小計列・列小計行・総計セル
  * - null 値は "—" 表示
@@ -40,14 +41,23 @@ const metricInfos = computed<CrosstabMetricInfo[]>(() => {
     .filter((m): m is CrosstabMetricInfo => m !== undefined)
 })
 
-// インライン列モードは2メトリクス以上のときだけ意味がある。
+// インライン列モード・メトリクス行モードは2メトリクス以上のときだけ意味がある。
 const isInline = computed(
   () => props.displayMode === 'inlineColumns' && metricInfos.value.length >= 2,
+)
+const isMetricRows = computed(
+  () => props.displayMode === 'metricRows' && metricInfos.value.length >= 2,
 )
 
 const colSpan = computed(() => (isInline.value ? metricInfos.value.length : 1))
 const numColumnGroups = computed(() => props.data.columnLabels.length + 1) // +1 for row-total
-const totalColumns = computed(() => 1 + colSpan.value * numColumnGroups.value)
+const totalColumns = computed(
+  () => (isMetricRows.value ? 2 : 1) + colSpan.value * numColumnGroups.value,
+)
+
+// メトリクス行モードの左端固定2列（行ラベル / 集計値名）の幅。sticky の left オフセットと一致させる。
+const ROW_LABEL_WIDTH = '10rem'
+const METRIC_LABEL_WIDTH = '7rem'
 
 /** セルの値（メトリクスごと）をフォーマットして返す。 */
 function formatMetric(value: number | null | undefined, info: CrosstabMetricInfo): string {
@@ -164,11 +174,34 @@ function extractCellText(cell: HTMLTableCellElement): string {
   return (cell.textContent ?? '').replace(/\s+/g, ' ').trim()
 }
 
-/** 素のペースト用に TSV（タブ区切り）を生成する。 */
+/**
+ * 素のペースト用に TSV（タブ区切り）を生成する。
+ * rowspan / colspan（インライン列モードのヘッダ・メトリクス行モードの行ラベル）を
+ * 矩形グリッドへ展開し、後続行の列ずれを防ぐ（span の先頭セルのみ値、残りは空欄）。
+ */
 function buildPlainText(source: HTMLTableElement): string {
-  return Array.from(source.rows)
-    .map((tr) => Array.from(tr.cells).map(extractCellText).join('\t'))
-    .join('\n')
+  const grid: string[][] = []
+  const rows = Array.from(source.rows)
+  for (let r = 0; r < rows.length; r++) {
+    grid[r] ??= []
+    const gridRow = grid[r]!
+    let c = 0
+    for (const cell of Array.from(rows[r]!.cells)) {
+      // 先行セルの rowspan で占有済みの列を読み飛ばす。
+      while (gridRow[c] !== undefined) c++
+      const text = extractCellText(cell)
+      const colSpanCount = cell.colSpan || 1
+      const rowSpanCount = cell.rowSpan || 1
+      for (let dr = 0; dr < rowSpanCount; dr++) {
+        grid[r + dr] ??= []
+        for (let dc = 0; dc < colSpanCount; dc++) {
+          grid[r + dr]![c + dc] = dr === 0 && dc === 0 ? text : ''
+        }
+      }
+      c += colSpanCount
+    }
+  }
+  return grid.map((row) => Array.from(row, (v) => v ?? '').join('\t')).join('\n')
 }
 
 /** execCommand によるフォールバックコピー（Clipboard API 非対応・非セキュアコンテキスト用）。 */
@@ -274,13 +307,14 @@ onBeforeUnmount(() => {
     <div class="min-h-0 flex-1 w-full overflow-auto rounded-lg border border-slate-200 bg-white">
       <table ref="tableRef" class="text-xs md:text-sm" style="border-collapse: separate; border-spacing: 0; min-width: 100%">
       <thead>
-        <!-- メイン列ヘッダ -->
+        <!-- メイン列ヘッダ（メトリクス行モードは左端固定が「行ラベル + 集計値」の2列になる） -->
         <tr>
           <th
             scope="col"
             class="sticky left-0 top-0 z-30 whitespace-nowrap bg-slate-50 px-3 py-2 text-center font-semibold text-slate-700"
             :rowspan="isInline ? 2 : 1"
-            style="min-width: 10rem; border-bottom: 1px solid #e2e8f0; border-right: 1px solid #e2e8f0"
+            :colspan="isMetricRows ? 2 : 1"
+            :style="`min-width: ${isMetricRows ? '17rem' : ROW_LABEL_WIDTH}; border-bottom: 1px solid #e2e8f0; border-right: 1px solid #e2e8f0`"
           >
             {{ data.rowDimension.label }} ＼ {{ data.columnDimension.label }}
           </th>
@@ -339,6 +373,82 @@ onBeforeUnmount(() => {
           </td>
         </tr>
 
+        <!-- メトリクス行モード: 行ラベルごとに選択メトリクスをサブ行として展開（行を増やして横並び） -->
+        <template v-if="isMetricRows">
+          <template v-for="rl in data.rowLabels" :key="`mr-${rl}`">
+            <tr v-for="(m, mi) in metricInfos" :key="`mr-${rl}-${m.key}`">
+              <th
+                v-if="mi === 0"
+                scope="row"
+                :rowspan="metricInfos.length"
+                class="sticky left-0 z-10 whitespace-nowrap bg-white px-3 py-2 text-left align-top font-semibold text-slate-700"
+                :style="`min-width: ${ROW_LABEL_WIDTH}; border-top: 1px solid #e2e8f0; border-right: 1px solid #e2e8f0`"
+              >
+                {{ rl }}
+              </th>
+              <th
+                scope="row"
+                class="sticky z-10 whitespace-nowrap bg-white px-2 py-2 text-left text-xs font-medium text-slate-500"
+                :style="`left: ${ROW_LABEL_WIDTH}; min-width: ${METRIC_LABEL_WIDTH}; border-top: 1px solid #e2e8f0; border-right: 1px solid #e2e8f0`"
+              >
+                {{ m.label }}
+              </th>
+              <td
+                v-for="cl in data.columnLabels"
+                :key="`mr-${rl}-${m.key}-${cl}`"
+                class="whitespace-nowrap bg-white px-3 py-2 text-right text-slate-600"
+                style="border-top: 1px solid #e2e8f0; border-left: 1px solid #e2e8f0"
+              >
+                {{ formatMetric(cellAt(rl, cl)?.values[m.key], m) }}
+              </td>
+              <td
+                class="sticky right-0 z-10 whitespace-nowrap bg-indigo-50 px-3 py-2 text-right font-semibold text-indigo-700"
+                style="border-top: 1px solid #e2e8f0; border-left: 1px solid #e2e8f0"
+              >
+                {{ formatMetric(data.rowTotals[rl]?.values[m.key], m) }}
+              </td>
+            </tr>
+          </template>
+
+          <!-- 列合計（メトリクスごとのサブ行 + 総計） -->
+          <template v-if="data.rowLabels.length > 0">
+            <tr v-for="(m, mi) in metricInfos" :key="`mr-total-${m.key}`">
+              <th
+                v-if="mi === 0"
+                scope="row"
+                :rowspan="metricInfos.length"
+                class="sticky left-0 z-10 whitespace-nowrap bg-indigo-50 px-3 py-2 text-left align-top font-semibold text-indigo-700"
+                :style="`min-width: ${ROW_LABEL_WIDTH}; border-top: 1px solid #e2e8f0; border-right: 1px solid #e2e8f0`"
+              >
+                {{ TOTAL_LABEL }}
+              </th>
+              <th
+                scope="row"
+                class="sticky z-10 whitespace-nowrap bg-indigo-50 px-2 py-2 text-left text-xs font-medium text-indigo-600"
+                :style="`left: ${ROW_LABEL_WIDTH}; min-width: ${METRIC_LABEL_WIDTH}; border-top: 1px solid #e2e8f0; border-right: 1px solid #e2e8f0`"
+              >
+                {{ m.label }}
+              </th>
+              <td
+                v-for="cl in data.columnLabels"
+                :key="`mr-total-${m.key}-${cl}`"
+                class="whitespace-nowrap bg-indigo-50 px-3 py-2 text-right font-semibold text-indigo-700"
+                style="border-top: 1px solid #e2e8f0; border-left: 1px solid #e2e8f0"
+              >
+                {{ formatMetric(data.columnTotals[cl]?.values[m.key], m) }}
+              </td>
+              <td
+                class="sticky right-0 z-20 whitespace-nowrap bg-indigo-100 px-3 py-2 text-right font-bold text-indigo-800"
+                style="border-top: 1px solid #e2e8f0; border-left: 1px solid #e2e8f0"
+              >
+                {{ formatMetric(data.grandTotal.values[m.key], m) }}
+              </td>
+            </tr>
+          </template>
+        </template>
+
+        <!-- 通常モード（スタック / インライン列） -->
+        <template v-if="!isMetricRows">
         <tr v-for="rl in data.rowLabels" :key="rl">
           <th
             scope="row"
@@ -411,7 +521,7 @@ onBeforeUnmount(() => {
           </td>
         </tr>
 
-        <!-- 列合計行（総計含む） -->
+        <!-- 列合計行（総計含む）。メトリクス行モードは上の専用ブロックで描画済み。 -->
         <tr v-if="data.rowLabels.length > 0">
           <th
             scope="row"
@@ -483,6 +593,7 @@ onBeforeUnmount(() => {
             </div>
           </td>
         </tr>
+        </template>
       </tbody>
       </table>
     </div>

@@ -153,6 +153,29 @@ public sealed class MartController : ControllerBase
         => _martRepository.GetMarkdownScatterAsync(filter, cancellationToken);
 
     /// <summary>
+    /// 商品導入管理の一覧（商品単位・ページング）を mart から取得する。
+    /// 期間は導入日（dim_sku.attributes->>'donyu'）基準。並びは導入日（既定: 降順）。
+    /// </summary>
+    [HttpGet("introductions")]
+    public Task<MartIntroductionPage> Introductions(
+        [FromQuery] MartIntroductionQuery query,
+        [FromQuery] string? order,
+        [FromQuery] int page,
+        [FromQuery] int pageSize,
+        CancellationToken cancellationToken)
+        => _martRepository.GetIntroductionsAsync(
+            query,
+            RequestParsing.IsAscending(order),
+            page <= 0 ? DefaultPage : page,
+            pageSize <= 0 ? DefaultPageSize : pageSize,
+            cancellationToken);
+
+    /// <summary>商品導入管理のフィルタ選択肢（ブランド・担当者・服種）を mart から取得する。</summary>
+    [HttpGet("introduction-options")]
+    public Task<MartIntroductionOptions> IntroductionOptions(CancellationToken cancellationToken)
+        => _martRepository.GetIntroductionOptionsAsync(cancellationToken);
+
+    /// <summary>
     /// mart の全再構築を「バックグラウンドで開始」する（public → mart のデータ移行）。
     /// 約160万行の集約は数十秒〜数分かかり、同期実行ではリバースプロキシのタイムアウトを
     /// 超えるため、本エンドポイントは即時に現在の状態（running）を返し、実処理は

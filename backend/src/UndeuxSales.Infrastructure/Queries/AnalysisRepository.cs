@@ -41,11 +41,17 @@ public sealed class AnalysisRepository
         var parameters = new DynamicParameters();
         SalesFilterSql.AddParameters(filter, parameters);
 
+        // 在庫系（店頭在庫・在日・消化率の素材）は週次行の時点値をそのまま週単位に集計する
+        // （mart 版 GetWeeklySeriesAsync と同一契約。週次明細・複合チャートの素材）。
         var sql = $"""
             SELECT sw.import_date AS week,
                    COALESCE(SUM({SalesMetricSql.WeekQuantity}), 0)::bigint    AS quantity,
                    COALESCE(SUM({SalesMetricSql.WeekAmount}), 0)::bigint      AS amount,
-                   COALESCE(SUM({SalesMetricSql.WeekGrossProfit}), 0)::bigint AS gross_profit
+                   COALESCE(SUM({SalesMetricSql.WeekGrossProfit}), 0)::bigint AS gross_profit,
+                   COALESCE(SUM(sw.zaikosu), 0)::bigint                       AS stock,
+                   COALESCE(AVG(sw.zainiti), 0)::float8                       AS stock_days,
+                   COALESCE(SUM(sw.ruikei_uriage_count), 0)::bigint           AS cum_sales,
+                   COALESCE(SUM(sw.ruikei_nohin_count), 0)::bigint            AS cum_delivery
             FROM sales_weekly sw
             {SalesFilterSql.WhereClause(filter, "sw")}
             GROUP BY sw.import_date
@@ -61,7 +67,8 @@ public sealed class AnalysisRepository
                 var temp = ClimateModel.Week(area, r.Week);
                 return new WeeklySeriesPoint(
                     r.Week, r.Quantity, r.Amount, r.GrossProfit,
-                    Round1(temp.Average), Round1(temp.Maximum), Round1(temp.Minimum));
+                    Round1(temp.Average), Round1(temp.Maximum), Round1(temp.Minimum),
+                    r.Stock, r.StockDays, Ratio(r.CumSales, r.CumDelivery));
             })
             .ToList();
 
@@ -105,7 +112,10 @@ public sealed class AnalysisRepository
                 SELECT sw.gyotai_code, sw.shohin_kigou, sw.hinban_code,
                        AVG(NULLIF(sw.baika, 0))::float8                 AS avg_baika,
                        COALESCE(SUM(sw.ruikei_uriage_count), 0)::bigint AS cum_sales,
-                       COALESCE(SUM(sw.ruikei_nohin_count), 0)::bigint  AS cum_delivery
+                       COALESCE(SUM(sw.ruikei_nohin_count), 0)::bigint  AS cum_delivery,
+                       COALESCE(SUM(sw.zaikosu), 0)::bigint             AS stock,
+                       COALESCE(AVG(sw.zainiti), 0)::float8             AS stock_days,
+                       MIN(NULLIF(sw.kisetsu, ''))                      AS season
                 FROM sales_weekly sw
                 WHERE sw.import_date = (SELECT w FROM latest){SalesFilterSql.AndClause(filter, "sw")}
                 GROUP BY sw.gyotai_code, sw.shohin_kigou, sw.hinban_code
@@ -125,7 +135,10 @@ public sealed class AnalysisRepository
                         THEN snap.cum_sales::float8 / snap.cum_delivery * 100.0
                         ELSE 0 END   AS sell_through_rate,
                    GREATEST(0, LEAST(100, (1 - snap.avg_baika / list.list_price) * 100.0)) AS markdown_rate,
-                   COALESCE(flow.quantity, 0)::bigint AS quantity
+                   COALESCE(flow.quantity, 0)::bigint AS quantity,
+                   snap.season       AS season,
+                   snap.stock        AS stock,
+                   snap.stock_days   AS stock_days
             FROM snap
             JOIN list
                 ON list.business_category_cd = snap.gyotai_code
@@ -156,5 +169,11 @@ public sealed class AnalysisRepository
 
     private static double Round1(double value) => Math.Round(value, 1, MidpointRounding.AwayFromZero);
 
-    private sealed record WeeklyFlowRow(DateOnly Week, long Quantity, long Amount, long GrossProfit);
+    /// <summary>分子÷分母の比率（0..1、分母0は0）。SalesAnalyticsRepository.Ratio と同一契約。</summary>
+    private static double Ratio(long numerator, long denominator)
+        => denominator == 0 ? 0 : (double)numerator / denominator;
+
+    private sealed record WeeklyFlowRow(
+        DateOnly Week, long Quantity, long Amount, long GrossProfit,
+        long Stock, double StockDays, long CumSales, long CumDelivery);
 }

@@ -11,6 +11,7 @@ import {
   Upload,
   LogOut,
   Shirt,
+  CalendarPlus,
   ChevronLeft,
   ChevronRight,
   X,
@@ -86,6 +87,7 @@ const navGroups = [
       { to: '/mart/ranking', label: 'ランキング分析（スタースキーマ）', icon: ListOrdered },
       { to: '/mart/scatter', label: '散布図・回帰分析（スタースキーマ）', icon: ScatterChart },
       { to: '/mart/simulation', label: '重回帰シミュレーター（スタースキーマ）', icon: SlidersHorizontal },
+      { to: '/mart/introductions', label: '商品導入管理（スタースキーマ）', icon: CalendarPlus },
     ],
   },
   {

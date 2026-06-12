@@ -384,6 +384,12 @@ CREATE TABLE IF NOT EXISTS mart.dim_sku (
 );
 COMMENT ON TABLE mart.dim_sku IS 'SKU次元（SCD1）。色/サイズは汎用バリアント2軸。list_price=定価（現在値）';
 
+-- 業種固有属性（設計 §4.5）。導入日 donyu は YYYYMMDD 文字列のまま保持する
+-- （ソース sales_weekly.donyu_date は text。"0"=未設定。文字列比較は日付順と一致するため
+--  範囲フィルタに使え、不正値で再構築（to_date）が失敗するリスクを避ける）。
+ALTER TABLE mart.dim_sku
+    ADD COLUMN IF NOT EXISTS attributes jsonb NOT NULL DEFAULT '{}'::jsonb;
+
 -- 売上ファクト（週次フロー。グレイン=週×SKU×小売。数量/金額/粗利は事前計算）
 CREATE TABLE IF NOT EXISTS mart.fact_sales_weekly (
     date_key     integer NOT NULL REFERENCES mart.dim_date(date_key),
@@ -528,7 +534,8 @@ BEGIN
                gyotai_code, shohin_kigou, hinban_code,
                hinmei, department, kisetsu, tanawari1, tanawari2
         FROM sales_weekly
-        ORDER BY gyotai_code, shohin_kigou, hinban_code, import_date DESC
+        -- 同一キー・同一週の複数行に備え id DESC まで指定し、代表行を決定的にする（冪等性）。
+        ORDER BY gyotai_code, shohin_kigou, hinban_code, import_date DESC, id DESC
     ) s
     LEFT JOIN (
         -- 商品マスタを自然キーで1回だけ重複排除（updated_at 最新を代表）。
@@ -544,19 +551,25 @@ BEGIN
        AND mp.product_sign        = s.shohin_kigou
        AND mp.product_type_crd    = s.hinban_code;
 
-    -- SKU次元（定価・代表画像は商品マスタから）
+    -- SKU次元（定価・代表画像は商品マスタから）。
+    -- 導入日 donyu は最新取込行の値（SCD1）。同一 SKU・同一週に複数導入日の行があり得る
+    -- （sales_weekly の一意キーに donyu_date を含む）ため、donyu_date DESC → id DESC の
+    -- 決定的な tie-break で代表行を固定する（冪等性: 再実行で同じ結果）。
     INSERT INTO mart.dim_sku
         (product_key, unit_code, variant_axis1_label, variant_axis1_value,
-         variant_axis2_label, variant_axis2_value, list_price, image_url)
+         variant_axis2_label, variant_axis2_value, list_price, image_url, attributes)
     SELECT dp.product_key, s.tanpin_code,
            'カラー', NULLIF(s.color, ''),
            'サイズ', NULLIF(s.size, ''),
-           sk.sales_price, sk.image_url
+           sk.sales_price, sk.image_url,
+           jsonb_strip_nulls(jsonb_build_object(
+               'donyu', CASE WHEN s.donyu_date ~ '^[0-9]{8}$' THEN s.donyu_date END))
     FROM (
         SELECT DISTINCT ON (gyotai_code, shohin_kigou, hinban_code, tanpin_code)
-               gyotai_code, shohin_kigou, hinban_code, tanpin_code, color, size
+               gyotai_code, shohin_kigou, hinban_code, tanpin_code, color, size, donyu_date
         FROM sales_weekly
-        ORDER BY gyotai_code, shohin_kigou, hinban_code, tanpin_code, import_date DESC
+        ORDER BY gyotai_code, shohin_kigou, hinban_code, tanpin_code,
+                 import_date DESC, donyu_date DESC, id DESC
     ) s
     JOIN mart.dim_product dp
         ON dp.channel_code = s.gyotai_code

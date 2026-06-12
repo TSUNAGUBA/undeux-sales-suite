@@ -13,6 +13,7 @@
 import { LineChart, ScatterChart, Thermometer } from 'lucide-vue-next'
 import type {
   KpiCardItem,
+  MarkdownScatterPoint,
   MarkdownScatterResponse,
   TemperatureArea,
   WeeklySeriesResponse,
@@ -220,6 +221,44 @@ const quadrantGuide = [
   { label: '右上：好調値引き', desc: '値下げ進行かつ消化率高 → 計画的な売り切り', color: 'text-sky-600' },
 ]
 
+// 型番別テーブル（散布図の点の明細）。倉庫在庫はデータソース（売上参照DB）に
+// 存在しないため対象外（店頭在庫のみ）。
+const markdownColumns = [
+  { key: 'label', label: '品番CD（服種）' },
+  { key: 'businessType', label: '業態' },
+  { key: 'kisetsu', label: '季節', format: (row: MarkdownScatterPoint) => row.season ?? '-' },
+  {
+    key: 'quantity',
+    label: '売上数量',
+    align: 'right' as const,
+    format: (row: MarkdownScatterPoint) => formatNumber(row.quantity),
+  },
+  {
+    key: 'sellThroughRate',
+    label: '消化率',
+    align: 'right' as const,
+    format: (row: MarkdownScatterPoint) => formatPercent(row.sellThroughRate),
+  },
+  {
+    key: 'markdownRate',
+    label: '値引き率',
+    align: 'right' as const,
+    format: (row: MarkdownScatterPoint) => formatPercent(row.markdownRate),
+  },
+  {
+    key: 'stockDays',
+    label: '平均在庫日数',
+    align: 'right' as const,
+    format: (row: MarkdownScatterPoint) => formatDecimal(row.stockDays, 1),
+  },
+  {
+    key: 'stock',
+    label: '店頭在庫数',
+    align: 'right' as const,
+    format: (row: MarkdownScatterPoint) => formatNumber(row.stock),
+  },
+]
+
 // ---------------------------------------------------------------
 // 再取得トリガ（モード・エリア変更で即再取得。フィルタは「適用」ボタン）。
 // ---------------------------------------------------------------
@@ -346,8 +385,19 @@ onMounted(async () => {
             <p class="mt-1 text-slate-500">{{ q.desc }}</p>
           </div>
         </div>
+        <!-- 型番別の明細テーブル（売上数量・平均在庫日数・季節・店頭在庫数を含む） -->
+        <div class="space-y-1">
+          <h3 class="text-sm font-semibold text-slate-700">型番別明細</h3>
+          <DataTable
+            :columns="markdownColumns"
+            :rows="markdown?.points ?? []"
+            :row-key="(row: MarkdownScatterPoint) => row.key"
+          />
+        </div>
+
         <p v-if="markdown?.latestWeek" class="text-xs text-slate-400">
-          消化率の基準週: {{ markdown.latestWeek }} ／ 値引き率は商品マスタの定価を基準に算出（マスタ未登録の型番は対象外）。
+          消化率の基準週: {{ markdown.latestWeek }} ／ 値引き率は商品マスタの定価を基準に算出（マスタ未登録の型番は対象外）
+          ／ 在庫はいずれも店頭在庫（倉庫在庫はデータソースに含まれないため対象外）。
         </p>
       </div>
     </StatusBlock>

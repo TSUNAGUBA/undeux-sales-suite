@@ -417,16 +417,19 @@ flowchart TD
 
 | 層 | 内容 | 主なファイル |
 |----|------|------------|
-| DB | `mart` スキーマ：`dim_date`/`dim_retailer`/`dim_product`/`dim_sku`、ファクト `fact_sales_weekly`／**`fact_inventory_snapshot`**、**`dim_climate`（気温日次・エリア別）**、`build_info`、再構築関数 `mart.rebuild()`（売上＋在庫を構築。気温は sales 非依存で対象外） | `db/schema.sql` |
+| DB | `mart` スキーマ：`dim_date`/`dim_retailer`/`dim_product`/`dim_sku`（**`attributes jsonb` に導入日 `donyu` を保持**）、ファクト `fact_sales_weekly`／**`fact_inventory_snapshot`**、**`dim_climate`（気温日次・エリア別）**、`build_info`、再構築関数 `mart.rebuild()`（売上＋在庫を構築。気温は sales 非依存で対象外。代表行選択は `import_date DESC, id DESC` の決定的 tie-break） | `db/schema.sql` |
 | 気温投入 | `db/climate_daily.csv`（東京/札幌/那覇）を DataLoader が `mart.dim_climate` へ投入（毎起動で冪等な TRUNCATE+COPY、**非ブロッキング**：失敗してもデプロイを止めない。CSV 未配置時はスキップ） | `DataLoader/Program.cs`・`Core/Parsing/ClimateCsvReader.cs` |
-| API | `GET /api/mart/{status,summary,breakdown,inventory,products,crosstab,ranking,weekly-series,markdown}`、`POST /api/mart/rebuild`（認証ユーザー・**非同期**：即時応答＋`status` ポーリング） | `MartController.cs`・`MartAnalyticsRepository.cs`・`MartModels.cs` |
-| 共有ロジック | クロス集計マトリクス組立・ランキング組立を sales 系と共有（プレゼンテーション非依存の抽出。重複排除＝DRY） | `CrosstabMatrixBuilder.cs`・`RankingBuilder.cs` |
-| 画面 | `/mart`（全社サマリー）・`/mart/sales`・`/mart/products`・`/mart/inventory`・`/mart/crosstab`・`/mart/ranking`・`/mart/scatter`・`/mart/simulation` の8ページ。サイドメニューは「スタースキーマ分析」グループに集約。mart 未構築時はガード表示 | `frontend/app/pages/mart/*.vue`・`AppSidebar.vue`・`composables/useMart.ts`・`components/MartNotBuiltNotice.vue`・`types/api.ts` |
+| API | `GET /api/mart/{status,summary,breakdown,inventory,products,crosstab,ranking,weekly-series,markdown,introductions,introduction-options}`、`POST /api/mart/rebuild`（認証ユーザー・**非同期**：即時応答＋`status` ポーリング） | `MartController.cs`・`MartAnalyticsRepository.cs`・`MartIntroductionQuery.cs`・`QueryModels.cs` |
+| 共有ロジック | クロス集計マトリクス組立・ランキング組立を sales 系と共有（プレゼンテーション非依存の抽出。重複排除＝DRY）。在日バケット述語は `StockDaysSql` で sales 系（`zainiti`）と mart 系（`stock_days`）が共有 | `CrosstabMatrixBuilder.cs`・`RankingBuilder.cs`・`SalesQueryFilter.cs` |
+| 画面 | `/mart`（全社サマリー）・`/mart/sales`・`/mart/products`・`/mart/inventory`・`/mart/crosstab`・`/mart/ranking`・`/mart/scatter`・`/mart/simulation`・**`/mart/introductions`（商品導入管理）** の9ページ。サイドメニューは「スタースキーマ分析」グループに集約。mart 未構築時はガード表示 | `frontend/app/pages/mart/*.vue`・`AppSidebar.vue`・`composables/useMart.ts`・`components/MartNotBuiltNotice.vue`・`types/api.ts` |
 
 - **グレイン:** 売上・在庫とも 週×小売×SKU。売上は数量・金額・粗利を事前計算列で保持。在庫は時点値（在庫数・累計売上/納品・発注・先付）＋在日（平均集計）。
 - **在庫スナップショット:** 「期間内最新取込週で在庫取得」ロジックを `fact_inventory_snapshot` 参照に一元化（設計 §3.3）。全社サマリーKPIに在庫数・消化率を追加。
 - **気温:** `mart.dim_climate`（実測。CSV由来）を売上週の範囲 [週月曜−7, 週月曜−1] で集計し、完全週（7日）が揃う週は実測、未カバー週は標準気候（`ClimateModel` 平年値）へフォールバック。散布図・重回帰の説明変数に用いる。
-- **対応軸の差分（設計上の制約）:** mart は帳票区分・棚割を保持しないため、クロス集計／ランキングの対応軸は**サブセット**（帳票区分・棚割1/2を除く）。フロントは対応軸のみ提示し、API も未対応軸には 400 を返す。日次トレンドは `fact_sales_daily` 未実装のため mart 売上分析は週次のみ。
+- **mart フィルタ:** 期間・部門・業態・季節・品番に加え、**棚割1**（`dim_product.attributes->>'tanawari1'`。SCD1＝最新取込週の値）と**平均在庫日数（在日）バケット**（同一グレインの `fact_inventory_snapshot.stock_days` を EXISTS 参照。sales 系の週次行 `zainiti` フィルタと同一意味論）に対応。
+- **週次系列・散布図素材の拡張:** `weekly-series` は週ごとの店頭在庫・在日・消化率を、`markdown` は型番ごとの季節・店頭在庫・平均在庫日数を併せて返す（売上分析の複合チャート「週次売上推移グラフ」・週次明細・型番別明細の素材）。sales 系 `/api/analysis/*` も同一契約。
+- **商品導入管理:** 導入日（`sales_weekly.donyu_date`、YYYYMMDD 文字列）を `dim_sku.attributes->>'donyu'` に保持し（文字列比較＝日付順。型変換失敗で再構築が止まるリスクを回避）、商品単位の導入一覧・導入時期/導入日 From-To・業態タブ・部門・ブランド・服種（品番CD）・担当者・キーワードのフィルタを提供する。
+- **対応軸の差分（設計上の制約）:** mart は帳票区分・棚割を**集計軸（ディメンション）としては**保持しないため、クロス集計／ランキングの対応軸は**サブセット**（帳票区分・棚割1/2を除く。棚割1は上記のとおり**フィルタとしては**対応）。フロントは対応軸のみ提示し、API も未対応軸には 400 を返す。日次トレンドは `fact_sales_daily` 未実装のため mart 売上分析は週次のみ。**倉庫在庫**はソース（売上参照DB）に店頭/倉庫の在庫区分が無いため対象外（`zaikosu` は店頭在庫として扱う。design.md §11.4 と同一の判断）。
 - **再構築:** `sales_weekly` ＋ 商品マスタから `mart.rebuild()` で全再構築（冪等・advisory lock で直列化）。商品マスタの自然キー重複は `DISTINCT ON`（`updated_at` 最新）で1件に絞り、一意制約違反を回避。
 - **単一走査での2ファクト構築:** 売上ファクトと在庫スナップショットはグレイン（週×小売×SKU）と次元結合が同一で測定値だけが異なる。そこで `sales_weekly`（約160万行）の走査・次元結合・GROUP BY を **1回だけ**行い（CTE `agg`）、データ変更CTEで両ファクトへ流し込む（`agg` は複数参照のため1回マテリアライズ）。在庫追加による二重走査で再構築が従来比2倍となりコマンドタイムアウト（旧600秒）を超えた問題への対処であり、再構築時間を約半減する。
 - **非同期実行・タイムアウトしない設計:** 約160万行規模の集約は共有 `nginx-proxy` のタイムアウト（約60秒）を超えるため、`POST /api/mart/rebuild` は実行権を取得して即応答し、本体は HTTP リクエストから切り離したバックグラウンドタスクで実行する。状態は `build_info.status`（idle/running/completed/failed）で管理し、フロントは `GET /api/mart/status` をポーリングする。再構築は有界（有限テーブルの集約で必ず終了）・advisory lock で直列化・status で状態管理されるため、**クライアント側コマンドタイムアウトは 0（無制限）**、加えて `mart.rebuild()` 内で **`SET LOCAL statement_timeout = 0`**（サーバ側 statement_timeout の無効化）とし、データ量に依らず再構築がタイムアウトしないことを保証する。45 分以上滞留した `running`（プロセス異常終了で取り残された状態）は stale とみなし再実行を許可する。
@@ -436,5 +439,11 @@ flowchart TD
 
 - `fact_sales_daily`（曜日別・日次トレンドの mart 対応）／集約マテビュー
 - 互換ビュー（既存APIの mart 移行）／テナント別スキーマ分離
-- 取込フックでの自動再構築（現状は手動 `POST /api/mart/rebuild`）／棚割・在庫日数フィルタの mart 対応
-- 帳票区分・棚割を扱う場合の mart 拡張（退化属性として fact に保持 or jsonb 化）
+- 取込フックでの自動再構築（現状は手動 `POST /api/mart/rebuild`）
+- 帳票区分・棚割を**集計軸として**扱う場合の mart 拡張（退化属性として fact に保持 or jsonb 化。
+  棚割1・在日の**フィルタ**は対応済み）
+
+> **既存 mart データへの注意（下位互換）:** `dim_sku.attributes`（導入日 `donyu`）は本改修で追加した列のため、
+> 改修前に構築済みの mart には導入日が入っていない。デプロイ後に `POST /api/mart/rebuild`（全社サマリー画面の
+> 「mart を再構築」）を1回実行すると反映される（商品導入管理画面にも同旨の案内を表示する）。
+> mart は派生キャッシュであり、再構築で取込済みデータ・取込履歴が巻き戻ることはない。

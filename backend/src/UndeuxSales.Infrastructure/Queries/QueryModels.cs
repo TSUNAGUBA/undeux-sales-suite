@@ -411,7 +411,7 @@ public sealed record RankingResponse(
 // 気温は売上行の集計ではなく標準気候（ClimateModel）から決まる派生値。
 // ============================================================
 
-/// <summary>週次系列の1点（売上フロー指標 + その週・エリアの標準気温）。</summary>
+/// <summary>週次系列の1点（売上フロー指標 + その週・エリアの標準気温 + 当週在庫スナップショット）。</summary>
 /// <param name="Week">取込日（月曜）。表す週は前週 月〜日。</param>
 /// <param name="Quantity">当週売上数量。</param>
 /// <param name="Amount">当週売上金額。</param>
@@ -419,6 +419,9 @@ public sealed record RankingResponse(
 /// <param name="TempAvg">週平均気温（℃）。</param>
 /// <param name="TempMax">週最高気温（℃）。</param>
 /// <param name="TempMin">週最低気温（℃）。</param>
+/// <param name="Stock">当週の店頭在庫数（在庫スナップショットの時点値）。</param>
+/// <param name="StockDays">当週の在日（平均）。</param>
+/// <param name="SellThroughRate">当週の消化率（0..1。累計売上数 ÷ 累計納品数、分母0は0）。</param>
 public sealed record WeeklySeriesPoint(
     DateOnly Week,
     long Quantity,
@@ -426,7 +429,10 @@ public sealed record WeeklySeriesPoint(
     long GrossProfit,
     double TempAvg,
     double TempMax,
-    double TempMin);
+    double TempMin,
+    long Stock,
+    double StockDays,
+    double SellThroughRate);
 
 /// <summary>
 /// 週次系列のレスポンス。散布図（気温×売上数量）と重回帰シミュレーションの素材。
@@ -446,13 +452,19 @@ public sealed record WeeklySeriesResponse(
 /// <param name="SellThroughRate">消化率（%、最新週: 累計売上数 ÷ 累計納品数）。</param>
 /// <param name="MarkdownRate">値引き率（%、1 − 平均売価 ÷ マスタ定価。0..100 にクランプ）。</param>
 /// <param name="Quantity">期間内売上数量（バブルサイズ用）。</param>
+/// <param name="Season">季節区分（商品次元の属性。未設定は null）。</param>
+/// <param name="Stock">店頭在庫数（最新週スナップショット）。</param>
+/// <param name="StockDays">平均在庫日数＝在日（最新週スナップショットの平均）。</param>
 public sealed record MarkdownScatterPoint(
     string Key,
     string Label,
     string BusinessType,
     double SellThroughRate,
     double MarkdownRate,
-    long Quantity);
+    long Quantity,
+    string? Season,
+    long Stock,
+    double StockDays);
 
 /// <summary>
 /// 消化率×値引き率 散布図のレスポンス。値引き率はマスタ定価（m_product_sku.sales_price）が
@@ -463,3 +475,57 @@ public sealed record MarkdownScatterPoint(
 public sealed record MarkdownScatterResponse(
     string? LatestWeek,
     IReadOnlyList<MarkdownScatterPoint> Points);
+
+// ============================================================
+// 商品導入管理（mart）
+// 導入日（sales_weekly.donyu_date）を dim_sku.attributes->>'donyu' に保持し、
+// 商品（業態×記号×品番）単位で導入状況を一覧する。
+// ============================================================
+
+/// <summary>商品導入管理の1行（商品＝業態×記号×品番 単位）。</summary>
+/// <param name="ChannelCode">業態コード。</param>
+/// <param name="ChannelName">業態表示名（マスタ未登録は null）。</param>
+/// <param name="DepartmentCode">部門コード。</param>
+/// <param name="DepartmentName">部門名（商品マスタ由来。未登録は null）。</param>
+/// <param name="ProductSign">商品記号。</param>
+/// <param name="ProductCode">品番CD（服種）。</param>
+/// <param name="ProductName">商品名。</param>
+/// <param name="Brand">ブランド（商品マスタ由来）。</param>
+/// <param name="Manager">担当者（商品マスタ由来）。</param>
+/// <param name="DonyuDate">導入日（SKU の最も早い導入日。未設定・不正値は null）。</param>
+/// <param name="SkuCount">SKU 数。</param>
+/// <param name="SalesQuantity">全期間の売上数量。</param>
+/// <param name="PrimaryImageUrl">代表画像URL（無ければ null）。</param>
+public sealed record MartIntroductionRow(
+    string ChannelCode,
+    string? ChannelName,
+    string? DepartmentCode,
+    string? DepartmentName,
+    string ProductSign,
+    string ProductCode,
+    string? ProductName,
+    string? Brand,
+    string? Manager,
+    DateOnly? DonyuDate,
+    int SkuCount,
+    long SalesQuantity,
+    string? PrimaryImageUrl);
+
+/// <summary>商品導入管理一覧のページ。</summary>
+public sealed record MartIntroductionPage(
+    IReadOnlyList<MartIntroductionRow> Items,
+    int TotalCount,
+    int Page,
+    int PageSize);
+
+/// <summary>
+/// 商品導入管理のフィルタ選択肢（mart の商品次元から導出）。
+/// 業態・部門の選択肢は既存の <c>/api/filters</c>（<see cref="FilterOptions"/>）を再利用する。
+/// </summary>
+/// <param name="Brands">ブランドの実値（NULL/空は除外、昇順）。</param>
+/// <param name="Managers">担当者の実値（NULL/空は除外、昇順）。</param>
+/// <param name="Hinbans">服種＝品番CD の実値（昇順）。</param>
+public sealed record MartIntroductionOptions(
+    IReadOnlyList<string> Brands,
+    IReadOnlyList<string> Managers,
+    IReadOnlyList<string> Hinbans);
