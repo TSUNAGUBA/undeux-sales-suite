@@ -10,8 +10,8 @@
  * - 「詳細」トグルで品番フィルタ（ドリル経由で増える項目）
  * - 適用ボタン・リセットボタン
  *
- * 既存の FilterControls.vue は他ページが利用しているため変更せず、
- * 共有 state（useFilters）のみ流用して UI を再構築している。
+ * FilterBar（FilterControls）を使う各分析ページと共有 state（useFilters）を共有しつつ、
+ * クロス集計向けに集計単位・表示集計値の設定を加えた専用パネルとして構成している。
  */
 
 import { ArrowLeftRight, ChevronDown, Filter, RotateCcw, Search, Thermometer } from 'lucide-vue-next'
@@ -25,9 +25,8 @@ import type {
 } from '~/types/api'
 
 // useFilters の共通ヘルパーから整形済みの選択肢を取得する。
-// useFilters は useState で共有状態を持つため、親（crosstab.vue）と
+// useFilters は useState で共有状態を持つため、親（mart/crosstab.vue）と
 // 同一の state を参照する（=SoT は1つ）。
-// FilterControls.vue は他ページで利用中のため変更せず、次イテレーションで集約予定。
 const {
   departmentChipOptions,
   businessTypeChipOptions,

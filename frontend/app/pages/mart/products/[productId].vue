@@ -461,6 +461,8 @@ let crosstabRequestSeq = 0
 async function loadCrosstab(): Promise<void> {
   const summary = detail.value?.summary
   if (!summary || !isBuilt.value) {
+    // in-flight の旧応答が後着でこのリセットを上書きしないよう世代を進める。
+    ++crosstabRequestSeq
     crosstab.value = null
     return
   }

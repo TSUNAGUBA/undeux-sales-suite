@@ -24,7 +24,7 @@ const { get } = useApi()
 const { isBuilt, refreshStatus } = useMart()
 // 共有フィルタ（mart-filter スコープ）とは独立した画面専用フィルタ。
 // /api/filters の選択肢（業態・部門）だけを再利用する。
-const { options: sharedOptions, optionsError, loadOptions } = useFilters('mart-filter')
+const { options: sharedOptions, optionsError, loadOptions, businessTypeChipOptions } = useFilters('mart-filter')
 
 // ---------------------------------------------------------------
 // フィルタ state（業態はタグ＝複数選択、他も複数選択 or テキスト）
@@ -49,13 +49,6 @@ const introductionOptions = ref<MartIntroductionOptions | null>(null)
 const result = ref<MartIntroductionPage | null>(null)
 const loading = ref(true)
 const errorMessage = ref<string | null>(null)
-
-const businessTypeChipOptions = computed(() =>
-  (sharedOptions.value?.businessTypes ?? []).map((b) => ({
-    value: b.code,
-    label: b.name ? (b.shortName ? `${b.name}（${b.shortName}）` : b.name) : b.code,
-  })),
-)
 
 function toSelectOptions(items: CodeName[]): { value: string; text: string }[] {
   return items.map((item) => ({
@@ -110,21 +103,32 @@ function toQuery(): Record<string, unknown> {
  */
 const appliedDonyuFilter = ref(false)
 
+// 「適用」連打などで古い応答が後着しても表示を上書きしないためのリクエスト世代。
+let loadRequestSeq = 0
+
 async function load(): Promise<void> {
+  const seq = ++loadRequestSeq
   loading.value = true
   errorMessage.value = null
   try {
     await refreshStatus()
+    if (seq !== loadRequestSeq) return
     if (!isBuilt.value) {
       result.value = null
       return
     }
     appliedDonyuFilter.value = donyuFrom.value !== '' || donyuTo.value !== ''
-    result.value = await get<MartIntroductionPage>('/api/mart/introductions', toQuery())
+    const response = await get<MartIntroductionPage>('/api/mart/introductions', toQuery())
+    if (seq !== loadRequestSeq) return
+    result.value = response
   } catch (error) {
-    errorMessage.value = apiErrorMessage(error)
+    if (seq === loadRequestSeq) {
+      errorMessage.value = apiErrorMessage(error)
+    }
   } finally {
-    loading.value = false
+    if (seq === loadRequestSeq) {
+      loading.value = false
+    }
   }
 }
 
@@ -245,8 +249,8 @@ onMounted(async () => {
 
       <!-- 業態（タグ・複数選択）。先頭に置き「フィルタ → 集計単位 → 表示集計値」の導線に合わせる -->
       <div class="mb-3">
-        <p class="mb-1 text-xs font-medium text-slate-500">業態</p>
         <CrossTabMultiSelectChips
+          label="業態"
           :options="businessTypeChipOptions"
           :model-value="businessTypes"
           empty-label="業態候補がありません"
@@ -310,7 +314,8 @@ onMounted(async () => {
       <div class="mt-4 flex flex-wrap gap-2">
         <button
           type="button"
-          class="flex items-center gap-1.5 rounded-lg bg-indigo-600 px-4 py-2 text-sm font-medium text-white hover:bg-indigo-700"
+          class="flex items-center gap-1.5 rounded-lg bg-indigo-600 px-4 py-2 text-sm font-medium text-white hover:bg-indigo-700 disabled:opacity-60"
+          :disabled="loading"
           @click="reload"
         >
           <Search class="h-4 w-4" />
@@ -318,7 +323,8 @@ onMounted(async () => {
         </button>
         <button
           type="button"
-          class="flex items-center gap-1.5 rounded-lg border border-slate-300 px-4 py-2 text-sm font-medium text-slate-600 hover:bg-slate-50"
+          class="flex items-center gap-1.5 rounded-lg border border-slate-300 px-4 py-2 text-sm font-medium text-slate-600 hover:bg-slate-50 disabled:opacity-60"
+          :disabled="loading"
           @click="resetFilters"
         >
           <RotateCcw class="h-4 w-4" />

@@ -111,9 +111,9 @@ export function useFilters(scopeKey: string = 'sales-filter') {
   // ============================================================
   // セレクトオプション組立ヘルパー（FilterControls / CrossTabConditionPanel の重複削減）
   //
-  // FilterControls.vue は `{ value, text }` 形式（MultiSelect コンポーネント用）、
-  // CrossTabConditionPanel.vue は `{ value, label }` 形式を使うため、
-  // ここでは生形（code + 表示名）のみを提供する。ラベル整形は呼び出し側で行う。
+  // MultiSelect コンポーネントは `{ value, text }` 形式、チップ（CrossTabMultiSelectChips）は
+  // `{ value, label }` 形式を使う。本コンポーザブルはチップ用の `{ value, label }` を提供し、
+  // MultiSelect 用の整形は利用側（FilterControls 等）で行う。
   //
   // **重要**: 既存の export を変更しないこと（他ページの FilterControls が依存）。
   // 新規追加のみで対応する。

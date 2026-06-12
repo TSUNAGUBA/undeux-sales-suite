@@ -49,8 +49,8 @@ function removeHinban(value: string): void {
     <!-- 並び順は 業態 → 部門 → 年度 → 季節（→ 棚割1 → 平均在庫日数）。 -->
     <!-- 業態はタグ（チップ・複数選択）。少数の選択肢をワンタップで切り替えられるようにする。 -->
     <div class="mb-3">
-      <p class="mb-1 text-xs font-medium text-slate-500">業態</p>
       <CrossTabMultiSelectChips
+        label="業態"
         :options="businessTypeChipOptions"
         :model-value="filter.businessTypes"
         empty-label="業態候補がありません"
