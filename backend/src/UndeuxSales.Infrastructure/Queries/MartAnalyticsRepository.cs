@@ -421,13 +421,21 @@ public sealed class MartAnalyticsRepository
 
     /// <summary>
     /// 在庫アクション明細（SKU 単位・最新週スナップショット基準）をページングで取得する。
-    /// 在庫一覧・滞留・不動の3タブが statuses 絞込だけを変えて共用する（SQL 骨格の三重化を避ける）。
+    /// 在庫一覧・滞留・不動・対応リストのタブが statuses / フラグ絞込だけを変えて共用する
+    /// （SQL 骨格の多重化を避ける）。フラグ（inventory_action_flag）は自然キーで LEFT JOIN し、
+    /// additive な Flags フィールドとして行に載せる。
     /// </summary>
     /// <param name="statuses"><see cref="InventoryHealthRules.NormalizeStatuses"/> 済みの状態コード。空なら全状態。</param>
+    /// <param name="flagTypes"><see cref="InventoryFlagRules.NormalizeFlagTypes"/> 済みのフラグ種別。空なら絞込なし。</param>
+    /// <param name="flagStatuses"><see cref="InventoryFlagRules.NormalizeFlagStatuses"/> 済みの対応状況。空なら絞込なし。</param>
+    /// <param name="flagged"><see cref="InventoryFlagRules.NormalizeFlagged"/> 済みの any / none / null。</param>
     public async Task<InventoryItemsPage> GetInventoryItemsAsync(
         SalesQueryFilter filter,
         IReadOnlyList<string> statuses,
         string? search,
+        IReadOnlyList<string> flagTypes,
+        IReadOnlyList<string> flagStatuses,
+        string? flagged,
         InventoryItemSortKey sortKey,
         bool ascending,
         int page,
@@ -459,12 +467,19 @@ public sealed class MartAnalyticsRepository
         parameters.Add("scanStartWeek", ScanStartWeek(latestWeek.Value));
         var cte = InventoryHealthSql.ClassifiedCte(MartFilterSql.AndClause(filter, "inv"));
 
-        // 検索・状態絞込の条件（検索は dp/ds を参照するため、件数クエリにも次元結合が必要）。
+        // 検索・フラグ・状態絞込の条件（検索は dp/ds、フラグは f_so/f_md を参照するため、
+        // 件数クエリにも次元結合とフラグ結合が必要）。検索・フラグはスコープ絞込として
+        // 件数（チップ・バケット）にも適用し、状態（statuses）は行クエリのみに適用する。
         var conditions = new List<string>();
         var searchCondition = InventoryHealthSql.SearchCondition(search, parameters);
         if (searchCondition is not null)
         {
             conditions.Add(searchCondition);
+        }
+        var flagCondition = InventoryFlagSql.Condition(flagTypes, flagStatuses, flagged, parameters);
+        if (flagCondition is not null)
+        {
+            conditions.Add(flagCondition);
         }
         var countsWhere = conditions.Count == 0 ? string.Empty : "WHERE " + string.Join(" AND ", conditions);
 
@@ -505,6 +520,7 @@ public sealed class MartAnalyticsRepository
             FROM classified c
             JOIN mart.dim_sku     ds ON ds.sku_key     = c.sku_key
             JOIN mart.dim_product dp ON dp.product_key = ds.product_key
+            {InventoryFlagSql.Joins}
             {countsWhere};
             """;
         var counts = await connection.QuerySingleAsync<InventoryItemsCountRow>(
@@ -546,10 +562,11 @@ public sealed class MartAnalyticsRepository
                    mp.product_id      AS master_product_id,
                    dp.product_name    AS product_name,
                    dp.brand           AS brand,
-                   ds.image_url       AS primary_image_url
+                   ds.image_url       AS primary_image_url{InventoryFlagSql.SelectColumns}
             FROM classified c
             JOIN mart.dim_sku     ds ON ds.sku_key     = c.sku_key
             JOIN mart.dim_product dp ON dp.product_key = ds.product_key
+            {InventoryFlagSql.Joins}
             LEFT JOIN (
                 SELECT DISTINCT ON (business_category_cd, product_sign, product_type_crd)
                        business_category_cd, product_sign, product_type_crd, product_id
@@ -572,7 +589,8 @@ public sealed class MartAnalyticsRepository
                 AggregateMath.Ratio(row.CumulativeSales, row.CumulativeDelivery),
                 row.OrderQuantity, row.AdvanceQuantity, row.ZeroSalesWeeks, row.Status,
                 InventoryHealthRules.Recommend(row.Status, row.OrderQuantity, row.ZeroSalesWeeks),
-                row.MasterProductId, row.ProductName, row.Brand, row.PrimaryImageUrl))
+                row.MasterProductId, row.ProductName, row.Brand, row.PrimaryImageUrl,
+                MapItemFlags(row)))
             .ToList();
 
         return new InventoryItemsPage(
@@ -660,6 +678,32 @@ public sealed class MartAnalyticsRepository
         row.TotalOrderQuantity,
         row.TotalAdvanceQuantity,
         row.CumulativeDelivery);
+
+    /// <summary>フラット結合されたフラグ列（So*/Md*）を Flags リストへ組み立てる。</summary>
+    private static IReadOnlyList<InventoryItemFlag> MapItemFlags(InventoryItemRawRow row)
+    {
+        if (row.SoFlagId is null && row.MdFlagId is null)
+        {
+            return Array.Empty<InventoryItemFlag>();
+        }
+
+        var flags = new List<InventoryItemFlag>(2);
+        if (row.SoFlagId is not null)
+        {
+            flags.Add(new InventoryItemFlag(
+                row.SoFlagId.Value, InventoryFlagRules.FlagTypeStopOrder,
+                row.SoFlagStatus!, row.SoFlagNote, row.SoFlaggedWeek!.Value,
+                row.SoFlaggedStatus!, row.SoFlagUpdatedBy!, row.SoFlagUpdatedAt!.Value));
+        }
+        if (row.MdFlagId is not null)
+        {
+            flags.Add(new InventoryItemFlag(
+                row.MdFlagId.Value, InventoryFlagRules.FlagTypeMarkdown,
+                row.MdFlagStatus!, row.MdFlagNote, row.MdFlaggedWeek!.Value,
+                row.MdFlaggedStatus!, row.MdFlagUpdatedBy!, row.MdFlagUpdatedAt!.Value));
+        }
+        return flags;
+    }
 
     /// <summary>在庫アクション明細の並び替えキーを SQL 式に解決する（classified エイリアス c 固定）。</summary>
     private static string InventoryItemSortExpression(InventoryItemSortKey sortKey) => sortKey switch

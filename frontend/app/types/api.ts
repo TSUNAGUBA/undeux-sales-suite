@@ -224,6 +224,49 @@ export interface InventoryItemRow {
   productName: string | null
   brand: string | null
   primaryImageUrl: string | null
+  /** 結合された在庫アクションフラグ（0〜2件。additive 追加フィールド）。 */
+  flags: InventoryItemFlag[]
+}
+
+/** 在庫アクションフラグの種別（実装 SoT はバックエンド InventoryFlagRules・DB CHECK 制約）。 */
+export type InventoryFlagType = 'stop-order' | 'markdown'
+
+/** 在庫アクションフラグの対応状況。 */
+export type InventoryFlagStatus = 'candidate' | 'in-progress' | 'done' | 'dismissed'
+
+/** 明細行に結合された在庫アクションフラグ1件（SoT: inventory_action_flag テーブル）。 */
+export interface InventoryItemFlag {
+  id: number
+  flagType: InventoryFlagType
+  status: InventoryFlagStatus
+  note: string | null
+  /** 付与時のアンカー週。 */
+  flaggedWeek: string
+  /** 付与時の判定状態（現在の行 status と異なる場合「現在は判定対象外」を注記する）。 */
+  flaggedStatus: string
+  updatedBy: string
+  updatedAt: string
+}
+
+/** POST /api/inventory-flags/bulk のレスポンス。 */
+export interface InventoryFlagBulkResult {
+  created: number
+  skipped: number
+}
+
+/** フラグ種別×対応状況の件数1行。 */
+export interface InventoryFlagSummaryRow {
+  flagType: string
+  status: string
+  count: number
+}
+
+/** GET /api/inventory-flags/summary のレスポンス。 */
+export interface InventoryFlagSummary {
+  rows: InventoryFlagSummaryRow[]
+  /** 最新週スナップショットに存在しない SKU のフラグ件数（完売等＝対応完了の確認候補）。 */
+  orphanCount: number
+  latestWeek: string | null
 }
 
 /** GET /api/mart/inventory/items のレスポンス。 */

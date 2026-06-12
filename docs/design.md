@@ -96,6 +96,7 @@ graph LR
 | 売上参照ファクト | 取込ファイル（ダンプ / 週次CSV） | `sales_weekly` |
 | 取込履歴 | `import_batch` | — |
 | コードマスタ | 売上参照ファクト | `department` 他（取込時に同一トランザクションで導出） |
+| 在庫アクションフラグ（発注停止候補・値下げ候補・対応状況） | `inventory_action_flag`（ユーザー判断の記録。public スキーマ） | なし（mart 非依存。明細表示時に自然キーで都度結合） |
 
 ## 5. データフロー（取込）
 
@@ -124,6 +125,10 @@ flowchart TD
 | GET | `/api/health` `/api/health/ready` | 稼働・準備状態 |
 | GET | `/api/filters` | フィルタ選択肢（部門・業態・季節・取込週） |
 | GET | `/api/summary` | 全社サマリー（KPI + 週次トレンド） |
+| POST | `/api/inventory-flags/bulk` | 在庫アクションフラグの一括登録（冪等。既存フラグの対応状況は巻き戻さない） |
+| POST | `/api/inventory-flags/status` | フラグ対応状況の一括変更（all-or-nothing。未知 id は 404） |
+| POST | `/api/inventory-flags/delete` | フラグの一括削除（誤操作の訂正用） |
+| GET | `/api/inventory-flags/summary` | フラグ種別×対応状況の件数と孤児フラグ件数 |
 | GET | `/api/sales/trend` | 売上トレンド（`granularity=daily\|weekly`） |
 | GET | `/api/sales/breakdown` | 集計軸別ランキング（`dimension`・`metric`・`order`・`limit`） |
 | GET | `/api/crosstab` | クロス集計マトリクス（`rowDimension`・`columnDimension`・任意の `temperatureArea`） |
@@ -179,7 +184,8 @@ flowchart TD
 - **判定閾値の SoT はコード内定数**（`backend/src/UndeuxSales.Core/InventoryHealthRules.cs`）。注意=在庫日数45日超／滞留=60日超×消化率75%未満／不動=直近8週連続出荷ゼロ（経過週数の計測は性能のため直近26週に限定）。SQL へは Dapper パラメータで注入し、**適用値は API レスポンス（`thresholds`）に含めてフロントはレスポンス値から描画**するため、値の二重定義は存在しない。設定テーブル・設定 UI は第二弾（閾値カスタマイズ）まで作らない。
 - **新 API（読み取り専用）**: `GET /api/mart/inventory/actions`（KPI・前週比較・状態別件数・今週のアクション・部門別健全性。在庫マネジメントのダッシュボードと全社サマリーのダイジェストが共用）／`GET /api/mart/inventory/items`（SKU 明細。`statuses` 絞込＝未知値は無視、検索、ページング、経過バケット件数）。既存 `GET /api/mart/inventory` は**完全互換のまま無変更**。
 - **推奨アクションはサーバがコードで返し、表示はフロントのカタログ**（`frontend/app/utils/skuStatus.ts`）**が射影**する（ランキングの順位/ABC と同じ「SoT=集計値、表示=射影」の思想）。語彙は発注抑制／値下げ候補／売場・棚割の再点検／処分・値引き販売の検討／経過観察に限定。**「店間移動」は提案しない**（ソースデータに店舗軸がなく企業集約のため実行不能な提案になる）。
-- **永続化なし（第一弾）**: 発注停止フラグ・値下げ候補リスト・担当者共有等のユーザー操作の保存は第二弾。明細 API は自然キー（業態×商品記号×品番×単品）を返却済みのため、mart 再構築（TRUNCATE）の影響を受けない永続テーブルを public スキーマに追加するだけで拡張できる。共有の代替として明細の TSV/HTML コピー（クロス集計と同じ `utils/clipboard.ts`）を提供。
+- **フラグ保存・対応状況管理（第二弾で実装済み）**: 発注停止候補・値下げ候補のチェックと対応状況（候補/対応中/対応済/見送り）を `inventory_action_flag`（public スキーマ・自然キー）に保存する。mart 再構築（TRUNCATE）の影響を受けず、明細には自然キー LEFT JOIN で additive に載る。一括登録は `ON CONFLICT DO NOTHING` の冪等動作で、**再実行が既存フラグの対応状況を巻き戻さない**（原則2）。認可は認証ユーザー全員（売上 SoT を改変しない可逆な業務ワークフローデータのため。`created_by`/`updated_by` で監査）。閾値変更等で判定が変わったフラグは自動削除せず「現在は判定対象外」と表示で明示する（付与時の判定状態 `flagged_status` を保存）。HTTP メソッドは既存方針どおり GET/POST のみ（`/status`・`/delete` の動詞パスはそのトレードオフ）。
+- 共有の補助として明細の TSV/HTML コピー（クロス集計と同じ `utils/clipboard.ts`）も引き続き提供。
 - 業務定義（滞留・不動の意味と運用）は `.ai-native/domain-context/industry/apparel-inventory-health.md` を参照（実装値の SoT は `InventoryHealthRules.cs`。相互参照）。
 
 ## 8. エラーコード
@@ -191,7 +197,7 @@ flowchart TD
 | AUTH | `UNDX-AUTH-001` | 認証エラー |
 | REQ | `UNDX-REQ-001`〜`003` | リクエスト検証エラー |
 | IMP | `UNDX-IMP-001`〜`005` | 取込処理エラー |
-| DATA / SYS | `UNDX-DATA-001` / `UNDX-DATA-002` / `UNDX-SYS-001` | データ層 / 商品未登録 / 想定外エラー |
+| DATA / SYS | `UNDX-DATA-001` / `UNDX-DATA-002` / `UNDX-DATA-003` / `UNDX-SYS-001` | データ層 / 商品未登録 / フラグ未存在 / 想定外エラー |
 
 ## 9. 商品マスタ（m_product / m_product_sku）
 

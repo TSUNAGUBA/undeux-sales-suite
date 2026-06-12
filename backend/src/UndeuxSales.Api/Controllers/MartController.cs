@@ -87,11 +87,18 @@ public sealed class MartController : ControllerBase
     /// 在日バケットと同じグレースフル方式）。並び替え未指定時の既定値は絞込状態に応じて変える
     /// （不動のみ→出荷ゼロ週数、滞留のみ→在庫日数、それ以外→在庫数。いずれも降順）。
     /// </summary>
+    /// <remarks>
+    /// フラグ絞込（flagTypes / flagStatuses / flagged=any|none）は対応リストタブが使用する。
+    /// いずれも未知値は無視（statuses と同じグレースフル方式）。
+    /// </remarks>
     [HttpGet("inventory/items")]
     public Task<InventoryItemsPage> InventoryItems(
         [FromQuery] SalesQueryFilter filter,
         [FromQuery] string[]? statuses,
         [FromQuery] string? search,
+        [FromQuery] string[]? flagTypes,
+        [FromQuery] string[]? flagStatuses,
+        [FromQuery] string? flagged,
         [FromQuery] string? sort,
         [FromQuery] string? order,
         [FromQuery] int page,
@@ -103,6 +110,9 @@ public sealed class MartController : ControllerBase
             filter,
             normalized,
             search,
+            InventoryFlagRules.NormalizeFlagTypes(flagTypes),
+            InventoryFlagRules.NormalizeFlagStatuses(flagStatuses),
+            InventoryFlagRules.NormalizeFlagged(flagged),
             RequestParsing.InventoryItemSort(sort, DefaultInventoryItemSort(normalized)),
             RequestParsing.IsAscending(order),
             page <= 0 ? DefaultPage : page,

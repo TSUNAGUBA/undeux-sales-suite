@@ -5,8 +5,10 @@ import {
   CalendarClock,
   CircleDollarSign,
   ClipboardCopy,
+  ClipboardList,
   Gauge,
   LayoutDashboard,
+  ListChecks,
   Scale,
   Search,
   Snowflake,
@@ -15,6 +17,10 @@ import type { Component } from 'vue'
 import type {
   InventoryActionTargetTab,
   InventoryActionsResponse,
+  InventoryFlagStatus,
+  InventoryFlagSummary,
+  InventoryFlagType,
+  InventoryItemFlag,
   InventoryItemRow,
   InventoryItemsPage,
   InventoryStatus,
@@ -26,18 +32,20 @@ import type {
  * 在庫マネジメント（アクション駆動）。「状態を表示する」だけでなく
  * 「滞留・不動を自動抽出し、発注抑制・値下げ等の判断に落とす」ことを目的とする。
  *
- * 構成: ページ内4タブ（ダッシュボード / 在庫一覧 / 滞留在庫 / 不動在庫）。
+ * 構成: ページ内5タブ（ダッシュボード / 在庫一覧 / 滞留在庫 / 不動在庫 / 対応リスト）。
  * - タブは ?tab= クエリと同期する（全社サマリーのアクション導線から特定タブへ
  *   直リンクするため。ブラウザ戻る/進むにも追従する）。
  * - 滞留・不動の判定閾値の SoT はバックエンド InventoryHealthRules。画面の定義
  *   バナー・バケットはレスポンスの thresholds から描画する。
- * - 明細3タブは同一 API（/api/mart/inventory/items）を statuses 絞込だけ変えて共用する。
+ * - 明細タブ群は同一 API（/api/mart/inventory/items）を statuses / フラグ絞込だけ変えて共用する。
+ * - フラグ（発注停止候補・値下げ候補）はチーム共有の判断記録（SoT: inventory_action_flag）。
+ *   行選択 → 一括登録し、対応状況（候補/対応中/対応済/見送り）を対応リストタブで管理する。
  */
 useHead({ title: '在庫マネジメント | UndeuxSales' })
 
 const MART_SCOPE = 'mart-filter'
 const { toQuery, addToFilter, loadOptions } = useFilters(MART_SCOPE)
-const { get } = useApi()
+const { get, post } = useApi()
 const { isBuilt, refreshStatus } = useMart()
 const route = useRoute()
 const router = useRouter()
@@ -49,16 +57,30 @@ const TABS: ReadonlyArray<{ key: TabKey; label: string; icon: Component }> = [
   { key: 'items', label: '在庫一覧', icon: Boxes },
   { key: 'stagnant', label: '滞留在庫', icon: AlertOctagon },
   { key: 'dormant', label: '不動在庫', icon: Snowflake },
+  { key: 'flags', label: '対応リスト', icon: ClipboardList },
 ]
-type TabKey = 'dashboard' | 'items' | 'stagnant' | 'dormant'
+type TabKey = 'dashboard' | 'items' | 'stagnant' | 'dormant' | 'flags'
 type ListTabKey = Exclude<TabKey, 'dashboard'>
+/** 行選択（フラグ一括登録）を提供するタブ。対応リストは状態変更のみのため対象外。 */
+type SelectableTabKey = Exclude<ListTabKey, 'flags'>
+
+const LIST_TAB_KEYS = ['items', 'stagnant', 'dormant', 'flags'] as const
 
 function parseTab(value: unknown): TabKey {
-  return value === 'items' || value === 'stagnant' || value === 'dormant' ? value : 'dashboard'
+  return value === 'items' || value === 'stagnant' || value === 'dormant' || value === 'flags'
+    ? value
+    : 'dashboard'
 }
 
 /** URL がタブ状態の SoT（直リンク・戻る/進むに追従）。 */
 const activeTab = computed<TabKey>(() => parseTab(route.query.tab))
+
+/** 行選択を提供するタブなら そのキー、そうでなければ null。 */
+const selectableTab = computed<SelectableTabKey | null>(() =>
+  activeTab.value === 'items' || activeTab.value === 'stagnant' || activeTab.value === 'dormant'
+    ? activeTab.value
+    : null,
+)
 
 function setTab(tab: TabKey): void {
   if (tab === activeTab.value) return
@@ -117,7 +139,7 @@ async function loadActions(): Promise<void> {
   }
 }
 
-// ---- 明細3タブ（/api/mart/inventory/items 共用） ----
+// ---- 明細タブ群（/api/mart/inventory/items 共用） ----
 
 const PAGE_SIZE = 50
 
@@ -137,16 +159,20 @@ const listStates = reactive<Record<ListTabKey, ListState>>({
   items: emptyListState(),
   stagnant: emptyListState(),
   dormant: emptyListState(),
+  flags: emptyListState(),
 })
 
 // タブ別のリクエスト世代（後着応答の破棄用。リアクティブ不要のため素のオブジェクト）。
-const listRequestSeq: Record<ListTabKey, number> = { items: 0, stagnant: 0, dormant: 0 }
+const listRequestSeq: Record<ListTabKey, number> = { items: 0, stagnant: 0, dormant: 0, flags: 0 }
 
 /** 在庫一覧タブの状態チップ絞込（null = すべて）。滞留・不動タブは固定絞込のため対象外。 */
 const itemsStatusFilter = ref<InventoryStatus | null>(null)
 /** 在庫一覧タブの検索（適用ボタン/Enter で確定）。 */
 const searchInput = ref('')
 const appliedSearch = ref('')
+/** 対応リストタブのフラグ種別・対応状況チップ絞込（null = すべて）。 */
+const flagsTypeFilter = ref<InventoryFlagType | null>(null)
+const flagsStatusFilter = ref<InventoryFlagStatus | null>(null)
 
 function listQuery(tab: ListTabKey): Record<string, unknown> {
   const query: Record<string, unknown> = {
@@ -158,6 +184,11 @@ function listQuery(tab: ListTabKey): Record<string, unknown> {
     query.statuses = ['stagnant']
   } else if (tab === 'dormant') {
     query.statuses = ['dormant']
+  } else if (tab === 'flags') {
+    // 対応リスト: フラグ付きの行のみ。種別・対応状況チップでさらに絞り込む。
+    query.flagged = 'any'
+    if (flagsTypeFilter.value) query.flagTypes = [flagsTypeFilter.value]
+    if (flagsStatusFilter.value) query.flagStatuses = [flagsStatusFilter.value]
   } else {
     if (itemsStatusFilter.value) query.statuses = [itemsStatusFilter.value]
     if (appliedSearch.value) query.search = appliedSearch.value
@@ -175,10 +206,12 @@ async function loadList(tab: ListTabKey): Promise<void> {
     if (seq !== listRequestSeq[tab]) return
     state.response = page
     state.loaded = true
-    // 検索適用中の在庫一覧タブの statusCounts は検索スコープの件数になるため、
+    // 行の入れ替わりで選択が意図しない SKU を指さないよう、一覧の再取得で選択は解除する。
+    clearSelection()
+    // 検索・フラグ絞込が効くタブの statusCounts はそのスコープの件数になるため、
     // タブバッジの単一参照元には反映しない（検索なしのキャッシュ済みタブと
-    // バッジが矛盾したまま持続するのを防ぐ）。latestWeek は検索非依存のため常に更新する。
-    if (tab !== 'items' || !appliedSearch.value) {
+    // バッジが矛盾したまま持続するのを防ぐ）。latestWeek は絞込非依存のため常に更新する。
+    if ((tab !== 'items' || !appliedSearch.value) && tab !== 'flags') {
       lastStatusCounts.value = page.statusCounts
     }
     lastLatestWeek.value = page.latestWeek
@@ -193,12 +226,38 @@ async function loadList(tab: ListTabKey): Promise<void> {
   }
 }
 
+// ---- 対応リストタブの補足情報（孤児フラグ件数。非ブロッキング） ----
+
+const flagsSummary = ref<InventoryFlagSummary | null>(null)
+const flagsSummaryLoaded = ref(false)
+let flagsSummaryRequestSeq = 0
+
+async function loadFlagsSummary(): Promise<void> {
+  const seq = ++flagsSummaryRequestSeq
+  try {
+    const summary = await get<InventoryFlagSummary>('/api/inventory-flags/summary')
+    if (seq !== flagsSummaryRequestSeq) return
+    flagsSummary.value = summary
+    flagsSummaryLoaded.value = true
+  } catch (error) {
+    if (seq !== flagsSummaryRequestSeq) return
+    // 補足情報のため取得失敗で対応リスト本体は止めない（注記が出ないだけ）。
+    console.error('[inventory] フラグサマリーの取得に失敗しました:', error)
+    flagsSummary.value = null
+  }
+}
+
 /** 表示中タブのデータを未取得なら取得する（タブ単位の遅延ロード）。 */
 async function ensureTabLoaded(tab: TabKey): Promise<void> {
   if (!isBuilt.value) return
   if (tab === 'dashboard') {
     if (!actionsLoaded.value && !actionsLoading.value) await loadActions()
-  } else if (!listStates[tab].loaded && !listStates[tab].loading) {
+    return
+  }
+  if (tab === 'flags' && !flagsSummaryLoaded.value) {
+    void loadFlagsSummary()
+  }
+  if (!listStates[tab].loaded && !listStates[tab].loading) {
     await loadList(tab)
   }
 }
@@ -219,7 +278,8 @@ async function handleFilterApply(): Promise<void> {
   actionsLoaded.value = false
   lastStatusCounts.value = null
   lastLatestWeek.value = null
-  for (const key of ['items', 'stagnant', 'dormant'] as const) {
+  clearSelection()
+  for (const key of LIST_TAB_KEYS) {
     listRequestSeq[key] += 1
     listStates[key].loading = false
     listStates[key].loaded = false
@@ -229,12 +289,18 @@ async function handleFilterApply(): Promise<void> {
 }
 
 watch(activeTab, (tab) => {
+  // タブをまたいだ選択の持ち越しは誤登録のもとになるため解除する。
+  clearSelection()
   void ensureTabLoaded(tab)
 })
 
-// ---- タブバッジ（状態別件数）。単一参照元 lastStatusCounts から描画する ----
+// ---- タブバッジ。状態件数は単一参照元 lastStatusCounts、対応リストは自タブの件数から描画 ----
 
 function tabBadge(tab: TabKey): { text: string; hot: boolean } | null {
+  if (tab === 'flags') {
+    const total = listStates.flags.response?.totalCount
+    return total === undefined ? null : { text: formatNumber(total), hot: false }
+  }
   const counts = lastStatusCounts.value
   if (!counts) return null
   if (tab === 'items') return { text: `${formatNumber(counts.total)} SKU`, hot: false }
@@ -305,11 +371,123 @@ function handleFeedNavigate(tab: InventoryActionTargetTab): void {
   setTab(tab)
 }
 
+// ---- 行選択とフラグ一括登録 ----
+
+const selectedKeys = ref<Set<string>>(new Set())
+const bulkSubmitting = ref(false)
+const bulkError = ref<string | null>(null)
+
+function clearSelection(): void {
+  if (selectedKeys.value.size > 0) {
+    selectedKeys.value = new Set()
+  }
+  bulkError.value = null
+}
+
+function isSelected(row: InventoryItemRow): boolean {
+  return selectedKeys.value.has(rowKey(row))
+}
+
+function toggleSelection(row: InventoryItemRow): void {
+  const next = new Set(selectedKeys.value)
+  const key = rowKey(row)
+  if (next.has(key)) {
+    next.delete(key)
+  } else {
+    next.add(key)
+  }
+  selectedKeys.value = next
+}
+
+/** 表示中ページの全行を選択に加える。 */
+function selectVisiblePage(): void {
+  const tab = selectableTab.value
+  if (!tab) return
+  const next = new Set(selectedKeys.value)
+  for (const row of listStates[tab].response?.items ?? []) {
+    next.add(rowKey(row))
+  }
+  selectedKeys.value = next
+}
+
+/**
+ * フラグ操作（一括登録・状態変更）後の再取得。フラグ状態は全明細タブの行に表示されるため、
+ * 全リストタブのキャッシュを無効化して表示中タブを再取得する（ページ位置は維持）。
+ * 世代と loading の扱いは handleFilterApply と同じ理由でセットで行う。
+ */
+async function refreshAfterFlagMutation(): Promise<void> {
+  for (const key of LIST_TAB_KEYS) {
+    listRequestSeq[key] += 1
+    listStates[key].loading = false
+    listStates[key].loaded = false
+  }
+  flagsSummaryLoaded.value = false
+  await ensureTabLoaded(activeTab.value)
+}
+
+async function registerFlags(flagType: InventoryFlagType): Promise<void> {
+  const tab = selectableTab.value
+  if (!tab || selectedKeys.value.size === 0 || bulkSubmitting.value) return
+  const rows = (listStates[tab].response?.items ?? []).filter((row) => isSelected(row))
+  if (rows.length === 0) return
+
+  bulkSubmitting.value = true
+  bulkError.value = null
+  try {
+    await post('/api/inventory-flags/bulk', {
+      flagType,
+      items: rows.map((row) => ({
+        gyotaiCode: row.gyotaiCode,
+        shohinKigou: row.shohinKigou,
+        hinbanCode: row.hinbanCode,
+        tanpinCode: row.tanpinCode,
+        // 付与時の判定状態を記録する（閾値変更後の「現在は判定対象外」検知の根拠）。
+        currentStatus: row.status,
+      })),
+    })
+    await refreshAfterFlagMutation()
+  } catch (error) {
+    console.error('[inventory] フラグの一括登録に失敗しました:', error)
+    bulkError.value = apiErrorMessage(error)
+  } finally {
+    bulkSubmitting.value = false
+  }
+}
+
+/** フラグの対応状況を変更する（行内セレクト）。失敗時はタブのエラー表示へ反映する。 */
+async function changeFlagStatus(flag: InventoryItemFlag, status: InventoryFlagStatus): Promise<void> {
+  if (flag.status === status) return
+  try {
+    await post('/api/inventory-flags/status', { ids: [flag.id], status })
+    await refreshAfterFlagMutation()
+  } catch (error) {
+    console.error('[inventory] フラグの対応状況の変更に失敗しました:', error)
+    const tab = activeTab.value
+    if (tab !== 'dashboard') {
+      listStates[tab].error = apiErrorMessage(error)
+    }
+  }
+}
+
+/**
+ * 付与時は滞留・不動だったが、現在は判定対象外（健全・注意）になったフラグか。
+ * 閾値変更や売れ行きの回復で判定が変わった行に注記を出す（フラグは自動削除しない。
+ * 判断記録の保護と最終判断は担当者という原則のため）。
+ */
+function isFlagOutOfScope(flag: InventoryItemFlag, row: InventoryItemRow): boolean {
+  return (
+    (flag.flaggedStatus === 'stagnant' || flag.flaggedStatus === 'dormant')
+    && (row.status === 'healthy' || row.status === 'caution')
+  )
+}
+
 // ---- 明細テーブル ----
 
+const selectColumn = { key: 'select', label: '' } as const
 const productColumn = { key: 'product', label: '品番 / 単品' } as const
 const statusColumn = { key: 'status', label: '状態' } as const
 const recommendedColumn = { key: 'recommendedAction', label: '推奨アクション' } as const
+const flagsColumn = { key: 'flags', label: 'フラグ / 対応状況' } as const
 
 function numberColumn(key: keyof InventoryItemRow, label: string, format: (row: InventoryItemRow) => string) {
   return { key, label, align: 'right' as const, format }
@@ -325,12 +503,15 @@ const zeroWeeksColumn = numberColumn('zeroSalesWeeks', '出荷ゼロ週数', (ro
 
 const listColumns = computed(() => {
   if (activeTab.value === 'stagnant') {
-    return [productColumn, stockColumn, stockDaysColumn, sellThroughColumn, orderColumn, recommendedColumn]
+    return [selectColumn, productColumn, stockColumn, stockDaysColumn, sellThroughColumn, orderColumn, recommendedColumn]
   }
   if (activeTab.value === 'dormant') {
-    return [productColumn, stockColumn, zeroWeeksColumn, stockValueColumn, orderColumn, recommendedColumn]
+    return [selectColumn, productColumn, stockColumn, zeroWeeksColumn, stockValueColumn, orderColumn, recommendedColumn]
   }
-  return [productColumn, statusColumn, stockColumn, stockValueColumn, sellThroughColumn, stockDaysColumn, recommendedColumn]
+  if (activeTab.value === 'flags') {
+    return [productColumn, flagsColumn, statusColumn, stockColumn, stockDaysColumn, sellThroughColumn]
+  }
+  return [selectColumn, productColumn, statusColumn, stockColumn, stockValueColumn, sellThroughColumn, stockDaysColumn, recommendedColumn]
 })
 
 function rowKey(row: InventoryItemRow): string {
@@ -384,6 +565,35 @@ async function applySearch(): Promise<void> {
   await loadList('items')
 }
 
+// ---- 対応リストタブのチップ絞込 ----
+
+const flagTypeChips = computed(() => [
+  { type: null as InventoryFlagType | null, label: 'すべて' },
+  ...FLAG_TYPE_ORDER.map((type) => ({ type: type as InventoryFlagType | null, label: FLAG_TYPES[type].label })),
+])
+
+const flagStatusChips = computed(() => [
+  { status: null as InventoryFlagStatus | null, label: '全状況' },
+  ...FLAG_STATUS_ORDER.map((status) => ({
+    status: status as InventoryFlagStatus | null,
+    label: FLAG_STATUSES[status].label,
+  })),
+])
+
+async function applyFlagTypeChip(type: InventoryFlagType | null): Promise<void> {
+  if (flagsTypeFilter.value === type) return
+  flagsTypeFilter.value = type
+  listStates.flags.page = 1
+  await loadList('flags')
+}
+
+async function applyFlagStatusChip(status: InventoryFlagStatus | null): Promise<void> {
+  if (flagsStatusFilter.value === status) return
+  flagsStatusFilter.value = status
+  listStates.flags.page = 1
+  await loadList('flags')
+}
+
 // ---- ページング ----
 
 function pageInfo(tab: ListTabKey): string {
@@ -414,6 +624,7 @@ const copyState = reactive<Record<ListTabKey, 'idle' | 'copied' | 'failed'>>({
   items: 'idle',
   stagnant: 'idle',
   dormant: 'idle',
+  flags: 'idle',
 })
 // フィードバック解除タイマーはタブ別に持つ（共有すると別タブのコピーで clearTimeout され、
 // 元タブの「コピーしました」表示が解除されず残留するため）。
@@ -425,8 +636,12 @@ async function copyList(tab: ListTabKey): Promise<void> {
 
   const headers = [
     '業態', '商品記号', '品番', '単品', '商品名', '状態', '在庫数', '在庫金額(原価)',
-    '発注残', '先付数', '消化率(%)', '在庫日数', '出荷ゼロ週数', '推奨アクション',
+    '発注残', '先付数', '消化率(%)', '在庫日数', '出荷ゼロ週数', '推奨アクション', 'フラグ',
   ]
+  const flagText = (row: InventoryItemRow) =>
+    row.flags
+      .map((flag) => `${FLAG_TYPES[flag.flagType].label}:${FLAG_STATUSES[flag.status].label}`)
+      .join('; ')
   const cells = rows.map((row) => [
     row.gyotaiCode, row.shohinKigou, row.hinbanCode, row.tanpinCode,
     row.productName ?? row.hinmei, INVENTORY_STATUSES[row.status].label,
@@ -435,6 +650,7 @@ async function copyList(tab: ListTabKey): Promise<void> {
     (row.sellThroughRate * 100).toFixed(1), row.stockDays.toFixed(1),
     String(row.zeroSalesWeeks),
     row.recommendedAction ? RECOMMENDED_ACTIONS[row.recommendedAction].label : '',
+    flagText(row),
   ])
   const text = [headers, ...cells].map((line) => line.join('\t')).join('\n')
   const escapeHtml = (value: string) =>
@@ -575,12 +791,12 @@ onMounted(async () => {
           </StatusBlock>
         </section>
 
-        <!-- ============ 明細タブ（在庫一覧 / 滞留 / 不動） ============ -->
+        <!-- ============ 明細タブ（在庫一覧 / 滞留 / 不動 / 対応リスト） ============ -->
         <section v-else aria-label="在庫明細">
           <div class="space-y-3">
             <!-- 定義バナー（滞留・不動のみ） -->
             <InventoryDefinitionBanner
-              v-if="activeTab !== 'items' && listStates[activeTab].response"
+              v-if="(activeTab === 'stagnant' || activeTab === 'dormant') && listStates[activeTab].response"
               :variant="activeTab"
               :thresholds="listStates[activeTab].response!.thresholds"
             />
@@ -641,6 +857,49 @@ onMounted(async () => {
               </form>
             </div>
 
+            <!-- 対応リストタブ: フラグ種別・対応状況チップ + 孤児フラグ注記 -->
+            <template v-if="activeTab === 'flags'">
+              <div class="flex flex-wrap items-center gap-2">
+                <button
+                  v-for="chip in flagTypeChips"
+                  :key="chip.type ?? 'all'"
+                  type="button"
+                  class="inline-flex items-center rounded-full border px-3 py-1.5 text-xs font-medium transition-colors"
+                  :class="
+                    flagsTypeFilter === chip.type
+                      ? 'border-indigo-500 bg-indigo-50 text-indigo-700'
+                      : 'border-slate-200 bg-white text-slate-600 hover:border-indigo-300'
+                  "
+                  @click="applyFlagTypeChip(chip.type)"
+                >
+                  {{ chip.label }}
+                </button>
+                <span class="mx-1 h-4 w-px bg-slate-200" aria-hidden="true" />
+                <button
+                  v-for="chip in flagStatusChips"
+                  :key="chip.status ?? 'all'"
+                  type="button"
+                  class="inline-flex items-center rounded-full border px-3 py-1.5 text-xs font-medium transition-colors"
+                  :class="
+                    flagsStatusFilter === chip.status
+                      ? 'border-indigo-500 bg-indigo-50 text-indigo-700'
+                      : 'border-slate-200 bg-white text-slate-600 hover:border-indigo-300'
+                  "
+                  @click="applyFlagStatusChip(chip.status)"
+                >
+                  {{ chip.label }}
+                </button>
+              </div>
+              <p
+                v-if="(flagsSummary?.orphanCount ?? 0) > 0"
+                class="rounded-lg bg-slate-100 px-3 py-2 text-xs text-slate-500"
+              >
+                最新週のスナップショットに存在しない SKU のフラグが
+                {{ formatNumber(flagsSummary!.orphanCount) }} 件あります（完売・取扱終了など。
+                対応済みにする候補です。この一覧には表示されません）。
+              </p>
+            </template>
+
             <StatusBlock
               :loading="listStates[activeTab].loading"
               :error="listStates[activeTab].error"
@@ -650,33 +909,46 @@ onMounted(async () => {
                   ? '滞留在庫はありません。'
                   : activeTab === 'dormant'
                     ? '不動在庫はありません。'
-                    : '該当する在庫データがありません。'
+                    : activeTab === 'flags'
+                      ? '該当するフラグはありません。明細タブで行を選択して登録できます。'
+                      : '該当する在庫データがありません。'
               "
             >
               <div class="space-y-3">
-                <div class="flex items-center justify-between gap-2">
+                <div class="flex flex-wrap items-center justify-between gap-2">
                   <p class="text-xs text-slate-400">{{ pageInfo(activeTab) }}</p>
-                  <button
-                    type="button"
-                    class="inline-flex items-center gap-1.5 rounded-lg border px-2.5 py-1 text-xs transition-colors"
-                    :class="
-                      copyState[activeTab] === 'copied'
-                        ? 'border-emerald-300 bg-emerald-50 text-emerald-700'
-                        : copyState[activeTab] === 'failed'
-                          ? 'border-rose-300 bg-rose-50 text-rose-700'
-                          : 'border-slate-300 bg-white text-slate-600 hover:bg-slate-50'
-                    "
-                    @click="copyList(activeTab)"
-                  >
-                    <ClipboardCopy class="h-3.5 w-3.5" />
-                    {{
-                      copyState[activeTab] === 'copied'
-                        ? 'コピーしました'
-                        : copyState[activeTab] === 'failed'
-                          ? 'コピーに失敗しました'
-                          : '表示中のページをコピー'
-                    }}
-                  </button>
+                  <div class="flex items-center gap-2">
+                    <button
+                      v-if="selectableTab"
+                      type="button"
+                      class="inline-flex items-center gap-1.5 rounded-lg border border-slate-300 bg-white px-2.5 py-1 text-xs text-slate-600 transition-colors hover:bg-slate-50"
+                      @click="selectVisiblePage"
+                    >
+                      <ListChecks class="h-3.5 w-3.5" />
+                      ページを全選択
+                    </button>
+                    <button
+                      type="button"
+                      class="inline-flex items-center gap-1.5 rounded-lg border px-2.5 py-1 text-xs transition-colors"
+                      :class="
+                        copyState[activeTab] === 'copied'
+                          ? 'border-emerald-300 bg-emerald-50 text-emerald-700'
+                          : copyState[activeTab] === 'failed'
+                            ? 'border-rose-300 bg-rose-50 text-rose-700'
+                            : 'border-slate-300 bg-white text-slate-600 hover:bg-slate-50'
+                      "
+                      @click="copyList(activeTab)"
+                    >
+                      <ClipboardCopy class="h-3.5 w-3.5" />
+                      {{
+                        copyState[activeTab] === 'copied'
+                          ? 'コピーしました'
+                          : copyState[activeTab] === 'failed'
+                            ? 'コピーに失敗しました'
+                            : '表示中のページをコピー'
+                      }}
+                    </button>
+                  </div>
                 </div>
 
                 <DataTable
@@ -686,6 +958,15 @@ onMounted(async () => {
                   clickable
                   @row-click="handleRowClick"
                 >
+                  <template #select="{ row }">
+                    <input
+                      type="checkbox"
+                      class="h-4 w-4 cursor-pointer accent-indigo-600"
+                      :checked="isSelected(row as InventoryItemRow)"
+                      :aria-label="`${(row as InventoryItemRow).hinbanCode}-${(row as InventoryItemRow).tanpinCode} を選択`"
+                      @click.stop="toggleSelection(row as InventoryItemRow)"
+                    />
+                  </template>
                   <template #product="{ row }">
                     <span class="font-bold text-slate-800">
                       {{ (row as InventoryItemRow).hinbanCode }}-{{ (row as InventoryItemRow).tanpinCode }}
@@ -693,9 +974,64 @@ onMounted(async () => {
                     <span class="mt-0.5 block text-xs font-normal text-slate-400">
                       {{ (row as InventoryItemRow).productName ?? (row as InventoryItemRow).hinmei }}
                     </span>
+                    <!-- フラグの簡易表示（対応リスト以外のタブ。詳細・変更は対応リストで行う） -->
+                    <span
+                      v-if="activeTab !== 'flags' && (row as InventoryItemRow).flags.length > 0"
+                      class="mt-1 flex flex-wrap gap-1"
+                    >
+                      <span
+                        v-for="flag in (row as InventoryItemRow).flags"
+                        :key="flag.id"
+                        class="inline-flex items-center gap-1 rounded-md px-1.5 py-0.5 text-[10px] font-medium"
+                        :class="FLAG_TYPES[flag.flagType].className"
+                        :title="`${FLAG_TYPES[flag.flagType].label}（${FLAG_STATUSES[flag.status].label}）`"
+                      >
+                        {{ FLAG_TYPES[flag.flagType].label }}・{{ FLAG_STATUSES[flag.status].label }}
+                      </span>
+                    </span>
                   </template>
                   <template #status="{ row }">
                     <SkuStatusBadge :status="(row as InventoryItemRow).status" />
+                  </template>
+                  <template #flags="{ row }">
+                    <div class="space-y-1.5">
+                      <div
+                        v-for="flag in (row as InventoryItemRow).flags"
+                        :key="flag.id"
+                        class="flex flex-wrap items-center gap-1.5"
+                      >
+                        <span
+                          class="inline-flex items-center rounded-md px-1.5 py-0.5 text-[10px] font-medium"
+                          :class="FLAG_TYPES[flag.flagType].className"
+                        >
+                          {{ FLAG_TYPES[flag.flagType].label }}
+                        </span>
+                        <select
+                          :value="flag.status"
+                          class="rounded-lg border border-slate-200 bg-white px-1.5 py-1 text-xs text-slate-700 focus:border-indigo-400 focus:outline-none"
+                          :aria-label="`${FLAG_TYPES[flag.flagType].label}の対応状況`"
+                          :title="flag.note ?? undefined"
+                          @click.stop
+                          @change="
+                            changeFlagStatus(
+                              flag,
+                              ($event.target as HTMLSelectElement).value as InventoryFlagStatus,
+                            )
+                          "
+                        >
+                          <option v-for="s in FLAG_STATUS_ORDER" :key="s" :value="s">
+                            {{ FLAG_STATUSES[s].label }}
+                          </option>
+                        </select>
+                        <span
+                          v-if="isFlagOutOfScope(flag, row as InventoryItemRow)"
+                          class="rounded-md bg-slate-100 px-1.5 py-0.5 text-[10px] text-slate-500"
+                          title="付与時は滞留・不動でしたが、現在は判定対象外です（売れ行きの回復・閾値の変更など）。見送り/対応済への更新を検討してください。"
+                        >
+                          現在は判定対象外
+                        </span>
+                      </div>
+                    </div>
                   </template>
                   <template #recommendedAction="{ row }">
                     <template v-if="(row as InventoryItemRow).recommendedAction">
@@ -744,11 +1080,28 @@ onMounted(async () => {
                 <p v-if="activeTab === 'stagnant'" class="text-xs text-slate-400">
                   「発注残があるのに滞留している」行が最優先です（仕入れを止めるだけで改善します）。
                   推奨アクションはルールベースの自動判定で、最終判断は担当者が行ってください。
+                  行を選択すると発注停止候補・値下げ候補に一括登録できます。
                 </p>
                 <p v-else-if="activeTab === 'dormant'" class="text-xs text-slate-400">
                   在庫金額は原価ベースの概算です（原価未設定の SKU は 0 円として加算）。
                   長期不動の SKU は処分・値引き販売の判断対象として週次レビューでの確認を推奨します。
                 </p>
+                <p v-else-if="activeTab === 'flags'" class="text-xs text-slate-400">
+                  フラグはチーム共有の判断記録です（登録・状態変更は全員可能・更新者を記録）。
+                  「現在は判定対象外」の行は売れ行きの回復等で判定が変わったもので、
+                  自動では削除されません。見送り/対応済への更新を検討してください。
+                </p>
+
+                <!-- 一括アクションバー（選択中のみ。選択可能タブ限定） -->
+                <InventoryBulkActionBar
+                  v-if="selectableTab && selectedKeys.size > 0"
+                  :count="selectedKeys.size"
+                  :submitting="bulkSubmitting"
+                  :error="bulkError"
+                  @register="registerFlags"
+                  @clear="clearSelection"
+                  @select-page="selectVisiblePage"
+                />
               </div>
             </StatusBlock>
           </div>

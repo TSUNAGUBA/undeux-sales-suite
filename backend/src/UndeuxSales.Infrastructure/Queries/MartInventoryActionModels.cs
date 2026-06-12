@@ -61,11 +61,26 @@ public sealed record InventoryActionsResponse(
     IReadOnlyList<InventoryActionItem> Actions,
     IReadOnlyList<InventoryDepartmentHealthRow> ByDepartment);
 
+/// <summary>明細行に結合された在庫アクションフラグ1件（SoT: inventory_action_flag）。</summary>
+/// <remarks>FlaggedStatus は付与時の判定状態。現在の Status（行側）と異なる場合、
+/// 閾値変更等で「現在は判定対象外」になったフラグとして画面が注記を出す。</remarks>
+public sealed record InventoryItemFlag(
+    long Id,
+    string FlagType,
+    string Status,
+    string? Note,
+    DateOnly FlaggedWeek,
+    string FlaggedStatus,
+    string UpdatedBy,
+    DateTime UpdatedAt);
+
 /// <summary>在庫アクション明細の1行（SKU 単位・最新週スナップショット基準）。</summary>
 /// <remarks>
 /// 自然キー（GyotaiCode×ShohinKigou×HinbanCode×TanpinCode）を必ず含める。mart のサロゲートキーは
-/// 再構築（TRUNCATE）で振り直されるため、将来のアクションフラグ永続化はこの自然キーで結合する。
-/// ZeroSalesWeeks は直近で売上ゼロが続く週数（InventoryThresholds.DormantScanWeeks でキャップ）。
+/// 再構築（TRUNCATE）で振り直されるため、アクションフラグ（inventory_action_flag）は
+/// この自然キーで結合する。ZeroSalesWeeks は直近で売上ゼロが続く週数
+/// （InventoryThresholds.DormantScanWeeks でキャップ）。Flags は additive 追加フィールド
+/// （旧クライアントは未知フィールドとして無視できる）。
 /// </remarks>
 public sealed record InventoryItemRow(
     string GyotaiCode,
@@ -85,7 +100,8 @@ public sealed record InventoryItemRow(
     Guid? MasterProductId,
     string? ProductName,
     string? Brand,
-    string? PrimaryImageUrl);
+    string? PrimaryImageUrl,
+    IReadOnlyList<InventoryItemFlag> Flags);
 
 /// <summary>GET /api/mart/inventory/items のレスポンス（ページング＋状態別件数＋経過バケット件数）。</summary>
 /// <remarks>
@@ -229,6 +245,98 @@ internal static class InventoryHealthSql
     }
 }
 
+/// <summary>
+/// 在庫アクションフラグの明細結合 SQL 部品。フラグ種別は2固定（<see cref="InventoryFlagRules"/> が SoT）
+/// のため flag_type 別の LEFT JOIN 2本（f_so / f_md）で取得する。UNIQUE 制約により各結合は
+/// 高々1行＝行増幅なし。dp / ds（dim_product / dim_sku）の結合後に配置すること。
+/// </summary>
+internal static class InventoryFlagSql
+{
+    /// <summary>フラグ2種の LEFT JOIN 句（自然キー結合。ux_inventory_action_flag_key に完全一致）。</summary>
+    public const string Joins = $"""
+        LEFT JOIN inventory_action_flag f_so
+               ON f_so.gyotai_code  = dp.channel_code
+              AND f_so.shohin_kigou = dp.product_sign
+              AND f_so.hinban_code  = dp.product_code
+              AND f_so.tanpin_code  = ds.unit_code
+              AND f_so.flag_type    = '{InventoryFlagRules.FlagTypeStopOrder}'
+        LEFT JOIN inventory_action_flag f_md
+               ON f_md.gyotai_code  = dp.channel_code
+              AND f_md.shohin_kigou = dp.product_sign
+              AND f_md.hinban_code  = dp.product_code
+              AND f_md.tanpin_code  = ds.unit_code
+              AND f_md.flag_type    = '{InventoryFlagRules.FlagTypeMarkdown}'
+        """;
+
+    /// <summary>明細行クエリに追加するフラグ列（InventoryItemRawRow の So*/Md* に対応）。</summary>
+    public const string SelectColumns = """
+        ,
+               f_so.id             AS so_flag_id,
+               f_so.status         AS so_flag_status,
+               f_so.note           AS so_flag_note,
+               f_so.flagged_week   AS so_flagged_week,
+               f_so.flagged_status AS so_flagged_status,
+               f_so.updated_by     AS so_flag_updated_by,
+               f_so.updated_at     AS so_flag_updated_at,
+               f_md.id             AS md_flag_id,
+               f_md.status         AS md_flag_status,
+               f_md.note           AS md_flag_note,
+               f_md.flagged_week   AS md_flagged_week,
+               f_md.flagged_status AS md_flagged_status,
+               f_md.updated_by     AS md_flag_updated_by,
+               f_md.updated_at     AS md_flag_updated_at
+        """;
+
+    /// <summary>
+    /// フラグ絞込条件を返す（絞込なしなら null）。<see cref="Joins"/> の存在を前提とする。
+    /// 意味論: flagTypes は「指定種別のフラグを持つ行」、flagStatuses 併用時は指定種別のうち
+    /// 状態が一致するもの（種別未指定なら全種別を対象）。flagged は any=いずれかのフラグあり /
+    /// none=フラグなし（未知値は無視）。各条件は AND で合成される。
+    /// </summary>
+    public static string? Condition(
+        IReadOnlyList<string> flagTypes,
+        IReadOnlyList<string> flagStatuses,
+        string? flagged,
+        DynamicParameters parameters)
+    {
+        var conditions = new List<string>();
+
+        if (flagTypes.Count > 0 || flagStatuses.Count > 0)
+        {
+            var targetTypes = flagTypes.Count > 0 ? flagTypes : InventoryFlagRules.AllFlagTypes;
+            if (flagStatuses.Count > 0)
+            {
+                parameters.Add("flagStatuses", flagStatuses.ToArray());
+            }
+
+            var typePredicates = new List<string>();
+            foreach (var type in targetTypes)
+            {
+                var alias = type == InventoryFlagRules.FlagTypeStopOrder ? "f_so" : "f_md";
+                var predicate = $"{alias}.id IS NOT NULL";
+                if (flagStatuses.Count > 0)
+                {
+                    predicate += $" AND {alias}.status = ANY(@flagStatuses)";
+                }
+                typePredicates.Add($"({predicate})");
+            }
+            conditions.Add($"({string.Join(" OR ", typePredicates)})");
+        }
+
+        if (flagged == "any")
+        {
+            conditions.Add("(f_so.id IS NOT NULL OR f_md.id IS NOT NULL)");
+        }
+        else if (flagged == "none")
+        {
+            conditions.Add("(f_so.id IS NULL AND f_md.id IS NULL)");
+        }
+
+        return conditions.Count == 0 ? null : string.Join(" AND ", conditions);
+    }
+
+}
+
 /// <summary>Dapper マッピング用の内部行（在庫アクションの全体集約）。</summary>
 internal sealed record InventoryActionsAggregateRow(
     int HealthyCount,
@@ -262,7 +370,9 @@ internal sealed record InventoryDepartmentHealthRawRow(
     long StagnantStock,
     long DormantStock);
 
-/// <summary>Dapper マッピング用の内部行（在庫アクション明細の1行）。</summary>
+/// <summary>Dapper マッピング用の内部行（在庫アクション明細の1行 + フラグ2種のフラット結合列）。</summary>
+/// <remarks>フラグはフラグ種別2固定（InventoryFlagRules が SoT）の LEFT JOIN 2本で取得する。
+/// UNIQUE 制約により各結合は高々1行＝行増幅なし。種別が増える場合は jsonb_agg 方式を再検討する。</remarks>
 internal sealed record InventoryItemRawRow(
     string GyotaiCode,
     string ShohinKigou,
@@ -281,7 +391,21 @@ internal sealed record InventoryItemRawRow(
     Guid? MasterProductId,
     string? ProductName,
     string? Brand,
-    string? PrimaryImageUrl);
+    string? PrimaryImageUrl,
+    long? SoFlagId,
+    string? SoFlagStatus,
+    string? SoFlagNote,
+    DateOnly? SoFlaggedWeek,
+    string? SoFlaggedStatus,
+    string? SoFlagUpdatedBy,
+    DateTime? SoFlagUpdatedAt,
+    long? MdFlagId,
+    string? MdFlagStatus,
+    string? MdFlagNote,
+    DateOnly? MdFlaggedWeek,
+    string? MdFlaggedStatus,
+    string? MdFlagUpdatedBy,
+    DateTime? MdFlagUpdatedAt);
 
 /// <summary>Dapper マッピング用の内部行（状態別件数＋経過バケット件数）。</summary>
 internal sealed record InventoryItemsCountRow(

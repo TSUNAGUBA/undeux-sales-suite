@@ -654,4 +654,37 @@ END;
 $$;
 COMMENT ON FUNCTION mart.rebuild() IS 'sales_weekly + 商品マスタから mart を全再構築する（冪等・直列化）';
 
+-- ------------------------------------------------------------
+-- 在庫アクションフラグ（ユーザー操作の永続データ。記録系）
+-- ------------------------------------------------------------
+-- SoT は本テーブル（発注停止候補・値下げ候補というユーザーの判断記録）。
+-- mart は派生キャッシュであり mart.rebuild() の TRUNCATE 対象（mart スキーマ）に
+-- 含まれないため、再構築の影響を受けない。明細（mart 側）との結合は自然キー
+-- （業態×商品記号×品番×単品）で行う（docs/design.md §7.x）。
+-- 語彙（flag_type / status の値）の実装 SoT は backend Core の InventoryFlagRules。
+CREATE TABLE IF NOT EXISTS inventory_action_flag (
+    id             bigint GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
+    gyotai_code    text NOT NULL,
+    shohin_kigou   text NOT NULL,
+    hinban_code    text NOT NULL,
+    tanpin_code    text NOT NULL,
+    flag_type      text NOT NULL CHECK (flag_type IN ('stop-order', 'markdown')),
+    status         text NOT NULL DEFAULT 'candidate'
+                       CHECK (status IN ('candidate', 'in-progress', 'done', 'dismissed')),
+    note           text,
+    -- 付与時のアンカー週（効果測定の起点）と付与時の判定状態
+    -- （閾値変更後に「現在は判定対象外」を表示で検知するための根拠）。
+    flagged_week   date NOT NULL,
+    flagged_status text NOT NULL,
+    created_by     text NOT NULL,
+    created_at     timestamptz NOT NULL DEFAULT now(),
+    updated_by     text NOT NULL,
+    updated_at     timestamptz NOT NULL DEFAULT now()
+);
+
+-- 1 SKU × フラグ種別で一意（stop-order と markdown の併存は可）。
+-- 一括登録（ON CONFLICT DO NOTHING）の冪等性と、明細結合（高々1行）の土台。
+CREATE UNIQUE INDEX IF NOT EXISTS ux_inventory_action_flag_key
+    ON inventory_action_flag (gyotai_code, shohin_kigou, hinban_code, tanpin_code, flag_type);
+
 COMMIT;

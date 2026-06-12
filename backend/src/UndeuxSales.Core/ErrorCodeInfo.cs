@@ -72,6 +72,11 @@ public static class ErrorCodes
         "指定された商品が商品マスタに存在しません。",
         "商品マスタに対象商品が登録されているか確認してください。");
 
+    public static readonly ErrorCodeInfo FlagNotFound = new(
+        "UNDX-DATA-003",
+        "指定された在庫アクションフラグが見つかりません。",
+        "一覧を再読み込みして最新の状態を確認してください（他のユーザーが削除した可能性があります）。");
+
     public static readonly ErrorCodeInfo Unexpected = new(
         "UNDX-SYS-001",
         "想定外のシステムエラーが発生しました。",
@@ -91,6 +96,7 @@ public static class ErrorCodes
         ImportFileTooLarge,
         DatabaseError,
         ProductNotFound,
+        FlagNotFound,
         Unexpected,
     };
 }

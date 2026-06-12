@@ -88,7 +88,8 @@ public sealed class DatabaseFixture : IAsyncLifetime
         // m_product_sku は m_product CASCADE で消えるが、両方を明示することで意図を残す。
         await connection.ExecuteAsync("""
             TRUNCATE m_product_sku, m_product, sales_weekly, import_batch, department,
-                     customer, business_type, season RESTART IDENTITY CASCADE;
+                     customer, business_type, season, inventory_action_flag
+                     RESTART IDENTITY CASCADE;
             """);
     }
 
