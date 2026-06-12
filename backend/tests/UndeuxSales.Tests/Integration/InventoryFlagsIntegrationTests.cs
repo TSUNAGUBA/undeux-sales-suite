@@ -68,6 +68,8 @@ public sealed class InventoryFlagsIntegrationTests
         Make("915", "0001", zaikosu: 15, zainiti: 65, ruikeiUriage: 30, ruikeiNohin: 100),
         Make("916", "0001", zaikosu: 15, zainiti: 65, ruikeiUriage: 30, ruikeiNohin: 100),
         Make("916", "0002", zaikosu: 15, zainiti: 10, ruikeiUriage: 90, ruikeiNohin: 100),
+        Make("917", "0001", zaikosu: 15, zainiti: 65, ruikeiUriage: 30, ruikeiNohin: 100),
+        Make("918", "0001", zaikosu: 15, zainiti: 65, ruikeiUriage: 30, ruikeiNohin: 100),
     };
 
     private static SalesRecord Make(
@@ -137,6 +139,15 @@ public sealed class InventoryFlagsIntegrationTests
         Assert.Equal("stagnant", flag.FlaggedStatus);
         // 監査ユーザーは TestAuthHandler の生クレーム email（本番の MapInboundClaims=false 相当の経路）。
         Assert.Equal("tester@example.com", flag.UpdatedBy);
+        // flagged_week はサーバが「無フィルタのグローバル最新スナップショット週」を解決して記録する
+        // （クライアント申告にしない）。期待値も同じ定義で DB から直接引き、実行順非依存に固定する。
+        await using var connection = new NpgsqlConnection(_fixture.ConnectionString);
+        await connection.OpenAsync();
+        var globalLatestWeek = await connection.ExecuteScalarAsync<DateOnly>(
+            @"SELECT MAX(dd.week_monday)
+              FROM mart.fact_inventory_snapshot inv
+              JOIN mart.dim_date dd ON dd.date_key = inv.date_key;");
+        Assert.Equal(globalLatestWeek, flag.FlaggedWeek);
     }
 
     [Fact]
@@ -280,5 +291,77 @@ public sealed class InventoryFlagsIntegrationTests
         // 状態絞込（種別未指定 → 全種別を対象）。
         var byStatus = await GetItemsAsync(client, "916", "&flagStatuses=candidate");
         Assert.Equal(1, byStatus.TotalCount);
+    }
+
+    [Fact]
+    public async Task Delete_IsAllOrNothing_AndRemovesFlag()
+    {
+        await SeedScenarioAsync();
+        await RebuildMartAsync();
+        var client = CreateAuthedClient();
+
+        // 同一 SKU に2種別のフラグを併存させる（stop-order と markdown は両立可能な設計）。
+        (await client.PostAsJsonAsync("/api/inventory-flags/bulk",
+            BulkBody("stop-order", ("917", "0001", "stagnant")))).EnsureSuccessStatusCode();
+        (await client.PostAsJsonAsync("/api/inventory-flags/bulk",
+            BulkBody("markdown", ("917", "0001", "stagnant")))).EnsureSuccessStatusCode();
+        var flags = (await GetItemsAsync(client, "917")).Items.Single().Flags;
+        Assert.Equal(2, flags.Count);
+        var markdownId = flags.Single(f => f.FlagType == "markdown").Id;
+
+        // 未知 id を含む削除は all-or-nothing で 404、両フラグとも残る。
+        var notFound = await client.PostAsJsonAsync("/api/inventory-flags/delete",
+            new { ids = new[] { markdownId, 99_999_999L } });
+        Assert.Equal(HttpStatusCode.NotFound, notFound.StatusCode);
+        var error = await notFound.Content.ReadFromJsonAsync<ApiError>();
+        Assert.Equal(ErrorCodes.FlagNotFound.Code, error!.ErrorCode);
+        Assert.Equal(2, (await GetItemsAsync(client, "917")).Items.Single().Flags.Count);
+
+        // 正常削除: markdown のみ消え、stop-order は残る。
+        var deleted = await client.PostAsJsonAsync("/api/inventory-flags/delete",
+            new { ids = new[] { markdownId } });
+        Assert.Equal(HttpStatusCode.NoContent, deleted.StatusCode);
+        var remaining = (await GetItemsAsync(client, "917")).Items.Single().Flags;
+        Assert.Equal("stop-order", Assert.Single(remaining).FlagType);
+    }
+
+    [Fact]
+    public async Task Summary_CountsByTypeAndStatus_AndDetectsOrphans()
+    {
+        await SeedScenarioAsync();
+        await RebuildMartAsync();
+        var client = CreateAuthedClient();
+
+        // 実在 SKU（918）と、mart に存在しない SKU（孤児）の両方へフラグを付与する。
+        // bulk は自然キーの存在検証を行わない（完売・取扱終了後の運用記録を許容する）ため登録できる。
+        (await client.PostAsJsonAsync("/api/inventory-flags/bulk",
+            BulkBody("markdown", ("918", "0001", "stagnant")))).EnsureSuccessStatusCode();
+        var orphan = await client.PostAsJsonAsync("/api/inventory-flags/bulk", new
+        {
+            flagType = "markdown",
+            items = new[]
+            {
+                new
+                {
+                    gyotaiCode = "G1",
+                    shohinKigou = "S999",
+                    hinbanCode = "999",
+                    tanpinCode = "9999",
+                    currentStatus = "stagnant",
+                },
+            },
+        });
+        orphan.EnsureSuccessStatusCode();
+
+        var summary = await client.GetFromJsonAsync<InventoryFlagSummary>("/api/inventory-flags/summary");
+
+        Assert.NotNull(summary);
+        Assert.NotNull(summary!.LatestWeek);
+        // 他テストのフラグと並存するため、厳密件数ではなく包含と下限で検証する（実行順非依存）。
+        var markdownCandidates = summary.Rows.Single(r => r.FlagType == "markdown" && r.Status == "candidate");
+        Assert.True(markdownCandidates.Count >= 2,
+            $"markdown×candidate は 918 + 孤児の2件以上のはず（実際: {markdownCandidates.Count}）");
+        Assert.True(summary.OrphanCount >= 1,
+            $"mart に存在しない SKU のフラグが1件以上のはず（実際: {summary.OrphanCount}）");
     }
 }

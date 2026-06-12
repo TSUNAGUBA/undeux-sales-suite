@@ -376,12 +376,19 @@ function handleFeedNavigate(tab: InventoryActionTargetTab): void {
 const selectedKeys = ref<Set<string>>(new Set())
 const bulkSubmitting = ref(false)
 const bulkError = ref<string | null>(null)
+/**
+ * 行内のフラグ操作（状態変更・取消）の失敗通知。一覧取得エラー（listStates.error =
+ * StatusBlock がテーブルごと置換する）とは分離し、テーブルを表示したままバナーで知らせる
+ * （1行の補助操作の失敗が一覧全体を止めないこと。原則4 / U-4）。
+ */
+const flagMutationError = ref<string | null>(null)
 
 function clearSelection(): void {
   if (selectedKeys.value.size > 0) {
     selectedKeys.value = new Set()
   }
   bulkError.value = null
+  flagMutationError.value = null
 }
 
 function isSelected(row: InventoryItemRow): boolean {
@@ -423,6 +430,18 @@ async function refreshAfterFlagMutation(): Promise<void> {
   }
   flagsSummaryLoaded.value = false
   await ensureTabLoaded(activeTab.value)
+
+  // 絞込中の最終ページで最後の行が絞込対象外になると、現在ページが範囲外になり
+  // 空表示に取り残される。その場合は最終ページへ丸めて再取得する。
+  const tab = activeTab.value
+  if (tab !== 'dashboard') {
+    const state = listStates[tab]
+    const total = state.response?.totalCount ?? 0
+    if ((state.response?.items.length ?? 0) === 0 && total > 0 && state.page > 1) {
+      state.page = Math.max(1, Math.ceil(total / PAGE_SIZE))
+      await loadList(tab)
+    }
+  }
 }
 
 async function registerFlags(flagType: InventoryFlagType): Promise<void> {
@@ -454,18 +473,40 @@ async function registerFlags(flagType: InventoryFlagType): Promise<void> {
   }
 }
 
-/** フラグの対応状況を変更する（行内セレクト）。失敗時はタブのエラー表示へ反映する。 */
+/**
+ * フラグの対応状況を変更する（行内セレクト）。失敗時は一覧を保ったままバナーで通知し、
+ * 再取得でセレクトの表示をサーバの真値へ戻す（他ユーザーの削除と競合した場合も
+ * 最新状態が再表示される）。
+ */
 async function changeFlagStatus(flag: InventoryItemFlag, status: InventoryFlagStatus): Promise<void> {
   if (flag.status === status) return
+  flagMutationError.value = null
   try {
     await post('/api/inventory-flags/status', { ids: [flag.id], status })
     await refreshAfterFlagMutation()
   } catch (error) {
     console.error('[inventory] フラグの対応状況の変更に失敗しました:', error)
-    const tab = activeTab.value
-    if (tab !== 'dashboard') {
-      listStates[tab].error = apiErrorMessage(error)
-    }
+    flagMutationError.value = apiErrorMessage(error)
+    await refreshAfterFlagMutation()
+  }
+}
+
+/**
+ * フラグの取消（削除）。対応の終了は status の done / dismissed が正で、削除は
+ * 誤登録直後の訂正用（API の設計意図と同じ）。確認ダイアログで誤タップを防ぐ。
+ */
+async function deleteFlag(flag: InventoryItemFlag): Promise<void> {
+  if (!window.confirm(`${FLAG_TYPES[flag.flagType].label}のフラグを取り消しますか？\n（対応の終了は「対応済」「見送り」への変更が正です）`)) {
+    return
+  }
+  flagMutationError.value = null
+  try {
+    await post('/api/inventory-flags/delete', { ids: [flag.id] })
+    await refreshAfterFlagMutation()
+  } catch (error) {
+    console.error('[inventory] フラグの取消に失敗しました:', error)
+    flagMutationError.value = apiErrorMessage(error)
+    await refreshAfterFlagMutation()
   }
 }
 
@@ -567,16 +608,28 @@ async function applySearch(): Promise<void> {
 
 // ---- 対応リストタブのチップ絞込 ----
 
+/** フラグサマリー（種別×状況の件数）から、種別/状況ごとの合計件数を引く。未取得時は null。 */
+function summaryCount(predicate: (row: { flagType: string; status: string; count: number }) => boolean): number | null {
+  const rows = flagsSummary.value?.rows
+  if (!rows) return null
+  return rows.filter(predicate).reduce((sum, row) => sum + row.count, 0)
+}
+
 const flagTypeChips = computed(() => [
-  { type: null as InventoryFlagType | null, label: 'すべて' },
-  ...FLAG_TYPE_ORDER.map((type) => ({ type: type as InventoryFlagType | null, label: FLAG_TYPES[type].label })),
+  { type: null as InventoryFlagType | null, label: 'すべて', count: summaryCount(() => true) },
+  ...FLAG_TYPE_ORDER.map((type) => ({
+    type: type as InventoryFlagType | null,
+    label: FLAG_TYPES[type].label,
+    count: summaryCount((row) => row.flagType === type),
+  })),
 ])
 
 const flagStatusChips = computed(() => [
-  { status: null as InventoryFlagStatus | null, label: '全状況' },
+  { status: null as InventoryFlagStatus | null, label: '全状況', count: null as number | null },
   ...FLAG_STATUS_ORDER.map((status) => ({
     status: status as InventoryFlagStatus | null,
     label: FLAG_STATUSES[status].label,
+    count: summaryCount((row) => row.status === status),
   })),
 ])
 
@@ -864,7 +917,7 @@ onMounted(async () => {
                   v-for="chip in flagTypeChips"
                   :key="chip.type ?? 'all'"
                   type="button"
-                  class="inline-flex items-center rounded-full border px-3 py-1.5 text-xs font-medium transition-colors"
+                  class="inline-flex items-center gap-1.5 rounded-full border px-3 py-1.5 text-xs font-medium transition-colors"
                   :class="
                     flagsTypeFilter === chip.type
                       ? 'border-indigo-500 bg-indigo-50 text-indigo-700'
@@ -873,13 +926,16 @@ onMounted(async () => {
                   @click="applyFlagTypeChip(chip.type)"
                 >
                   {{ chip.label }}
+                  <span v-if="chip.count !== null" class="font-bold tabular-nums">
+                    {{ formatNumber(chip.count) }}
+                  </span>
                 </button>
                 <span class="mx-1 h-4 w-px bg-slate-200" aria-hidden="true" />
                 <button
                   v-for="chip in flagStatusChips"
                   :key="chip.status ?? 'all'"
                   type="button"
-                  class="inline-flex items-center rounded-full border px-3 py-1.5 text-xs font-medium transition-colors"
+                  class="inline-flex items-center gap-1.5 rounded-full border px-3 py-1.5 text-xs font-medium transition-colors"
                   :class="
                     flagsStatusFilter === chip.status
                       ? 'border-indigo-500 bg-indigo-50 text-indigo-700'
@@ -888,6 +944,9 @@ onMounted(async () => {
                   @click="applyFlagStatusChip(chip.status)"
                 >
                   {{ chip.label }}
+                  <span v-if="chip.count !== null" class="font-bold tabular-nums">
+                    {{ formatNumber(chip.count) }}
+                  </span>
                 </button>
               </div>
               <p
@@ -899,6 +958,23 @@ onMounted(async () => {
                 対応済みにする候補です。この一覧には表示されません）。
               </p>
             </template>
+
+            <!-- 行内のフラグ操作（状態変更・取消）の失敗通知。一覧は表示したまま知らせる。 -->
+            <div
+              v-if="flagMutationError"
+              class="flex items-start justify-between gap-2 rounded-lg border border-rose-200 bg-rose-50 px-3 py-2 text-xs text-rose-700"
+              role="alert"
+            >
+              <span>{{ flagMutationError }}</span>
+              <button
+                type="button"
+                class="shrink-0 font-bold hover:text-rose-900"
+                aria-label="エラー通知を閉じる"
+                @click="flagMutationError = null"
+              >
+                ✕
+              </button>
+            </div>
 
             <StatusBlock
               :loading="listStates[activeTab].loading"
@@ -959,13 +1035,21 @@ onMounted(async () => {
                   @row-click="handleRowClick"
                 >
                   <template #select="{ row }">
-                    <input
-                      type="checkbox"
-                      class="h-4 w-4 cursor-pointer accent-indigo-600"
-                      :checked="isSelected(row as InventoryItemRow)"
-                      :aria-label="`${(row as InventoryItemRow).hinbanCode}-${(row as InventoryItemRow).tanpinCode} を選択`"
-                      @click.stop="toggleSelection(row as InventoryItemRow)"
-                    />
+                    <!-- 行全体が詳細遷移のクリック領域のため、44px の label で実効タップ領域を
+                         確保し（原則8）、@click.stop で行クリックと分離する。
+                         -m-3 はセル余白を相殺してテーブルの行高を保つ。 -->
+                    <label
+                      class="-m-3 flex h-11 w-11 cursor-pointer items-center justify-center"
+                      @click.stop
+                    >
+                      <input
+                        type="checkbox"
+                        class="h-4 w-4 cursor-pointer accent-indigo-600"
+                        :checked="isSelected(row as InventoryItemRow)"
+                        :aria-label="`${(row as InventoryItemRow).hinbanCode}-${(row as InventoryItemRow).tanpinCode} を選択`"
+                        @change="toggleSelection(row as InventoryItemRow)"
+                      />
+                    </label>
                   </template>
                   <template #product="{ row }">
                     <span class="font-bold text-slate-800">
@@ -1030,6 +1114,14 @@ onMounted(async () => {
                         >
                           現在は判定対象外
                         </span>
+                        <button
+                          type="button"
+                          class="rounded-md px-1.5 py-1 text-[10px] text-slate-400 transition-colors hover:bg-rose-50 hover:text-rose-600"
+                          title="フラグを取り消す（誤登録の訂正用。対応の終了は「対応済」「見送り」への変更が正です）"
+                          @click.stop="deleteFlag(flag)"
+                        >
+                          取消
+                        </button>
                       </div>
                     </div>
                   </template>
