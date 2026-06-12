@@ -410,7 +410,8 @@ public sealed class SalesAnalyticsRepository
 
         parameters.Add("latestWeek", latestWeek.Value);
         parameters.Add("limit", pageSize);
-        parameters.Add("offset", (page - 1) * pageSize);
+        // page は外部入力のため long で乗算し、巨大値でも負の OFFSET（int オーバーフロー）にしない。
+        parameters.Add("offset", (long)(page - 1) * pageSize);
 
         var sortExpression = ProductSortExpression(sortKey);
         var direction = ascending ? "ASC" : "DESC";
@@ -957,7 +958,6 @@ public sealed class SalesAnalyticsRepository
         SalesMetric.GrossProfit => AggregateMath.Ratio(row.GrossProfit, row.TotalGrossProfit) * 100.0,
         _ => 0.0,
     };
-
 
     private sealed record SnapshotRow(long Stock, long CumulativeSales, long CumulativeDelivery);
 

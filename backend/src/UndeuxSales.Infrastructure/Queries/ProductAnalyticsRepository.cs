@@ -342,7 +342,6 @@ public sealed class ProductAnalyticsRepository
             .ToList();
     }
 
-
     private static double SharePercent(long amount, long totalAmount)
         => totalAmount == 0 ? 0.0 : (double)amount / totalAmount * 100.0;
 

@@ -180,7 +180,7 @@ public sealed class MartApiIntegrationTests
         await RebuildMartAsync();
         var client = CreateAuthedClient();
 
-        // 棚割は mart に保持しないため未対応（400）。
+        // 棚割は mart の集計軸としては保持しないため未対応（400。棚割1のフィルタは対応済み）。
         var response = await client.GetAsync(
             $"/api/mart/crosstab?rowDimension=category:tanawari1&columnDimension=category:department&{SeedRange}");
 

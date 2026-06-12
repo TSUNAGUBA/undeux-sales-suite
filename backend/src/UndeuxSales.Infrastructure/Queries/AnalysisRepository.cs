@@ -169,7 +169,6 @@ public sealed class AnalysisRepository
 
     private static double Round1(double value) => Math.Round(value, 1, MidpointRounding.AwayFromZero);
 
-
     private sealed record WeeklyFlowRow(
         DateOnly Week, long Quantity, long Amount, long GrossProfit,
         long Stock, double StockDays, long CumSales, long CumDelivery);

@@ -75,7 +75,8 @@ public sealed class ProductMasterRepository
         var parameters = new DynamicParameters();
         ProductMasterFilterSql.AddParameters(filter, parameters);
         parameters.Add("limit", pageSize);
-        parameters.Add("offset", (page - 1) * pageSize);
+        // page は外部入力のため long で乗算し、巨大値でも負の OFFSET（int オーバーフロー）にしない。
+        parameters.Add("offset", (long)(page - 1) * pageSize);
 
         // SKU 統計・代表画像・売上実績（sales_weekly）を 1 商品 1 行に集約する。
         // 売上実績は自然キー（業態×商品記号×品番）で結合する。売上数量は全期間合計、

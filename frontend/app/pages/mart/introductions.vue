@@ -103,6 +103,13 @@ function toQuery(): Record<string, unknown> {
   return query
 }
 
+/**
+ * 直近に実行した検索で導入日フィルタが適用されていたか。
+ * 0件時の再構築案内は「入力欄の現在値」ではなく「適用済みの条件」を基準に判定する
+ * （0件表示後に入力欄を編集しただけで案内が出入りしないように）。
+ */
+const appliedDonyuFilter = ref(false)
+
 async function load(): Promise<void> {
   loading.value = true
   errorMessage.value = null
@@ -112,6 +119,7 @@ async function load(): Promise<void> {
       result.value = null
       return
     }
+    appliedDonyuFilter.value = donyuFrom.value !== '' || donyuTo.value !== ''
     result.value = await get<MartIntroductionPage>('/api/mart/introductions', toQuery())
   } catch (error) {
     errorMessage.value = apiErrorMessage(error)
@@ -167,9 +175,7 @@ const needsRebuildHint = computed(() => {
 // 導入日で絞り込んで0件の場合、旧 mart データ（導入日未反映）の可能性がある。
 // 「絞り込み過ぎ」との切り分けができないため、可能性として案内する。
 const emptyWithDonyuFilter = computed(
-  () =>
-    (result.value?.items.length ?? 0) === 0
-    && (donyuFrom.value !== '' || donyuTo.value !== ''),
+  () => (result.value?.items.length ?? 0) === 0 && appliedDonyuFilter.value,
 )
 
 const columns = [
