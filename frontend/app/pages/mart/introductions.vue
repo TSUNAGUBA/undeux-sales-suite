@@ -239,7 +239,7 @@ onMounted(async () => {
       </p>
     </div>
 
-    <CollapsiblePanel title="フィルター">
+    <CollapsiblePanel title="フィルター" :default-open="false">
       <p
         v-if="optionsError"
         class="mb-3 rounded-lg bg-amber-50 px-3 py-2 text-xs text-amber-700"

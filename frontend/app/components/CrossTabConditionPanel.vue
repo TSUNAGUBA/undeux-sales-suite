@@ -2,7 +2,7 @@
 /**
  * クロス集計（/mart/crosstab）の条件設定パネル。
  *
- * - 折り畳み式のヘッダ。モバイル時はデフォルト閉、PC時はデフォルト開。
+ * - 折り畳み式のヘッダ。デフォルトは閉（フィルタ・表示条件は既定で折り畳む）。
  * - 行/列ディメンション選択 + 行 ⇄ 列 入替ボタン
  * - 表示メトリクス選択（チェックボックス、availableMetrics 外は disabled）
  * - 表示モード切替（複数メトリクス時のみ表示: セル内縦並び / 列を増やして横並び / 行を増やして横並び）
@@ -87,38 +87,12 @@ function onTemperatureAreaSelect(event: Event): void {
   emit('update:temperatureArea', value === '' ? null : (value as TemperatureArea))
 }
 
-// モバイル幅判定（〈768px）。初期判定はマウント前は PC 想定（SSR 安全）。
-// onMounted のクロージャに mql と listener を閉じ込め、onBeforeUnmount で確実に
-// 同一の listener 参照を removeEventListener する。再マウント時の参照ずれを防ぐ。
-const isMobile = ref(false)
-let detachListener: (() => void) | null = null
-
-onMounted(() => {
-  if (typeof window === 'undefined' || typeof window.matchMedia !== 'function') {
-    return
-  }
-  const mql = window.matchMedia('(max-width: 767px)')
-  const listener = (event: MediaQueryListEvent): void => {
-    isMobile.value = event.matches
-  }
-  isMobile.value = mql.matches
-  mql.addEventListener('change', listener)
-  detachListener = () => mql.removeEventListener('change', listener)
-})
-
-onBeforeUnmount(() => {
-  detachListener?.()
-  detachListener = null
-})
-
-// パネルの開閉状態。ユーザーが明示操作したらそれを優先、初期状態はデバイス幅で決まる。
-const panelOpenOverride = ref<boolean | null>(null)
-const panelOpen = computed(() =>
-  panelOpenOverride.value === null ? !isMobile.value : panelOpenOverride.value,
-)
+// パネルの開閉状態。デフォルトは閉（全ページのフィルタ・表示条件は既定で折り畳む）。
+// SSR でも閉で描画されるためハイドレーション不整合が起きない。
+const panelOpen = ref(false)
 
 function togglePanel(): void {
-  panelOpenOverride.value = !panelOpen.value
+  panelOpen.value = !panelOpen.value
 }
 
 // 詳細フィルタ（品番タグ群）の表示状態。

@@ -40,7 +40,7 @@ const loading = ref(true)
 const errorMessage = ref<string | null>(null)
 
 const page = ref(1)
-const pageSize = ref(24)
+const pageSize = ref(12)
 
 const totalPages = computed(() => {
   const total = pageData.value?.totalCount ?? 0

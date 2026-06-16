@@ -142,7 +142,7 @@ function cloneFilter(value: ProductMasterFilterState): ProductMasterFilterState 
 </script>
 
 <template>
-  <CollapsiblePanel title="検索フィルター">
+  <CollapsiblePanel title="検索フィルター" :default-open="false">
     <p
       v-if="optionsError"
       class="mb-3 rounded-lg bg-amber-50 px-3 py-2 text-xs text-amber-700"
