@@ -24,7 +24,7 @@ function resetFilter(): void {
 </script>
 
 <template>
-  <CollapsiblePanel title="フィルター">
+  <CollapsiblePanel title="フィルター" :default-open="false">
     <FilterControls :scope-key="scopeKey" />
 
     <div class="mt-4 flex flex-wrap gap-2">
