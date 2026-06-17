@@ -602,6 +602,24 @@ onMounted(async () => {
 
     <StatusBlock v-else :loading="masterLoading" :error="masterError">
       <div v-if="detail" class="space-y-4">
+        <!-- フィルタ（期間）。画像・基本情報の上に置き、以降の mart 集計（サマリー・SKU実績・週次・クロス集計）に共通適用する -->
+        <div class="flex flex-wrap items-end gap-3 rounded-xl border border-slate-200 bg-white p-3 shadow-sm">
+          <div>
+            <label class="mb-1 block text-xs font-medium text-slate-500">期間（年度）</label>
+            <select
+              v-model="year"
+              class="rounded-lg border border-slate-300 bg-white px-3 py-2 text-sm"
+            >
+              <option :value="null">全期間</option>
+              <option v-for="y in years" :key="y" :value="y">{{ y }}年</option>
+            </select>
+          </div>
+          <p v-if="optionsError" class="text-xs text-amber-600">
+            期間の選択肢の取得に失敗しました（全期間で表示しています）: {{ optionsError }}
+          </p>
+          <p v-else-if="!sharedOptions" class="text-xs text-slate-400">期間の選択肢を読み込み中...</p>
+        </div>
+
         <!-- 画像 + 基本情報 -->
         <div class="grid grid-cols-1 gap-4 rounded-xl border border-slate-200 bg-white p-4 shadow-sm md:grid-cols-[260px_1fr]">
           <div class="space-y-2">
@@ -677,24 +695,6 @@ onMounted(async () => {
               </div>
             </dl>
           </div>
-        </div>
-
-        <!-- フィルタ（期間）。以降の mart 集計（サマリー・SKU実績・週次・クロス集計）に共通適用 -->
-        <div class="flex flex-wrap items-end gap-3 rounded-xl border border-slate-200 bg-white p-3 shadow-sm">
-          <div>
-            <label class="mb-1 block text-xs font-medium text-slate-500">期間（年度）</label>
-            <select
-              v-model="year"
-              class="rounded-lg border border-slate-300 bg-white px-3 py-2 text-sm"
-            >
-              <option :value="null">全期間</option>
-              <option v-for="y in years" :key="y" :value="y">{{ y }}年</option>
-            </select>
-          </div>
-          <p v-if="optionsError" class="text-xs text-amber-600">
-            期間の選択肢の取得に失敗しました（全期間で表示しています）: {{ optionsError }}
-          </p>
-          <p v-else-if="!sharedOptions" class="text-xs text-slate-400">期間の選択肢を読み込み中...</p>
         </div>
 
         <!-- StatusBlock を外側にし、エラーが「未構築」表示にマスクされないようにする
