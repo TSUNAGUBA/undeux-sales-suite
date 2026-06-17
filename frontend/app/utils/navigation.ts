@@ -13,6 +13,7 @@ import type { Component } from 'vue'
 import {
   Boxes,
   CalendarPlus,
+  CalendarRange,
   Database,
   Gauge,
   LayoutDashboard,
@@ -22,6 +23,7 @@ import {
   ScatterChart,
   Shirt,
   SlidersHorizontal,
+  Tag,
   Telescope,
   TrendingUp,
   Upload,
@@ -61,18 +63,44 @@ export interface NavCategory {
 export const NAV_CATEGORIES: NavCategory[] = [
   {
     id: 'monitoring',
-    label: '業績モニタリング',
+    label: '販売モニタリング',
     icon: Gauge,
-    description: '全社の売上・粗利・在庫の現状をまとめて把握する',
+    description: '全社の売上・粗利の現状をまとめて把握する',
     pages: [
       { path: '/mart', label: '全社サマリー', icon: LayoutDashboard },
       { path: '/mart/sales', label: '売上分析', icon: TrendingUp },
+    ],
+  },
+  {
+    id: 'weekly',
+    label: '週間モニタリング',
+    icon: CalendarRange,
+    description: '直近週の実績と前週比・週次推移を確認する',
+    pages: [
+      { path: '/mart/weekly', label: '週間モニタリング', icon: CalendarRange },
+    ],
+  },
+  {
+    id: 'inventory',
+    label: '在庫マネジメント',
+    icon: Boxes,
+    description: '滞留・不動在庫を抽出し、発注抑制・値下げの判断につなげる',
+    pages: [
       { path: '/mart/inventory', label: '在庫マネジメント', icon: Boxes },
     ],
   },
   {
+    id: 'brand',
+    label: 'ブランド/シリーズ分析',
+    icon: Tag,
+    description: 'ブランド・シリーズ（商品記号）軸で売れ行きを比較する',
+    pages: [
+      { path: '/mart/brand', label: 'ブランド/シリーズ分析', icon: Tag },
+    ],
+  },
+  {
     id: 'product',
-    label: '商品分析',
+    label: 'アイテム分析',
     icon: Package,
     description: '商品を起点に売れ行き・導入状況を深掘りする',
     pages: [

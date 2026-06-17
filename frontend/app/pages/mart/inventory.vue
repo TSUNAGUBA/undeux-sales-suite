@@ -544,7 +544,7 @@ const stockValueColumn = numberColumn('stockValueCost', '在庫金額(原価)', 
 const orderColumn = numberColumn('orderQuantity', '発注残', (row) =>
   row.orderQuantity > 0 ? formatDecimal(row.orderQuantity, 1) : '—')
 const sellThroughColumn = numberColumn('sellThroughRate', '消化率', (row) => formatRatioAsPercent(row.sellThroughRate))
-const stockDaysColumn = numberColumn('stockDays', '在庫日数', (row) => `${formatDecimal(row.stockDays, 1)} 日`)
+const stockDaysColumn = numberColumn('stockDays', '平均在日', (row) => `${formatDecimal(row.stockDays, 1)} 日`)
 const zeroWeeksColumn = numberColumn('zeroSalesWeeks', '出荷ゼロ週数', (row) => `${row.zeroSalesWeeks} 週`)
 
 const listColumns = computed(() => {
@@ -552,7 +552,8 @@ const listColumns = computed(() => {
     return [selectColumn, productColumn, stockColumn, stockDaysColumn, sellThroughColumn, orderColumn, recommendedColumn]
   }
   if (activeTab.value === 'dormant') {
-    return [selectColumn, productColumn, stockColumn, zeroWeeksColumn, stockValueColumn, orderColumn, recommendedColumn]
+    // 不動在庫の列順は 在庫数 → 在庫金額 → 出荷ゼロ週数（金額影響を先に把握する並び）。
+    return [selectColumn, productColumn, stockColumn, stockValueColumn, zeroWeeksColumn, orderColumn, recommendedColumn]
   }
   if (activeTab.value === 'flags') {
     return [productColumn, flagsColumn, statusColumn, stockColumn, stockDaysColumn, sellThroughColumn]
@@ -694,7 +695,7 @@ async function copyList(tab: ListTabKey): Promise<void> {
 
   const headers = [
     '業態', '商品記号', '品番', '単品', '商品名', '状態', '在庫数', '在庫金額(原価)',
-    '発注残', '先付数', '消化率(%)', '在庫日数', '出荷ゼロ週数', '推奨アクション', 'フラグ',
+    '発注残', '先付数', '消化率(%)', '平均在日', '出荷ゼロ週数', '推奨アクション', 'フラグ',
   ]
   const flagText = (row: InventoryItemRow) =>
     row.flags

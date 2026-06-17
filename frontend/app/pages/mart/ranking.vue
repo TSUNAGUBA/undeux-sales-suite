@@ -76,7 +76,9 @@ const dimensionKey = ref<RankingDimensionKey>('hinban')
 const sortKey = ref<RankingSortKey>('amount')
 const order = ref<RankingOrder>('top')
 const topN = ref<number>(20)
-const comparisonMode = ref<RankingComparisonMode>('none')
+// 期間比較の既定は「前年同期」。年度未選択時は comparisonRange() が null を返し無効化される
+// （comparisonDisabled で UI も非活性）。年度選択時に自動で前年同期比較が効く。
+const comparisonMode = ref<RankingComparisonMode>('previousYear')
 const customYear = ref<number | null>(null)
 const weights = defaultWeights()
 const thresholdA = 70

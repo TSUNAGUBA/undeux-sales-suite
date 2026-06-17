@@ -5,8 +5,10 @@ const props = withDefaults(
   defineProps<{
     /** useFilters のスコープキー。利用側（/mart 配下）は 'mart-filter' を渡す。 */
     scopeKey?: string
+    /** 年度フィルタを隠す（年月 from-to など独自の期間 UI を持つページ用）。 */
+    hideYear?: boolean
   }>(),
-  { scopeKey: 'sales-filter' },
+  { scopeKey: 'sales-filter', hideYear: false },
 )
 
 const emit = defineEmits<{ apply: [] }>()
@@ -25,7 +27,7 @@ function resetFilter(): void {
 
 <template>
   <CollapsiblePanel title="フィルター" :default-open="false">
-    <FilterControls :scope-key="scopeKey" />
+    <FilterControls :scope-key="scopeKey" :hide-year="hideYear" />
 
     <div class="mt-4 flex flex-wrap gap-2">
       <button

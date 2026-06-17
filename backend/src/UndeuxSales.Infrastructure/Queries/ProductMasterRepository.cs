@@ -69,6 +69,8 @@ public sealed class ProductMasterRepository
     {
         page = Math.Max(page, 1);
         pageSize = Math.Clamp(pageSize <= 0 ? DefaultPageSize : pageSize, 1, MaxPageSize);
+        // 全社サマリー踏襲フィルターの期間レンジを検証する（From > To は 400）。
+        ProductMasterFilterSql.EnsureValid(filter);
 
         await using var connection = await _connectionFactory.OpenConnectionAsync(cancellationToken);
 

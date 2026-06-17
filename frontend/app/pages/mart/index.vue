@@ -1,34 +1,58 @@
 <script setup lang="ts">
+/**
+ * 全社サマリー（/mart）— AIレポート風の経営サマリー。
+ *
+ * tokutake-ai-platform の「AIレポート」の構成（Hero ボトムライン → KPI → エグゼクティブ
+ * サマリー＋観点別所見(SWOT) → 売上構成 → 週次推移）に倣う。undeux は明るいテーマのため、
+ * 視覚言語は既存（slate/indigo）を踏襲しつつ、レポート的な情報設計を採用する。
+ *
+ * 絞り込みは「業態タブ（＝AIレポートのセグメント）＋ 部門チップ（＝サブセグメント）」を主軸とし、
+ * いずれも「すべて」を持つ単一選択。期間は年度で指定する。選択は共有フィルタ state
+ * （'mart-filter'）の businessTypes/departments/year に単一要素として反映し、他ページへの
+ * ドリル時にも絞り込みが引き継がれる。
+ *
+ * エグゼクティブサマリー（要点＋SWOT）は LLM ではなく主要指標からルールベースで自動生成する
+ * （undeux にLLM基盤が無いため。生成ロジックは utils/executiveSummary が SoT）。
+ */
 import {
-  CircleDollarSign,
-  ShoppingCart,
-  TrendingUp,
-  Percent,
-  Package,
-  Layers,
+  AlertTriangle,
   Boxes,
-  Gauge,
+  CircleDollarSign,
   Database,
+  Gauge,
+  Layers,
+  Lightbulb,
+  Package,
+  Percent,
   RefreshCw,
+  ShieldAlert,
+  ShoppingCart,
+  Sparkles,
+  ThumbsUp,
+  TrendingUp,
 } from 'lucide-vue-next'
+import type { Component } from 'vue'
 import type {
-  KpiCardItem,
-  MartSummaryResponse,
-  MartBreakdownResponse,
   BreakdownRow,
   InventoryActionsResponse,
   InventoryActionTargetTab,
+  KpiCardItem,
+  MartBreakdownResponse,
+  MartSummaryResponse,
 } from '~/types/api'
+import type { ExecutiveSummary } from '~/utils/executiveSummary'
 
 useHead({ title: '全社サマリー | UndeuxSales' })
 
 // mart 専用のフィルタスコープ。既存 sales 系（'sales-filter'）とは分離する。
 const MART_SCOPE = 'mart-filter'
-const { toQuery, loadOptions } = useFilters(MART_SCOPE)
+const { filter, options, optionsError, loadOptions, toQuery, years } = useFilters(MART_SCOPE)
 const { get } = useApi()
 const { status, isBuilt, rebuilding, rebuildMessage, refreshStatus, rebuild } = useMart()
 
 const summary = ref<MartSummaryResponse | null>(null)
+// 前年同期（YoY 算出用。補助情報のため取得失敗時は null）。
+const summaryPrev = ref<MartSummaryResponse | null>(null)
 const breakdown = ref<MartBreakdownResponse | null>(null)
 const loading = ref(true)
 const errorMessage = ref<string | null>(null)
@@ -53,6 +77,10 @@ const metricOptions = [
 const metricLabel = computed(
   () => metricOptions.find((item) => item.value === metric.value)?.label ?? '売上金額',
 )
+/** 内訳の集計軸ラベル（「○○別」から「別」を除いた表記。所見・見出しで使う）。 */
+const dimensionLabel = computed(
+  () => (dimensionOptions.find((d) => d.value === dimension.value)?.label ?? '部門別').replace(/別$/, ''),
+)
 
 function metricValue(row: BreakdownRow): number {
   if (metric.value === 'quantity') return row.quantity
@@ -60,29 +88,75 @@ function metricValue(row: BreakdownRow): number {
   return row.amount
 }
 
+// ---------------------------------------------------------------
+// 絞り込み: 業態タブ（セグメント）＋ 部門チップ（サブセグメント）＋ 年度。
+// 単一選択を共有フィルタの配列（businessTypes/departments）に単一要素で反映する。
+// ---------------------------------------------------------------
+const activeBusinessType = computed(() => filter.value.businessTypes[0] ?? null)
+const activeDepartment = computed(() => filter.value.departments[0] ?? null)
+
+function businessTypeLabel(code: string): string {
+  const opt = options.value?.businessTypes.find((b) => b.code === code)
+  return opt?.shortName ?? opt?.name ?? code
+}
+function departmentLabel(code: string): string {
+  const opt = options.value?.departments.find((d) => d.code === code)
+  return opt?.name ?? code
+}
+
+const scopeLabel = computed(() => {
+  const bt = activeBusinessType.value ? businessTypeLabel(activeBusinessType.value) : '全業態'
+  const dept = activeDepartment.value ? departmentLabel(activeDepartment.value) : '全部門'
+  return `${bt} × ${dept}`
+})
+
+function setBusinessType(code: string | null): void {
+  filter.value.businessTypes = code ? [code] : []
+  void load()
+}
+function setDepartment(code: string | null): void {
+  filter.value.departments = code ? [code] : []
+  void load()
+}
+
+// ---------------------------------------------------------------
+// KPI（前年同期比つき）
+// ---------------------------------------------------------------
+const DELTA_DISPLAY_EPSILON = 0.05
+
+/** 前年比（相対%）。前年が無い／0 なら表示しない。 */
+function yoyText(cur: number, prev: number | undefined | null): string | undefined {
+  if (prev === undefined || prev === null || prev === 0) return undefined
+  const pct = ((cur - prev) / Math.abs(prev)) * 100
+  if (Math.abs(pct) < DELTA_DISPLAY_EPSILON) return '前年比 ±0.0%'
+  return `前年比 ${pct > 0 ? '+' : '−'}${Math.abs(pct).toFixed(1)}%`
+}
+
 const kpiItems = computed<KpiCardItem[]>(() => {
   const kpi = summary.value?.kpi
-  if (!kpi) {
-    return []
-  }
+  if (!kpi) return []
+  const prev = summaryPrev.value?.kpi
   return [
     {
       label: '売上金額',
       value: formatCurrency(kpi.amount),
       icon: CircleDollarSign,
       accentClass: 'bg-indigo-50 text-indigo-600',
+      sub: yoyText(kpi.amount, prev?.amount),
     },
     {
       label: '売上数量',
       value: `${formatNumber(kpi.quantity)} 点`,
       icon: ShoppingCart,
       accentClass: 'bg-sky-50 text-sky-600',
+      sub: yoyText(kpi.quantity, prev?.quantity),
     },
     {
       label: '粗利',
       value: formatCurrency(kpi.grossProfit),
       icon: TrendingUp,
       accentClass: 'bg-emerald-50 text-emerald-600',
+      sub: yoyText(kpi.grossProfit, prev?.grossProfit),
     },
     {
       label: '粗利率',
@@ -117,10 +191,44 @@ const kpiItems = computed<KpiCardItem[]>(() => {
   ]
 })
 
-const trendLabels = computed(() =>
-  (summary.value?.weeklyTrend ?? []).map((point) => point.date),
-)
+// ---------------------------------------------------------------
+// エグゼクティブサマリー（ルールベース。utils/executiveSummary）
+// ---------------------------------------------------------------
+const execSummary = computed<ExecutiveSummary | null>(() => {
+  const s = summary.value
+  if (!s) return null
+  return buildExecutiveSummary({
+    kpi: s.kpi,
+    previousKpi: summaryPrev.value?.kpi ?? null,
+    trend: s.weeklyTrend,
+    breakdown: breakdown.value?.rows ?? [],
+    breakdownDimensionLabel: dimensionLabel.value,
+  })
+})
 
+interface SwotPanel {
+  key: string
+  title: string
+  icon: Component
+  items: string[]
+  cardClass: string
+  iconClass: string
+}
+const swotPanels = computed<SwotPanel[]>(() => {
+  const s = execSummary.value?.swot
+  if (!s) return []
+  return [
+    { key: 'strengths', title: '強み', icon: ThumbsUp, items: s.strengths, cardClass: 'border-emerald-200 bg-emerald-50/50', iconClass: 'text-emerald-600' },
+    { key: 'weaknesses', title: '弱み', icon: AlertTriangle, items: s.weaknesses, cardClass: 'border-rose-200 bg-rose-50/50', iconClass: 'text-rose-600' },
+    { key: 'opportunities', title: '機会', icon: Lightbulb, items: s.opportunities, cardClass: 'border-sky-200 bg-sky-50/50', iconClass: 'text-sky-600' },
+    { key: 'threats', title: 'リスク', icon: ShieldAlert, items: s.threats, cardClass: 'border-amber-200 bg-amber-50/50', iconClass: 'text-amber-600' },
+  ]
+})
+
+// ---------------------------------------------------------------
+// チャート・テーブル
+// ---------------------------------------------------------------
+const trendLabels = computed(() => (summary.value?.weeklyTrend ?? []).map((point) => point.date))
 const trendSeries = computed(() => {
   const trend = summary.value?.weeklyTrend ?? []
   return [
@@ -134,45 +242,23 @@ const breakdownData = computed(() => (breakdown.value?.rows ?? []).map(metricVal
 
 const tableColumns = [
   { key: 'label', label: '区分' },
-  {
-    key: 'quantity',
-    label: '数量',
-    align: 'right' as const,
-    format: (row: BreakdownRow) => formatNumber(row.quantity),
-  },
-  {
-    key: 'amount',
-    label: '売上金額',
-    align: 'right' as const,
-    format: (row: BreakdownRow) => formatCurrency(row.amount),
-  },
-  {
-    key: 'grossProfit',
-    label: '粗利',
-    align: 'right' as const,
-    format: (row: BreakdownRow) => formatCurrency(row.grossProfit),
-  },
-  {
-    key: 'sharePercent',
-    label: '構成比',
-    align: 'right' as const,
-    format: (row: BreakdownRow) => formatPercent(row.sharePercent),
-  },
+  { key: 'quantity', label: '数量', align: 'right' as const, format: (row: BreakdownRow) => formatNumber(row.quantity) },
+  { key: 'amount', label: '売上金額', align: 'right' as const, format: (row: BreakdownRow) => formatCurrency(row.amount) },
+  { key: 'grossProfit', label: '粗利', align: 'right' as const, format: (row: BreakdownRow) => formatCurrency(row.grossProfit) },
+  { key: 'sharePercent', label: '構成比', align: 'right' as const, format: (row: BreakdownRow) => formatPercent(row.sharePercent) },
 ]
 
-// 在庫アクションダイジェスト（今週のアクション）。補助コンテンツのため、
-// 取得失敗・遅延がサマリー本体の表示をブロックしないよう load() からは待たずに起動する。
+// 在庫アクションダイジェスト（今週のアクション）。補助コンテンツのため、取得失敗・遅延が
+// サマリー本体の表示をブロックしないよう load() からは待たずに起動する。
 const inventoryActions = ref<InventoryActionsResponse | null>(null)
 const inventoryActionsFailed = ref(false)
-// フィルタ連打で旧フィルタの応答が後着してもダイジェストを上書きしないためのリクエスト世代。
 let inventoryDigestRequestSeq = 0
 
 async function loadInventoryDigest(): Promise<void> {
   const seq = ++inventoryDigestRequestSeq
   inventoryActionsFailed.value = false
   try {
-    const response = await get<InventoryActionsResponse>(
-      '/api/mart/inventory/actions', toQuery())
+    const response = await get<InventoryActionsResponse>('/api/mart/inventory/actions', toQuery())
     if (seq !== inventoryDigestRequestSeq) return
     inventoryActions.value = response
   } catch (error) {
@@ -188,13 +274,41 @@ function handleDigestNavigate(tab: InventoryActionTargetTab): void {
   void navigateTo(tab === 'dashboard' ? '/mart/inventory' : { path: '/mart/inventory', query: { tab } })
 }
 
+// 前年同期サマリー（YoY）。期間（年度）指定時のみ。補助情報のため非ブロッキング＋世代ガード。
+let prevSeq = 0
+async function loadPreviousYear(): Promise<void> {
+  const seq = ++prevSeq
+  const year = filter.value.year
+  if (year === null) {
+    summaryPrev.value = null
+    return
+  }
+  try {
+    const prevQuery = { ...toQuery(), from: `${year - 1}-01-01`, to: `${year - 1}-12-31` }
+    const response = await get<MartSummaryResponse>('/api/mart/summary', prevQuery)
+    if (seq !== prevSeq) return
+    summaryPrev.value = response
+  } catch (error) {
+    if (seq !== prevSeq) return
+    // YoY は補助。失敗してもサマリー本体は止めない（前年比を出さないだけ）。
+    console.error('[mart] 前年同期サマリーの取得に失敗しました:', error)
+    summaryPrev.value = null
+  }
+}
+
+// 業態タブ・部門チップ・年度・集計軸の連続変更で古い応答が後着しても上書きしないリクエスト世代。
+let summaryLoadSeq = 0
+
 async function load(): Promise<void> {
+  const seq = ++summaryLoadSeq
   loading.value = true
   errorMessage.value = null
   try {
     await refreshStatus()
+    if (seq !== summaryLoadSeq) return
     if (!isBuilt.value) {
       summary.value = null
+      summaryPrev.value = null
       breakdown.value = null
       inventoryActions.value = null
       return
@@ -210,12 +324,19 @@ async function load(): Promise<void> {
         limit: 15,
       }),
     ])
+    if (seq !== summaryLoadSeq) return
     summary.value = summaryResult
     breakdown.value = breakdownResult
+    // YoY は補助表示のため非ブロッキングで取得（本体の表示を待たせない）。
+    void loadPreviousYear()
   } catch (error) {
-    errorMessage.value = apiErrorMessage(error)
+    if (seq === summaryLoadSeq) {
+      errorMessage.value = apiErrorMessage(error)
+    }
   } finally {
-    loading.value = false
+    if (seq === summaryLoadSeq) {
+      loading.value = false
+    }
   }
 }
 
@@ -238,15 +359,13 @@ onMounted(async () => {
     <div>
       <h1 class="text-xl font-bold text-slate-800">全社サマリー</h1>
       <p class="text-sm text-slate-500">
-        分析用ディメンショナルモデル（mart）から集計。既存の売上参照（sales_weekly）とは別系統で、
-        他小売・他メーカーにも展開可能な汎用構造。
+        業態・部門を選んで、主要指標とルールベースの所見（エグゼクティブサマリー）をレポート形式で確認します。
+        分析用ディメンショナルモデル（mart）から集計しています。
       </p>
     </div>
 
     <!-- mart 構築状態と再構築 -->
-    <div
-      class="flex flex-wrap items-center justify-between gap-3 rounded-xl border border-slate-200 bg-white p-3"
-    >
+    <div class="flex flex-wrap items-center justify-between gap-3 rounded-xl border border-slate-200 bg-white p-3">
       <div class="flex items-center gap-2 text-sm text-slate-600">
         <Database class="h-4 w-4 shrink-0 text-indigo-500" />
         <span v-if="status?.status === 'running'" class="font-medium text-indigo-600">
@@ -272,11 +391,88 @@ onMounted(async () => {
       </button>
     </div>
     <p v-if="rebuildMessage" class="text-xs text-emerald-600">{{ rebuildMessage }}</p>
-    <p class="text-xs text-slate-400">
-      ※ 再構築は sales_weekly + 商品マスタから派生データ（次元・ファクト）を作り直します（public → mart のデータ移行。認証ユーザーが実行可）。
+
+    <p v-if="optionsError" class="rounded-lg bg-amber-50 px-3 py-2 text-xs text-amber-700">
+      フィルタ選択肢の取得に失敗しました: {{ optionsError }}
     </p>
 
-    <FilterBar :scope-key="MART_SCOPE" @apply="load" />
+    <!-- 業態（セグメント）タブ -->
+    <nav class="border-b border-slate-200" aria-label="業態の切替">
+      <ul class="scrollbar-hide -mb-px flex gap-1 overflow-x-auto">
+        <li class="shrink-0">
+          <button
+            type="button"
+            class="whitespace-nowrap border-b-2 px-3 py-2.5 text-sm font-medium transition-colors"
+            :class="
+              activeBusinessType === null
+                ? 'border-indigo-600 text-indigo-700'
+                : 'border-transparent text-slate-500 hover:border-slate-300 hover:text-slate-800'
+            "
+            :aria-current="activeBusinessType === null ? 'page' : undefined"
+            @click="setBusinessType(null)"
+          >
+            すべて
+          </button>
+        </li>
+        <li v-for="bt in options?.businessTypes ?? []" :key="bt.code" class="shrink-0">
+          <button
+            type="button"
+            class="whitespace-nowrap border-b-2 px-3 py-2.5 text-sm font-medium transition-colors"
+            :class="
+              activeBusinessType === bt.code
+                ? 'border-indigo-600 text-indigo-700'
+                : 'border-transparent text-slate-500 hover:border-slate-300 hover:text-slate-800'
+            "
+            :aria-current="activeBusinessType === bt.code ? 'page' : undefined"
+            @click="setBusinessType(bt.code)"
+          >
+            {{ bt.shortName ?? bt.name ?? bt.code }}
+          </button>
+        </li>
+      </ul>
+    </nav>
+
+    <!-- 部門（サブセグメント）チップ ＋ 期間（年度） -->
+    <div class="flex flex-wrap items-center gap-2">
+      <span class="text-xs font-medium text-slate-400">部門</span>
+      <button
+        type="button"
+        class="inline-flex items-center rounded-full border px-3 py-1.5 text-xs font-medium transition-colors"
+        :class="
+          activeDepartment === null
+            ? 'border-indigo-500 bg-indigo-50 text-indigo-700'
+            : 'border-slate-200 bg-white text-slate-600 hover:border-indigo-300'
+        "
+        @click="setDepartment(null)"
+      >
+        すべて
+      </button>
+      <button
+        v-for="dept in options?.departments ?? []"
+        :key="dept.code"
+        type="button"
+        class="inline-flex items-center rounded-full border px-3 py-1.5 text-xs font-medium transition-colors"
+        :class="
+          activeDepartment === dept.code
+            ? 'border-indigo-500 bg-indigo-50 text-indigo-700'
+            : 'border-slate-200 bg-white text-slate-600 hover:border-indigo-300'
+        "
+        @click="setDepartment(dept.code)"
+      >
+        {{ dept.name ?? dept.code }}
+      </button>
+      <div class="ml-auto flex items-center gap-2">
+        <label class="text-xs font-medium text-slate-400">期間（年度）</label>
+        <select
+          v-model="filter.year"
+          class="rounded-lg border border-slate-300 bg-white px-3 py-1.5 text-sm"
+          @change="load"
+        >
+          <option :value="null">全期間</option>
+          <option v-for="y in years" :key="y" :value="y">{{ y }}年</option>
+        </select>
+      </div>
+    </div>
 
     <StatusBlock :loading="loading" :error="errorMessage">
       <div
@@ -286,6 +482,19 @@ onMounted(async () => {
         mart がまだ構築されていません。上の「mart を再構築」を実行すると、スタースキーマ集計が表示されます。
       </div>
       <div v-else class="space-y-4">
+        <!-- Hero: ボトムライン -->
+        <div class="rounded-xl border border-indigo-200 bg-gradient-to-br from-indigo-50 to-white p-5">
+          <p class="text-xs font-semibold uppercase tracking-wider text-indigo-500">エグゼクティブサマリー</p>
+          <h2 class="mt-1 text-lg font-bold text-slate-800">
+            {{ scopeLabel }}・{{ filter.year !== null ? `${filter.year}年` : '全期間' }} の販売サマリー
+          </h2>
+          <p v-if="execSummary" class="mt-2 text-sm text-slate-700">{{ execSummary.bottomLine }}</p>
+          <p class="mt-1 text-xs text-slate-400">
+            主要指標から自動生成した所見です（最新取込週: {{ summary?.kpi.latestWeek ?? '—' }}）。
+          </p>
+        </div>
+
+        <!-- KPI -->
         <div class="grid grid-cols-2 gap-3 md:grid-cols-4">
           <KpiCard
             v-for="item in kpiItems"
@@ -294,12 +503,48 @@ onMounted(async () => {
             :value="item.value"
             :icon="item.icon"
             :accent-class="item.accentClass"
+            :sub="item.sub"
           />
         </div>
 
-        <p v-if="summary?.kpi.latestWeek" class="text-xs text-slate-400">
-          最新取込週: {{ summary.kpi.latestWeek }}
-        </p>
+        <!-- 要点 ＋ 観点別所見（SWOT） -->
+        <div v-if="execSummary" class="grid grid-cols-1 gap-4 lg:grid-cols-3">
+          <div class="rounded-xl border border-slate-200 bg-white p-4 lg:col-span-1">
+            <div class="mb-2 flex items-center gap-1.5">
+              <Sparkles class="h-4 w-4 text-indigo-500" />
+              <h3 class="text-sm font-bold text-slate-800">要点</h3>
+            </div>
+            <ul class="space-y-1.5">
+              <li
+                v-for="(h, i) in execSummary.highlights"
+                :key="i"
+                class="flex gap-2 text-sm text-slate-600"
+              >
+                <span class="mt-1 h-1.5 w-1.5 shrink-0 rounded-full bg-indigo-400" aria-hidden="true" />
+                <span>{{ h }}</span>
+              </li>
+            </ul>
+          </div>
+
+          <div class="grid grid-cols-1 gap-3 sm:grid-cols-2 lg:col-span-2">
+            <div
+              v-for="panel in swotPanels"
+              :key="panel.key"
+              class="rounded-xl border p-3"
+              :class="panel.cardClass"
+            >
+              <div class="mb-1.5 flex items-center gap-1.5">
+                <component :is="panel.icon" class="h-4 w-4" :class="panel.iconClass" />
+                <h4 class="text-sm font-bold text-slate-800">{{ panel.title }}</h4>
+              </div>
+              <ul class="space-y-1">
+                <li v-for="(item, i) in panel.items" :key="i" class="text-xs text-slate-600">
+                  {{ item }}
+                </li>
+              </ul>
+            </div>
+          </div>
+        </div>
 
         <!-- 今週のアクション（在庫ダイジェスト）。気づき → 在庫マネジメントの該当タブへの導線。 -->
         <div
@@ -325,6 +570,7 @@ onMounted(async () => {
           在庫アクションの取得に失敗しました（サマリーの表示には影響ありません）。
         </p>
 
+        <!-- 週次売上推移 -->
         <LineChartCard
           v-if="trendLabels.length > 0"
           title="週次売上推移グラフ"
@@ -332,55 +578,58 @@ onMounted(async () => {
           :series="trendSeries"
         />
 
-        <div class="flex flex-wrap items-end gap-3">
-          <div>
-            <label class="mb-1 block text-xs font-medium text-slate-500">集計軸</label>
-            <select
-              v-model="dimension"
-              class="rounded-lg border border-slate-300 bg-white px-3 py-2 text-sm"
-              @change="load"
-            >
-              <option v-for="opt in dimensionOptions" :key="opt.value" :value="opt.value">
-                {{ opt.label }}
-              </option>
-            </select>
+        <!-- 売上構成 -->
+        <div class="space-y-2">
+          <div class="flex flex-wrap items-end gap-3">
+            <div>
+              <label class="mb-1 block text-xs font-medium text-slate-500">集計軸</label>
+              <select
+                v-model="dimension"
+                class="rounded-lg border border-slate-300 bg-white px-3 py-2 text-sm"
+                @change="load"
+              >
+                <option v-for="opt in dimensionOptions" :key="opt.value" :value="opt.value">
+                  {{ opt.label }}
+                </option>
+              </select>
+            </div>
+            <div>
+              <label class="mb-1 block text-xs font-medium text-slate-500">指標</label>
+              <select
+                v-model="metric"
+                class="rounded-lg border border-slate-300 bg-white px-3 py-2 text-sm"
+                @change="load"
+              >
+                <option v-for="opt in metricOptions" :key="opt.value" :value="opt.value">
+                  {{ opt.label }}
+                </option>
+              </select>
+            </div>
           </div>
-          <div>
-            <label class="mb-1 block text-xs font-medium text-slate-500">指標</label>
-            <select
-              v-model="metric"
-              class="rounded-lg border border-slate-300 bg-white px-3 py-2 text-sm"
-              @change="load"
-            >
-              <option v-for="opt in metricOptions" :key="opt.value" :value="opt.value">
-                {{ opt.label }}
-              </option>
-            </select>
-          </div>
+
+          <BarChartCard
+            v-if="breakdownLabels.length > 0"
+            :title="`${dimensionLabel}別 ${metricLabel}（上位15）`"
+            :labels="breakdownLabels"
+            :data="breakdownData"
+            :series-label="metricLabel"
+            color="#4f46e5"
+            horizontal
+          />
+
+          <DataTable
+            :columns="tableColumns"
+            :rows="breakdown?.rows ?? []"
+            :row-key="(row: BreakdownRow) => row.key"
+          />
+
+          <p
+            v-if="breakdownLabels.length === 0"
+            class="rounded-xl border border-slate-200 bg-white p-8 text-center text-sm text-slate-400"
+          >
+            選択した条件に該当するデータがありません。
+          </p>
         </div>
-
-        <BarChartCard
-          v-if="breakdownLabels.length > 0"
-          :title="`${metricLabel}ランキング（上位15）`"
-          :labels="breakdownLabels"
-          :data="breakdownData"
-          :series-label="metricLabel"
-          color="#4f46e5"
-          horizontal
-        />
-
-        <DataTable
-          :columns="tableColumns"
-          :rows="breakdown?.rows ?? []"
-          :row-key="(row: BreakdownRow) => row.key"
-        />
-
-        <p
-          v-if="breakdownLabels.length === 0"
-          class="rounded-xl border border-slate-200 bg-white p-8 text-center text-sm text-slate-400"
-        >
-          選択した条件に該当するデータがありません。
-        </p>
       </div>
     </StatusBlock>
   </div>

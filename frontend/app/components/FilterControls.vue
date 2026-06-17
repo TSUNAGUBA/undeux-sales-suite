@@ -6,8 +6,13 @@ const props = withDefaults(
   defineProps<{
     /** useFilters のスコープキー。利用側（/mart 配下）は 'mart-filter' を渡す。 */
     scopeKey?: string
+    /**
+     * 年度フィルタを隠す。年月 from-to など独自の期間 UI を持つページ用。
+     * 既定 false（従来どおり年度を表示）。state.year には触れないため他ページに影響しない。
+     */
+    hideYear?: boolean
   }>(),
-  { scopeKey: 'sales-filter' },
+  { scopeKey: 'sales-filter', hideYear: false },
 )
 
 const { filter, options, optionsError, loadOptions, years, businessTypeChipOptions } = useFilters(props.scopeKey)
@@ -64,7 +69,7 @@ function removeHinban(value: string): void {
         label="部門"
         :options="departmentOptions"
       />
-      <div>
+      <div v-if="!hideYear">
         <label class="mb-1 block text-xs font-medium text-slate-500">
           年度（1月〜12月）
         </label>
