@@ -62,18 +62,27 @@ async function loadMasterOptions(): Promise<void> {
   }
 }
 
+// フィルタ適用・ページング連打で古い応答が後着しても表示を上書きしないためのリクエスト世代。
+let loadSeq = 0
+
 async function load(): Promise<void> {
+  const seq = ++loadSeq
   loading.value = true
   errorMessage.value = null
   try {
     // 詳細分析は mart を参照するため、一覧段階で構築状態を共有 state に反映しておく
     // （未構築でも一覧自体は表示できる。詳細側でガードが出る）。
     await refreshStatus().catch(() => undefined)
-    pageData.value = await get<MasterProductPage>('/api/product-master', buildQuery())
+    const result = await get<MasterProductPage>('/api/product-master', buildQuery())
+    if (seq !== loadSeq) return
+    pageData.value = result
   } catch (error) {
+    if (seq !== loadSeq) return
     errorMessage.value = apiErrorMessage(error)
   } finally {
-    loading.value = false
+    if (seq === loadSeq) {
+      loading.value = false
+    }
   }
 }
 
@@ -131,8 +140,12 @@ onMounted(async () => {
       empty-message="該当する商品が見つかりません。フィルター条件を変更するか、商品マスタを投入してください。"
     >
       <div class="space-y-3">
-        <div class="flex items-center justify-between text-sm text-slate-600">
+        <div class="flex flex-wrap items-center justify-between gap-2 text-sm text-slate-600">
           <span>全 {{ formatNumber(pageData?.totalCount ?? 0) }} 件</span>
+          <span class="text-xs text-slate-400">
+            ※ 期間・部門・季節・棚割1・在日の絞り込みは「その条件で売上のある商品」を対象とします。
+            カードの平均在庫日数・店頭在庫は最新取込週スナップショット基準のため、絞り込み条件と一致しない場合があります。
+          </span>
         </div>
 
         <div class="grid grid-cols-1 gap-4 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4">

@@ -120,16 +120,22 @@ const dynamicColumns = computed(() =>
   tableColumns.map((col) => (col.key === 'label' ? { ...col, label: axisLabel.value } : col)),
 )
 
+// 集計軸・指標・フィルタの連続変更で古い応答が後着しても上書きしないリクエスト世代。
+let loadSeq = 0
+
 async function load(): Promise<void> {
+  const seq = ++loadSeq
   loading.value = true
   errorMessage.value = null
   try {
     await refreshStatus()
+    if (seq !== loadSeq) return
     if (!isBuilt.value) {
       rows.value = []
       return
     }
     const query = toQuery()
+    let nextRows: AxisRow[]
     if (axis.value === 'brand') {
       const res = await get<MartBreakdownResponse>('/api/mart/breakdown', {
         ...query,
@@ -137,7 +143,7 @@ async function load(): Promise<void> {
         metric: metric.value,
         limit: FETCH_LIMIT,
       })
-      rows.value = res.rows.map((r) => ({
+      nextRows = res.rows.map((r) => ({
         key: r.key,
         label: r.label,
         quantity: r.quantity,
@@ -150,7 +156,7 @@ async function load(): Promise<void> {
         dimension: 'shohinKigo',
         limit: FETCH_LIMIT,
       })
-      rows.value = res.rows.map((r) => ({
+      nextRows = res.rows.map((r) => ({
         key: r.key,
         label: r.label,
         quantity: r.current?.quantity ?? 0,
@@ -158,10 +164,16 @@ async function load(): Promise<void> {
         grossProfit: r.current?.grossProfit ?? 0,
       }))
     }
+    if (seq !== loadSeq) return
+    rows.value = nextRows
   } catch (error) {
-    errorMessage.value = apiErrorMessage(error)
+    if (seq === loadSeq) {
+      errorMessage.value = apiErrorMessage(error)
+    }
   } finally {
-    loading.value = false
+    if (seq === loadSeq) {
+      loading.value = false
+    }
   }
 }
 

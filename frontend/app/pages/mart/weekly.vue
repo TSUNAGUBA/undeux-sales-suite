@@ -192,23 +192,34 @@ const weeklyColumns = [
   { key: 'stockDays', label: '平均在日', align: 'right' as const, format: (r: WeeklyRow) => `${formatDecimal(r.stockDays, 1)} 日` },
 ]
 
+// エリア・フィルタの連続変更で古い応答が後着しても上書きしないリクエスト世代。
+let loadSeq = 0
+
 async function load(): Promise<void> {
+  const seq = ++loadSeq
   loading.value = true
   errorMessage.value = null
   try {
     await refreshStatus()
+    if (seq !== loadSeq) return
     if (!isBuilt.value) {
       weekly.value = null
       return
     }
-    weekly.value = await get<WeeklySeriesResponse>('/api/mart/weekly-series', {
+    const result = await get<WeeklySeriesResponse>('/api/mart/weekly-series', {
       ...toQuery(),
       area: area.value,
     })
+    if (seq !== loadSeq) return
+    weekly.value = result
   } catch (error) {
-    errorMessage.value = apiErrorMessage(error)
+    if (seq === loadSeq) {
+      errorMessage.value = apiErrorMessage(error)
+    }
   } finally {
-    loading.value = false
+    if (seq === loadSeq) {
+      loading.value = false
+    }
   }
 }
 

@@ -323,11 +323,16 @@ const tableColumns = [
   },
 ]
 
+// 期間・エリア・集計軸の連続変更で古い応答が後着しても表示を上書きしないためのリクエスト世代。
+let salesLoadSeq = 0
+
 async function load(): Promise<void> {
+  const seq = ++salesLoadSeq
   loading.value = true
   errorMessage.value = null
   try {
     await refreshStatus()
+    if (seq !== salesLoadSeq) return
     if (!isBuilt.value) {
       weekly.value = null
       breakdown.value = null
@@ -344,14 +349,19 @@ async function load(): Promise<void> {
         limit: 15,
       }),
     ])
+    if (seq !== salesLoadSeq) return
     weekly.value = weeklyResult
     breakdown.value = breakdownResult
     // 順位変動は補助表示のため非ブロッキングで取得（本体の表示を待たせない）。
     void loadMovers(query)
   } catch (error) {
-    errorMessage.value = apiErrorMessage(error)
+    if (seq === salesLoadSeq) {
+      errorMessage.value = apiErrorMessage(error)
+    }
   } finally {
-    loading.value = false
+    if (seq === salesLoadSeq) {
+      loading.value = false
+    }
   }
 }
 

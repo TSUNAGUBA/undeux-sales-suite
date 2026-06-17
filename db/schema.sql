@@ -145,6 +145,11 @@ CREATE INDEX IF NOT EXISTS ix_sales_weekly_batch         ON sales_weekly (import
 CREATE INDEX IF NOT EXISTS ix_sales_weekly_product
     ON sales_weekly (hinban_code, tanpin_code);
 
+-- 商品マスタとの自然キー（業態×記号×品番）結合・EXISTS 絞り込み（商品別分析の「全社サマリー踏襲」
+-- フィルタ等）を高速化する。末尾の import_date で期間レンジ条件もインデックスでカバーする。
+CREATE INDEX IF NOT EXISTS ix_sales_weekly_natural_key
+    ON sales_weekly (gyotai_code, shohin_kigou, hinban_code, import_date);
+
 -- ------------------------------------------------------------
 -- コードマスタ（取込時に自動導出される派生参照データ）
 -- ------------------------------------------------------------

@@ -296,11 +296,16 @@ async function loadPreviousYear(): Promise<void> {
   }
 }
 
+// 業態タブ・部門チップ・年度・集計軸の連続変更で古い応答が後着しても上書きしないリクエスト世代。
+let summaryLoadSeq = 0
+
 async function load(): Promise<void> {
+  const seq = ++summaryLoadSeq
   loading.value = true
   errorMessage.value = null
   try {
     await refreshStatus()
+    if (seq !== summaryLoadSeq) return
     if (!isBuilt.value) {
       summary.value = null
       summaryPrev.value = null
@@ -319,14 +324,19 @@ async function load(): Promise<void> {
         limit: 15,
       }),
     ])
+    if (seq !== summaryLoadSeq) return
     summary.value = summaryResult
     breakdown.value = breakdownResult
     // YoY は補助表示のため非ブロッキングで取得（本体の表示を待たせない）。
     void loadPreviousYear()
   } catch (error) {
-    errorMessage.value = apiErrorMessage(error)
+    if (seq === summaryLoadSeq) {
+      errorMessage.value = apiErrorMessage(error)
+    }
   } finally {
-    loading.value = false
+    if (seq === summaryLoadSeq) {
+      loading.value = false
+    }
   }
 }
 
