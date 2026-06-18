@@ -22,6 +22,7 @@ import {
   Package,
   ScatterChart,
   Shirt,
+  ShoppingCart,
   SlidersHorizontal,
   Tag,
   Telescope,
@@ -87,6 +88,15 @@ export const NAV_CATEGORIES: NavCategory[] = [
     description: '滞留・不動在庫を抽出し、発注抑制・値下げの判断につなげる',
     pages: [
       { path: '/mart/inventory', label: '在庫マネジメント', icon: Boxes },
+    ],
+  },
+  {
+    id: 'otb',
+    label: 'OTB管理',
+    icon: ShoppingCart,
+    description: 'バイヤー視点で仕入枠（OTB）・発注残・在庫健全性を管理し、次の発注を判断する',
+    pages: [
+      { path: '/mart/otb', label: '全社OTBサマリー', icon: ShoppingCart },
     ],
   },
   {
