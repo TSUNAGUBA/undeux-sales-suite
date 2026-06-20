@@ -16,11 +16,12 @@ const { accountType, meta } = useAccountType()
 const fields = computed(() => budgetFieldsForRole(accountType.value))
 
 const { load, upsert, remove, entriesForYear, companyBudget } = useBudget()
-const { options, optionsError, loadOptions } = useFilters('mart-filter')
+// 部門・業態の選択肢は useFilters の共通セレクタを再利用する（ラベル書式の重複定義を避ける）。
+const { optionsError, loadOptions, departmentChipOptions, businessTypeChipOptions } = useFilters('mart-filter')
 
-const currentYear = new Date().getFullYear()
-const years = [currentYear - 2, currentYear - 1, currentYear, currentYear + 1]
-const year = ref(currentYear)
+// 年度レンジは OTB サマリーと共有（budgetYearOptions）。
+const years = budgetYearOptions()
+const year = ref(new Date().getFullYear())
 
 const MAN = 1_000_000 // 百万円 → 円
 
@@ -38,20 +39,10 @@ const scopeOptions: { value: BudgetScope; label: string }[] = [
   { value: 'businessType', label: '業態別' },
 ]
 
-/** scope に応じたコード選択肢（部門 / 業態）。'コード: 名称' 形式。 */
+/** scope に応じたコード選択肢（部門 / 業態）。useFilters の共通セレクタを再利用する。 */
 const codeOptions = computed<{ value: string; label: string }[]>(() => {
-  if (form.scope === 'department') {
-    return (options.value?.departments ?? []).map((d) => ({
-      value: d.code,
-      label: d.name ? `${d.code}: ${d.name}` : d.code,
-    }))
-  }
-  if (form.scope === 'businessType') {
-    return (options.value?.businessTypes ?? []).map((b) => ({
-      value: b.code,
-      label: b.name ? (b.shortName ? `${b.code}: ${b.name} (${b.shortName})` : `${b.code}: ${b.name}`) : b.code,
-    }))
-  }
+  if (form.scope === 'department') return departmentChipOptions.value
+  if (form.scope === 'businessType') return businessTypeChipOptions.value
   return []
 })
 
@@ -64,9 +55,10 @@ function syncFormFromExisting(): void {
   form.purchaseMan = existing && existing.purchaseBudget !== null ? Math.round(existing.purchaseBudget / MAN) : null
 }
 
-watch(() => [year.value, form.scope, form.code], syncFormFromExisting)
-// scope を変えたらコード選択をリセット（全社はコード不要）。
+// scope 変更時はコードを必ず先にリセットしてから既存値を引き当てる
+// （reset を先に登録し、同期ウォッチャが古い code で発火しない順序を保証する）。
 watch(() => form.scope, () => { form.code = null })
+watch([year, () => form.scope, () => form.code], syncFormFromExisting)
 
 function labelFor(scope: BudgetScope, code: string | null): string {
   if (scope === 'company') return '全社'
@@ -86,7 +78,11 @@ function submit(): void {
     formError.value = '売上予算を正しく入力してください。'
     return
   }
-  if (fields.value.purchase && form.purchaseMan !== null && form.purchaseMan < 0) {
+  // 仕入予算は任意。空欄（v-model.number で NaN/空文字）は未入力＝null 扱い。負の有限値のみエラー。
+  // これにより NaN が localStorage（SoT）へ保存され OTB へ伝播するのを防ぐ。
+  const hasPurchase
+    = fields.value.purchase && form.purchaseMan !== null && Number.isFinite(form.purchaseMan)
+  if (hasPurchase && (form.purchaseMan as number) < 0) {
     formError.value = '仕入予算は0以上で入力してください。'
     return
   }
@@ -96,8 +92,7 @@ function submit(): void {
     code: form.scope === 'company' ? null : form.code,
     label: labelFor(form.scope, form.scope === 'company' ? null : form.code),
     salesBudget: form.salesMan * MAN,
-    purchaseBudget:
-      fields.value.purchase && form.purchaseMan !== null ? form.purchaseMan * MAN : null,
+    purchaseBudget: hasPurchase ? (form.purchaseMan as number) * MAN : null,
   })
 }
 
@@ -106,12 +101,8 @@ const rows = computed(() => entriesForYear(year.value))
 
 function resolveLabel(entry: BudgetEntry): string {
   if (entry.scope === 'company') return '全社'
-  if (entry.scope === 'department') {
-    const d = options.value?.departments.find((x) => x.code === entry.code)
-    return d?.name ? `${d.code}: ${d.name}` : entry.label
-  }
-  const b = options.value?.businessTypes.find((x) => x.code === entry.code)
-  return b?.name ? `${b.code}: ${b.name}${b.shortName ? ` (${b.shortName})` : ''}` : entry.label
+  const opts = entry.scope === 'department' ? departmentChipOptions.value : businessTypeChipOptions.value
+  return opts.find((o) => o.value === entry.code)?.label ?? entry.label
 }
 
 const scopeLabel: Record<BudgetScope, string> = {
@@ -138,6 +129,9 @@ onMounted(async () => {
         <template v-if="fields.purchase">仕入予算・売上予算</template>
         <template v-else>売上予算</template>
         を年度・集計軸ごとに登録します。登録値は OTB サマリーなど他ページで活用されます。
+      </p>
+      <p class="mt-1 text-xs text-amber-600">
+        ※ 現在、予算はこのブラウザにのみ保存されます（端末・ユーザー間で共有されません）。バックエンド連携は今後対応予定です。
       </p>
     </div>
 

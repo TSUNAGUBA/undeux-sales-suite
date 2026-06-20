@@ -56,7 +56,9 @@ export function useBudget() {
       if (!raw) return
       const parsed = JSON.parse(raw)
       if (Array.isArray(parsed)) {
-        entries.value = parsed.filter(isBudgetEntry)
+        // 一意性（年度×scope×code）は upsert が保証するが、手編集・旧スキーマ混入に備え
+        // ロード時にも重複排除する（後勝ち）。companyBudget 等の find が先頭1件前提のため。
+        entries.value = dedupe(parsed.filter(isBudgetEntry))
       }
     } catch (error) {
       console.error('[budget] 予算データの読み込みに失敗しました:', error)
@@ -123,6 +125,24 @@ export function useBudget() {
 /** ロール別に編集可能な予算項目（売上予算は共通、仕入予算はバイヤーのみ）。 */
 export function budgetFieldsForRole(role: AccountType): { sales: boolean; purchase: boolean } {
   return { sales: true, purchase: role === 'buyer' }
+}
+
+/**
+ * 予算管理・OTB サマリーで共有する対象年度リスト（当年を中心に前2年〜翌年）。
+ * 両画面で同一レンジを参照し、「登録した予算が OTB の年度に出ない」不整合を防ぐ。
+ */
+export function budgetYearOptions(reference: Date = new Date()): number[] {
+  const cy = reference.getFullYear()
+  return [cy - 2, cy - 1, cy, cy + 1]
+}
+
+/** 年度×scope×code で重複排除する（後勝ち）。 */
+function dedupe(list: BudgetEntry[]): BudgetEntry[] {
+  const byKey = new Map<string, BudgetEntry>()
+  for (const e of list) {
+    byKey.set(`${e.year}__${e.scope}__${e.code ?? ''}`, e)
+  }
+  return [...byKey.values()]
 }
 
 function isBudgetEntry(value: unknown): value is BudgetEntry {

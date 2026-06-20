@@ -36,7 +36,10 @@ export interface OtbCategory {
   targetInventory: number
   /** OTB 残高（円）＝ 目標在庫 － 期首在庫 － 発注残 ＋ 目標売上。 */
   otb: number
-  /** OTB 利用率（0..1）＝ 発注残 ÷（発注残＋OTB）。 */
+  /**
+   * OTB 利用率（0..1）。全社と同一定義（＝(按分仕入予算 − OTB) ÷ 按分仕入予算）。
+   * 各カテゴリへ全社仕入予算を按分して算出するため、利用率の按分和が全社利用率と整合する。
+   */
   otbUsageRate: number
   /** Weeks of Supply（週）。 */
   wos: number
@@ -181,7 +184,8 @@ export function buildOtbSummary(options?: {
       : DEFAULT_PURCHASE_BUDGET_YEN
   const salesScale = salesTotalYen / BASE_SALES_TOTAL_YEN
 
-  const categories: OtbCategory[] = CATEGORY_BASE.map((base) => {
+  // 第1パス: 各カテゴリの基礎指標（OTB 利用率は仕入予算按分が必要なため第2パスで確定）。
+  const draft = CATEGORY_BASE.map((base) => {
     const openingInventory = base.openingInventory * YEN_PER_UNIT
     const backlog = base.backlog * YEN_PER_UNIT
     const targetInventory = base.targetInventory * YEN_PER_UNIT
@@ -190,22 +194,32 @@ export function buildOtbSummary(options?: {
     const wos = targetSales > 0 ? (WEEKS_IN_PERIOD * openingInventory) / targetSales : 0
     const action = classifyAction(wos, otb)
     const recommendedOrder = action === 'add' ? Math.round(Math.max(0, otb) * 0.42) : 0
-    const usageDenom = backlog + Math.max(0, otb)
+    // 仕入予算按分の重み（カテゴリの活動量＝発注残＋OTB余力）。
+    const budgetWeight = backlog + Math.max(0, otb)
+    return { base, openingInventory, backlog, targetInventory, targetSales, otb, wos, action, recommendedOrder, budgetWeight }
+  })
+
+  // 第2パス: 全社仕入予算をカテゴリへ按分し、OTB 利用率を全社と同一定義
+  // （＝(仕入予算 − OTB) ÷ 仕入予算）で算出する。これにより各カテゴリ利用率の按分和が
+  // 全社利用率と整合する（同一画面で同名指標の定義が一致する）。
+  const weightTotal = draft.reduce((sum, d) => sum + d.budgetWeight, 0)
+  const categories: OtbCategory[] = draft.map((d) => {
+    const catBudget = weightTotal > 0 ? (purchaseBudgetYen * d.budgetWeight) / weightTotal : 0
     return {
-      code: base.code,
-      name: base.name,
-      openingInventory,
-      backlog,
-      targetSales,
-      targetInventory,
-      otb,
-      otbUsageRate: usageDenom > 0 ? clamp01(backlog / usageDenom) : 1,
-      wos,
-      stockoutRiskSku: base.stockoutRiskSku,
-      excessStockSku: base.excessStockSku,
-      leadTimeDays: base.leadTimeDays,
-      action,
-      recommendedOrder,
+      code: d.base.code,
+      name: d.base.name,
+      openingInventory: d.openingInventory,
+      backlog: d.backlog,
+      targetSales: d.targetSales,
+      targetInventory: d.targetInventory,
+      otb: d.otb,
+      otbUsageRate: catBudget > 0 ? clamp01((catBudget - d.otb) / catBudget) : 1,
+      wos: d.wos,
+      stockoutRiskSku: d.base.stockoutRiskSku,
+      excessStockSku: d.base.excessStockSku,
+      leadTimeDays: d.base.leadTimeDays,
+      action: d.action,
+      recommendedOrder: d.recommendedOrder,
     }
   })
 

@@ -37,10 +37,10 @@ useHead({ title: '全社OTBサマリー | UndeuxSales' })
 
 const { load: loadBudget, companyBudget } = useBudget()
 
-// 期間（年度）。予算管理の登録年度と連動させ、登録値を OTB に反映する。
-const currentYear = new Date().getFullYear()
-const years = [currentYear - 1, currentYear, currentYear + 1]
-const year = ref(currentYear)
+// 期間（年度）。予算管理と同一の年度レンジ（budgetYearOptions）を参照し、登録した予算が
+// OTB の年度セレクタに必ず現れるようにする（予算管理と OTB の年度不一致を防ぐ）。
+const years = budgetYearOptions()
+const year = ref(new Date().getFullYear())
 
 onMounted(() => {
   loadBudget()
@@ -377,7 +377,11 @@ const backlogSegments = computed(() => {
       <div class="rounded-xl border border-slate-200 bg-white p-4">
         <h3 class="mb-1 text-sm font-semibold text-slate-700">OTB構成（ウォーターフォール）</h3>
         <p class="mb-3 text-xs text-slate-400">目標在庫 ＋ 目標売上 － 期首在庫 － 発注残 ＝ OTB残高</p>
-        <div class="flex h-56 items-end gap-2 sm:gap-3">
+        <div
+          class="flex h-56 items-end gap-2 sm:gap-3"
+          role="img"
+          aria-label="OTB構成ウォーターフォール（目標在庫＋目標売上－期首在庫－発注残＝OTB残高）"
+        >
           <div v-for="bar in waterfallBars" :key="bar.label" class="flex h-full flex-1 flex-col items-center">
             <div class="relative h-full w-full">
               <div
@@ -385,6 +389,7 @@ const backlogSegments = computed(() => {
                 :class="WATERFALL_COLOR[bar.kind]"
                 :style="{ bottom: bar.bottomPct + '%', height: bar.heightPct + '%' }"
                 :title="`${bar.label}: ${formatCurrency(Math.abs(bar.value))}`"
+                aria-hidden="true"
               />
             </div>
             <span class="mt-1 truncate text-[10px] text-slate-500" :title="bar.label">{{ bar.label }}</span>
@@ -396,7 +401,11 @@ const backlogSegments = computed(() => {
       <div class="rounded-xl border border-slate-200 bg-white p-4">
         <h3 class="mb-1 text-sm font-semibold text-slate-700">発注残分析（状態別）</h3>
         <p class="mb-3 text-xs text-slate-400">発注残 {{ formatCurrency(summary.backlog) }} の状態内訳</p>
-        <div class="flex h-5 w-full overflow-hidden rounded-full">
+        <div
+          class="flex h-5 w-full overflow-hidden rounded-full"
+          role="img"
+          aria-label="発注残の状態別内訳（未出荷・輸送中・検収済）"
+        >
           <div
             v-for="seg in backlogSegments"
             :key="seg.key"
@@ -404,6 +413,7 @@ const backlogSegments = computed(() => {
             :class="seg.barClass"
             :style="{ width: seg.pct + '%' }"
             :title="`${seg.label}: ${formatCurrency(seg.value)}`"
+            aria-hidden="true"
           />
         </div>
         <ul class="mt-4 space-y-2">
