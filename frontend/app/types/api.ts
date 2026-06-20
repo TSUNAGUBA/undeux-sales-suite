@@ -6,6 +6,18 @@ export interface AuthUser {
   email: string | null
 }
 
+/**
+ * アカウント種別。
+ * - `supplier`（サプライヤー＝メーカー）: 自社商品の売上・在庫の管理/分析を行う。既存の「売れた結果を見る」画面群。
+ * - `buyer`（バイヤー＝小売）: 全サプライヤー横断で仕入予算・OTB を管理し、「未来の仕入意思決定」を行う。
+ *
+ * SoT は Firebase カスタムクレーム `accountType`（バックエンド発行）。未設定時の既定は `supplier`
+ * （既存ユーザー＝メーカー想定）。本プロダクトはモック段階のため、デモ用にローカル切替も許容する
+ * （`composables/useAccountType.ts`）。データスコープの物理的分離（メーカーは自社のみ）はマルチベンダ
+ * データ／バックエンド強制が前提のため後続。現状はナビゲーション/画面のロール出し分けで表現する。
+ */
+export type AccountType = 'supplier' | 'buyer'
+
 /** KPIカード1件の表示データ。 */
 export interface KpiCardItem {
   label: string
