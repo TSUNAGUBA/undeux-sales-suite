@@ -342,7 +342,11 @@ onMounted(async () => {
             </button>
           </div>
 
-          <DataTable :columns="transitionColumns" :rows="transitionRows" :row-key="transitionRowKey">
+          <p v-if="transition?.truncated" class="rounded-lg bg-amber-50 px-3 py-2 text-xs text-amber-700">
+            該当SKUが多いため上限件数で表示を打ち切りました。上の品番3桁フィルタで絞り込んでください。
+          </p>
+
+          <DataTable v-if="transitionRows.length > 0" :columns="transitionColumns" :rows="transitionRows" :row-key="transitionRowKey">
             <template #currentKubun="{ row }">
               <span
                 v-if="KUBUN_BADGE[(row as ChohyoTransitionRow).transition]"

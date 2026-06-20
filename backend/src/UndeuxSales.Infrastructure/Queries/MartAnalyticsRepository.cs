@@ -530,23 +530,35 @@ public sealed class MartAnalyticsRepository
 
         var parameters = new DynamicParameters();
         SalesFilterSql.AddParameters(filter, parameters);
-        var where = SalesFilterSql.WhereClause(filter, "sw");
+
+        // 先に絞り込み後の最新2取込週を確定する（import_date 索引が効く軽量クエリ）。本体の scoped を
+        // 当該2週へ限定することで、期間=全期間でも sales_weekly 全件スキャン＋全行 regexp_replace を避ける。
+        var weeks = (await connection.QueryAsync<DateOnly>(new CommandDefinition(
+            $"SELECT DISTINCT sw.import_date FROM sales_weekly sw {SalesFilterSql.WhereClause(filter, "sw")} ORDER BY sw.import_date DESC LIMIT 2",
+            parameters, cancellationToken: cancellationToken))).ToList();
+        if (weeks.Count == 0)
+        {
+            return new ChohyoTransitionResponse(null, null, Array.Empty<ChohyoTransitionRow>(), false);
+        }
+        var currentWeek = weeks[0];
+        DateOnly? previousWeek = weeks.Count > 1 ? weeks[1] : null;
+
+        parameters.Add("weeks", weeks);
+        parameters.Add("curWeek", currentWeek);
+        parameters.Add("prevWeek", previousWeek);
 
         // 帳票区分名の空白正規化（前後空白・全角/半角スペース除去）。元データの表記揺れに対応。
         const string norm = "regexp_replace(sw.chohyo_kubun_name, '[[:space:]　]', '', 'g')";
+        // 上限超過の可視化のため 1 件多く取得し、超過時は切り詰めて Truncated=true を返す。
+        const int rowLimit = 2000;
 
         var sql = $"""
             WITH scoped AS (
                 SELECT sw.import_date, sw.gyotai_code, sw.shohin_kigou, sw.hinban_code, sw.tanpin_code,
                        sw.hinmei, {norm} AS kubun, ({SalesMetricSql.WeekQuantity}) AS quantity, sw.zaikosu
                 FROM sales_weekly sw
-                {where}
+                WHERE sw.import_date = ANY(@weeks){SalesFilterSql.AndClause(filter, "sw")}
             ),
-            weeks AS (
-                SELECT DISTINCT import_date FROM scoped ORDER BY import_date DESC LIMIT 2
-            ),
-            cur_week AS (SELECT MAX(import_date) AS w FROM weeks),
-            prev_week AS (SELECT MIN(import_date) AS w FROM weeks),
             cur AS (
                 SELECT gyotai_code, shohin_kigou, hinban_code, tanpin_code,
                        MAX(hinmei) AS hinmei,
@@ -554,15 +566,14 @@ public sealed class MartAnalyticsRepository
                        COALESCE(SUM(quantity), 0)::bigint AS quantity,
                        COALESCE(SUM(zaikosu), 0)::bigint  AS stock
                 FROM scoped
-                WHERE import_date = (SELECT w FROM cur_week)
+                WHERE import_date = @curWeek
                 GROUP BY gyotai_code, shohin_kigou, hinban_code, tanpin_code
             ),
             prev AS (
                 SELECT gyotai_code, shohin_kigou, hinban_code, tanpin_code,
                        COALESCE(MAX(kubun), '') AS kubun
                 FROM scoped
-                WHERE import_date = (SELECT w FROM prev_week)
-                  AND (SELECT w FROM prev_week) < (SELECT w FROM cur_week)
+                WHERE import_date = @prevWeek
                 GROUP BY gyotai_code, shohin_kigou, hinban_code, tanpin_code
             )
             SELECT COALESCE(cur.gyotai_code, prev.gyotai_code)   AS gyotai_code,
@@ -588,20 +599,18 @@ public sealed class MartAnalyticsRepository
                AND cur.hinban_code  = prev.hinban_code
                AND cur.tanpin_code  = prev.tanpin_code
             ORDER BY hinban_code, tanpin_code
-            LIMIT 2000;
+            LIMIT {rowLimit + 1};
             """;
 
         var rows = (await connection.QueryAsync<ChohyoTransitionRow>(
             new CommandDefinition(sql, parameters, cancellationToken: cancellationToken))).ToList();
+        var truncated = rows.Count > rowLimit;
+        if (truncated)
+        {
+            rows = rows.Take(rowLimit).ToList();
+        }
 
-        // 当週・前週（表示用）。絞り込み後の最新2取込週。
-        var weeks = (await connection.QueryAsync<DateOnly>(new CommandDefinition(
-            $"SELECT DISTINCT sw.import_date FROM sales_weekly sw {where} ORDER BY sw.import_date DESC LIMIT 2",
-            parameters, cancellationToken: cancellationToken))).ToList();
-        DateOnly? currentWeek = weeks.Count > 0 ? weeks[0] : null;
-        DateOnly? previousWeek = weeks.Count > 1 ? weeks[1] : null;
-
-        return new ChohyoTransitionResponse(currentWeek, previousWeek, rows);
+        return new ChohyoTransitionResponse(currentWeek, previousWeek, rows, truncated);
     }
 
     private sealed record DailySeriesRawRow(

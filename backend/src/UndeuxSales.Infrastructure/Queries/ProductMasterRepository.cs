@@ -81,7 +81,8 @@ public sealed class ProductMasterRepository
         parameters.Add("offset", (long)(page - 1) * pageSize);
 
         // パフォーマンス: 先に m_product をフィルタ＋ページング（page_products）してから、その
-        // ページ分（既定12件）の自然キーに対してのみ sales_weekly / m_product_sku を集約する。
+        // ページ分（呼出側既定12件・サーバ既定 DefaultPageSize=24 件）の自然キーに対してのみ
+        // sales_weekly / m_product_sku を集約する。
         // 旧実装は sales_weekly（約160万行）と m_product_sku 全体を毎リクエスト集約してから JOIN して
         // いたため一覧表示が遅かった。集約対象をページ内商品に限定することで、自然キー索引
         // （sales_weekly(gyotai_code, shohin_kigou, hinban_code, import_date)）を活かし大幅に高速化する。

@@ -48,4 +48,6 @@ public sealed record ChohyoTransitionRow(
 public sealed record ChohyoTransitionResponse(
     DateOnly? CurrentWeek,
     DateOnly? PreviousWeek,
-    IReadOnlyList<ChohyoTransitionRow> Rows);
+    IReadOnlyList<ChohyoTransitionRow> Rows,
+    // 行数が上限（2000）で切り詰められたか。品番未指定（すべて）等で多数該当する場合に true。
+    bool Truncated);

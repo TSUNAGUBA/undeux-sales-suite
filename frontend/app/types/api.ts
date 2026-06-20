@@ -883,6 +883,8 @@ export interface ChohyoTransitionResponse {
   currentWeek: string | null
   previousWeek: string | null
   rows: ChohyoTransitionRow[]
+  /** 行数が上限（2000）で切り詰められたか（品番未指定などで多数該当時）。 */
+  truncated: boolean
 }
 
 /** mart（スタースキーマ）の構築状態。フロントの鮮度表示・再構築UIに使う。 */

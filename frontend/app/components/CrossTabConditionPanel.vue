@@ -12,6 +12,10 @@
  *
  * FilterBar（FilterControls）を使う各分析ページと共有 state（useFilters）を共有しつつ、
  * クロス集計向けに集計単位・表示集計値の設定を加えた専用パネルとして構成している。
+ *
+ * 注: 業態/部門は本パネルではタブ（フィルター/集計単位/表示集計値）内のコンパクトなチップ複数選択
+ * （CrossTabMultiSelectChips）を継続使用する。全社サマリー標準の ScopeFilterTags（ページ上部の
+ * 単独タグ群）は条件パネルのタブ構成と整合しないため、#11 の標準とは意図的に併存させている。
  */
 
 import { ArrowLeftRight, ChevronDown, Filter, RotateCcw, Search, Thermometer } from 'lucide-vue-next'
