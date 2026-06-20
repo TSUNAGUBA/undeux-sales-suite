@@ -122,7 +122,11 @@ async function loadActions(): Promise<void> {
   actionsLoading.value = true
   actionsError.value = null
   try {
-    const response = await get<InventoryActionsResponse>('/api/mart/inventory/actions', toQuery())
+    // includeHinban=true で品番3桁別の健全性（品番ポジショニング用）も取得する。
+    const response = await get<InventoryActionsResponse>('/api/mart/inventory/actions', {
+      ...toQuery(),
+      includeHinban: true,
+    })
     if (seq !== actionsRequestSeq) return
     actions.value = response
     actionsLoaded.value = true
@@ -138,6 +142,20 @@ async function loadActions(): Promise<void> {
     }
   }
 }
+
+// ---- ポジショニング（部門 / 品番3桁） ----
+// 既定は品番3桁（要件 #6: 部門ポジショニング→品番ポジショニング）。フィルターで部門を絞ると
+// その部門内の品番3桁で見られる（部門＞品番の行き来）。
+type PositioningMode = 'department' | 'hinban'
+const positioningMode = ref<PositioningMode>('hinban')
+const positioningRows = computed(() =>
+  positioningMode.value === 'hinban'
+    ? (actions.value?.byHinban ?? [])
+    : (actions.value?.byDepartment ?? []),
+)
+const positioningTitle = computed(() =>
+  positioningMode.value === 'hinban' ? '品番3桁ポジショニング' : '部門ポジショニング',
+)
 
 // ---- 明細タブ群（/api/mart/inventory/items 共用） ----
 
@@ -761,40 +779,40 @@ onMounted(async () => {
       </p>
     </div>
 
+    <!-- ページ内タブ（最上部・?tab= 同期）。フィルタより上に置き主要ナビとする（要件 #6）。 -->
+    <nav class="border-b border-slate-200" aria-label="在庫マネジメントのビュー切替">
+      <ul class="scrollbar-hide -mb-px flex gap-1 overflow-x-auto">
+        <li v-for="tab in TABS" :key="tab.key" class="shrink-0">
+          <button
+            type="button"
+            class="flex items-center gap-1.5 whitespace-nowrap border-b-2 px-3 py-2.5 text-sm font-medium transition-colors"
+            :class="
+              activeTab === tab.key
+                ? 'border-indigo-600 text-indigo-700'
+                : 'border-transparent text-slate-500 hover:border-slate-300 hover:text-slate-800'
+            "
+            :aria-current="activeTab === tab.key ? 'page' : undefined"
+            @click="setTab(tab.key)"
+          >
+            <component :is="tab.icon" class="h-4 w-4 shrink-0" />
+            {{ tab.label }}
+            <span
+              v-if="tabBadge(tab.key)"
+              class="rounded-full px-1.5 py-0.5 text-[10px] font-bold"
+              :class="tabBadge(tab.key)!.hot ? 'bg-rose-100 text-rose-700' : 'bg-slate-100 text-slate-500'"
+            >
+              {{ tabBadge(tab.key)!.text }}
+            </span>
+          </button>
+        </li>
+      </ul>
+    </nav>
+
     <FilterBar :scope-key="MART_SCOPE" @apply="handleFilterApply" />
 
     <StatusBlock :loading="!martChecked" :error="pageError">
       <MartNotBuiltNotice v-if="!isBuilt" />
       <div v-else class="space-y-4">
-        <!-- ページ内タブ（?tab= 同期） -->
-        <nav class="border-b border-slate-200" aria-label="在庫マネジメントのビュー切替">
-          <ul class="scrollbar-hide -mb-px flex gap-1 overflow-x-auto">
-            <li v-for="tab in TABS" :key="tab.key" class="shrink-0">
-              <button
-                type="button"
-                class="flex items-center gap-1.5 whitespace-nowrap border-b-2 px-3 py-2.5 text-sm font-medium transition-colors"
-                :class="
-                  activeTab === tab.key
-                    ? 'border-indigo-600 text-indigo-700'
-                    : 'border-transparent text-slate-500 hover:border-slate-300 hover:text-slate-800'
-                "
-                :aria-current="activeTab === tab.key ? 'page' : undefined"
-                @click="setTab(tab.key)"
-              >
-                <component :is="tab.icon" class="h-4 w-4 shrink-0" />
-                {{ tab.label }}
-                <span
-                  v-if="tabBadge(tab.key)"
-                  class="rounded-full px-1.5 py-0.5 text-[10px] font-bold"
-                  :class="tabBadge(tab.key)!.hot ? 'bg-rose-100 text-rose-700' : 'bg-slate-100 text-slate-500'"
-                >
-                  {{ tabBadge(tab.key)!.text }}
-                </span>
-              </button>
-            </li>
-          </ul>
-        </nav>
-
         <!-- ============ ダッシュボード ============ -->
         <section v-if="activeTab === 'dashboard'" aria-label="ダッシュボード">
           <StatusBlock
@@ -826,9 +844,35 @@ onMounted(async () => {
                 </div>
 
                 <div class="rounded-xl border border-slate-200 bg-white p-4">
+                  <div class="mb-2 flex flex-wrap items-center gap-2">
+                    <span class="mr-auto text-xs text-slate-400">
+                      フィルターで部門を絞ると、その部門内の品番3桁で分析できます（部門＞品番）。
+                    </span>
+                    <div class="inline-flex shrink-0 overflow-hidden rounded-lg border border-slate-300 text-xs">
+                      <button
+                        type="button"
+                        class="px-2.5 py-1 transition-colors"
+                        :class="positioningMode === 'hinban' ? 'bg-indigo-600 text-white' : 'bg-white text-slate-600 hover:bg-slate-50'"
+                        :aria-pressed="positioningMode === 'hinban'"
+                        @click="positioningMode = 'hinban'"
+                      >
+                        品番3桁
+                      </button>
+                      <button
+                        type="button"
+                        class="px-2.5 py-1 transition-colors"
+                        :class="positioningMode === 'department' ? 'bg-indigo-600 text-white' : 'bg-white text-slate-600 hover:bg-slate-50'"
+                        :aria-pressed="positioningMode === 'department'"
+                        @click="positioningMode = 'department'"
+                      >
+                        部門
+                      </button>
+                    </div>
+                  </div>
                   <InventoryQuadrantChart
-                    :departments="actions.byDepartment"
+                    :rows="positioningRows"
                     :thresholds="actions.thresholds"
+                    :title="positioningTitle"
                   />
                 </div>
               </div>

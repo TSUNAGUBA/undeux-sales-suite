@@ -210,6 +210,8 @@ export interface InventoryActionsResponse {
   statusCounts: InventoryStatusCounts
   actions: InventoryActionItem[]
   byDepartment: InventoryDepartmentHealthRow[]
+  /** 品番3桁（product_code）別の健全性（品番ポジショニング用。includeHinban=true 時のみ・在庫上位50）。 */
+  byHinban: InventoryDepartmentHealthRow[]
 }
 
 /**

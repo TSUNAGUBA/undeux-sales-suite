@@ -326,7 +326,7 @@ public sealed class MartAnalyticsRepository
     /// 全社サマリーのダイジェストが共用する。判定閾値の SoT は <see cref="InventoryHealthRules"/>。
     /// </summary>
     public async Task<InventoryActionsResponse> GetInventoryActionsAsync(
-        SalesQueryFilter filter, CancellationToken cancellationToken = default)
+        SalesQueryFilter filter, bool includeHinban = false, CancellationToken cancellationToken = default)
     {
         filter.EnsureValid();
         await using var connection = await _connectionFactory.OpenConnectionAsync(cancellationToken);
@@ -342,6 +342,7 @@ public sealed class MartAnalyticsRepository
                 null, null, thresholds, EmptyActionsKpi, null,
                 new InventoryStatusCounts(0, 0, 0, 0, 0),
                 Array.Empty<InventoryActionItem>(),
+                Array.Empty<InventoryDepartmentHealthRow>(),
                 Array.Empty<InventoryDepartmentHealthRow>());
         }
 
@@ -398,6 +399,43 @@ public sealed class MartAnalyticsRepository
                 row.HealthyStock, row.CautionStock, row.StagnantStock, row.DormantStock))
             .ToList();
 
+        // 品番ポジショニング用の品番3桁（product_code）別健全性（要求時のみ・在庫上位50）。
+        // 部門別クエリと同形で GROUP BY 軸のみ product_code に差し替える。在庫ダイジェスト等の
+        // 既存呼び出し（includeHinban=false）には追加コストを掛けない。
+        IReadOnlyList<InventoryDepartmentHealthRow> byHinban = Array.Empty<InventoryDepartmentHealthRow>();
+        if (includeHinban)
+        {
+            var hinbanSql = cte + $"""
+
+                SELECT COALESCE(NULLIF(dp.product_code, ''), '(未設定)') AS key,
+                       COALESCE(NULLIF(dp.product_code, ''), '(未設定)') AS label,
+                       COALESCE(SUM(c.stock), 0)::bigint            AS stock,
+                       COALESCE(SUM(c.stock_value_cost), 0)::bigint AS stock_value_cost,
+                       COALESCE(SUM(c.cum_sales), 0)::bigint        AS cumulative_sales,
+                       COALESCE(SUM(c.cum_delivery), 0)::bigint     AS cumulative_delivery,
+                       COALESCE(AVG(c.stock_days), 0)::float8       AS average_stock_days,
+                       COALESCE(SUM(c.stock) FILTER (WHERE c.status = '{InventoryHealthRules.StatusHealthy}'), 0)::bigint  AS healthy_stock,
+                       COALESCE(SUM(c.stock) FILTER (WHERE c.status = '{InventoryHealthRules.StatusCaution}'), 0)::bigint  AS caution_stock,
+                       COALESCE(SUM(c.stock) FILTER (WHERE c.status = '{InventoryHealthRules.StatusStagnant}'), 0)::bigint AS stagnant_stock,
+                       COALESCE(SUM(c.stock) FILTER (WHERE c.status = '{InventoryHealthRules.StatusDormant}'), 0)::bigint  AS dormant_stock
+                FROM classified c
+                JOIN mart.dim_sku     ds ON ds.sku_key     = c.sku_key
+                JOIN mart.dim_product dp ON dp.product_key = ds.product_key
+                GROUP BY COALESCE(NULLIF(dp.product_code, ''), '(未設定)')
+                ORDER BY stock DESC, key
+                LIMIT 50;
+                """;
+            var hinbanRaw = (await connection.QueryAsync<InventoryDepartmentHealthRawRow>(
+                new CommandDefinition(hinbanSql, parameters, cancellationToken: cancellationToken))).ToList();
+            byHinban = hinbanRaw
+                .Select(row => new InventoryDepartmentHealthRow(
+                    row.Key, row.Label, row.Stock, row.StockValueCost,
+                    AggregateMath.Ratio(row.CumulativeSales, row.CumulativeDelivery),
+                    row.AverageStockDays,
+                    row.HealthyStock, row.CautionStock, row.StagnantStock, row.DormantStock))
+                .ToList();
+        }
+
         var actions = InventoryHealthRules.BuildActions(new InventoryActionInput(
             aggregate.StagnantCount,
             aggregate.StagnantWithOrderCount,
@@ -416,7 +454,7 @@ public sealed class MartAnalyticsRepository
             new InventoryStatusCounts(
                 aggregate.HealthyCount, aggregate.CautionCount,
                 aggregate.StagnantCount, aggregate.DormantCount, aggregate.TotalCount),
-            actions, byDepartment);
+            actions, byDepartment, byHinban);
     }
 
     /// <summary>

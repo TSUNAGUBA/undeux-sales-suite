@@ -78,8 +78,10 @@ public sealed class MartController : ControllerBase
     /// </summary>
     [HttpGet("inventory/actions")]
     public Task<InventoryActionsResponse> InventoryActions(
-        [FromQuery] SalesQueryFilter filter, CancellationToken cancellationToken)
-        => _martRepository.GetInventoryActionsAsync(filter, cancellationToken);
+        [FromQuery] SalesQueryFilter filter,
+        [FromQuery] bool includeHinban,
+        CancellationToken cancellationToken)
+        => _martRepository.GetInventoryActionsAsync(filter, includeHinban, cancellationToken);
 
     /// <summary>
     /// 在庫アクション明細（SKU単位・最新週スナップショット基準）をページングで取得する。
