@@ -1600,12 +1600,18 @@ public sealed class MartAnalyticsRepository
                 "COALESCE(NULLIF(dp.product_code, ''), '(未設定)')",
                 "COALESCE(NULLIF(dp.product_name, ''), NULLIF(dp.product_code, ''), '(未設定)')",
                 "Product"),
+            // 品番3桁（product_code）でグルーピングし、ラベルもコードを用いる軸。
+            // "product" がコードで集計しつつ品名でラベル付けするのに対し、本軸はコード表示（品番3桁分析用）。
+            "hinban" => (
+                "COALESCE(NULLIF(dp.product_code, ''), '(未設定)')",
+                "COALESCE(NULLIF(dp.product_code, ''), '(未設定)')",
+                "Hinban"),
             "brand" => (
                 "COALESCE(NULLIF(dp.brand, ''), '(未設定)')",
                 "COALESCE(NULLIF(dp.brand, ''), '(未設定)')",
                 "Brand"),
             _ => throw new AppException(ErrorCodes.UnknownDimension, 400,
-                $"集計軸 '{dimension}' は不正です（department / businessType / season / product / brand）。"),
+                $"集計軸 '{dimension}' は不正です（department / businessType / season / product / hinban / brand）。"),
         };
     }
 

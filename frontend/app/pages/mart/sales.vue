@@ -105,6 +105,7 @@ const MOVERS_DIM_MAP: Partial<Record<string, RankingDimensionKey>> = {
   businessType: 'businessType',
   season: 'season',
   product: 'product',
+  hinban: 'hinban',
 }
 const moversDim = computed<RankingDimensionKey | undefined>(() => MOVERS_DIM_MAP[dimension.value])
 
@@ -188,6 +189,7 @@ const dimensionOptions = [
   { value: 'businessType', label: '業態別' },
   { value: 'season', label: '季節別' },
   { value: 'product', label: '品番CD（服種）別' },
+  { value: 'hinban', label: '品番3桁別' },
   { value: 'brand', label: 'ブランド別' },
 ]
 
@@ -379,6 +381,10 @@ function handleBreakdownDrill(row: BreakdownRow): void {
     // mart breakdown の product は品番CD（product_code）が key。
     addToFilter('hinbans', row.key)
     targetRow = 'category:hinban'
+  } else if (currentDim === 'hinban') {
+    // 品番3桁（product_code）で絞り込み、単品（品番-単品）の内訳へドリルする。
+    addToFilter('hinbans', row.key)
+    targetRow = 'category:product'
   }
 
   navigateTo({
@@ -520,16 +526,53 @@ onMounted(async () => {
           </div>
         </div>
 
-        <BarChartCard
-          v-if="breakdownLabels.length > 0"
-          :title="`${metricLabel}ランキング（上位15）`"
-          :labels="breakdownLabels"
-          :data="breakdownData"
-          :series-label="metricLabel"
-          color="#4f46e5"
-          horizontal
-        />
+        <!-- 売上金額ランキング（左）× 順位変動（右）を横並び（要件 #5） -->
+        <div class="grid grid-cols-1 gap-3 lg:grid-cols-2">
+          <!-- 左: 売上金額ランキング（上位15） -->
+          <div>
+            <BarChartCard
+              v-if="breakdownLabels.length > 0"
+              :title="`${metricLabel}ランキング（上位15）`"
+              :labels="breakdownLabels"
+              :data="breakdownData"
+              :series-label="metricLabel"
+              color="#4f46e5"
+              horizontal
+            />
+            <div
+              v-else
+              class="flex min-h-[20rem] items-center justify-center rounded-xl border border-slate-200 bg-white p-8 text-center text-sm text-slate-400"
+            >
+              選択した条件に該当するデータがありません。
+            </div>
+          </div>
 
+          <!-- 右: 順位変動（前年同期比）。ランキング分析と同じ RankingMoversChart を再利用。 -->
+          <section class="space-y-1">
+            <h3 class="text-sm font-semibold text-slate-700">順位変動（前年同期比）</h3>
+            <RankingMoversChart v-if="moverItems.length > 0" :items="moverItems" />
+            <p
+              v-else-if="!moversDim"
+              class="rounded-xl border border-slate-200 bg-white p-4 text-xs text-slate-400"
+            >
+              順位変動は集計軸が「部門・業態・季節・品番CD（服種）・品番3桁」のときに表示されます（ブランド軸は非対応）。
+            </p>
+            <p
+              v-else-if="!comparisonAvailable"
+              class="rounded-xl border border-slate-200 bg-white p-4 text-xs text-slate-400"
+            >
+              上の「期間（年月）」で開始・終了の両方を指定すると、前年同期比の順位変動を表示します。
+            </p>
+            <p
+              v-else
+              class="rounded-xl border border-slate-200 bg-white p-4 text-xs text-slate-400"
+            >
+              順位変動を表示できるデータがありません（比較期間にデータが無い可能性があります）。
+            </p>
+          </section>
+        </div>
+
+        <!-- 集計軸別の明細（全幅。クリックで該当軸をクロス集計へドリル）。 -->
         <DataTable
           :columns="tableColumns"
           :rows="breakdown?.rows ?? []"
@@ -537,37 +580,6 @@ onMounted(async () => {
           clickable
           @row-click="handleBreakdownDrill"
         />
-
-        <p
-          v-if="breakdownLabels.length === 0"
-          class="rounded-xl border border-slate-200 bg-white p-8 text-center text-sm text-slate-400"
-        >
-          選択した条件に該当するデータがありません。
-        </p>
-
-        <!-- 順位変動（前年同期比）。ランキング分析と同じ RankingMoversChart を再利用。 -->
-        <section class="space-y-1">
-          <h3 class="text-sm font-semibold text-slate-700">順位変動（前年同期比）</h3>
-          <RankingMoversChart v-if="moverItems.length > 0" :items="moverItems" />
-          <p
-            v-else-if="!moversDim"
-            class="rounded-xl border border-slate-200 bg-white p-4 text-xs text-slate-400"
-          >
-            順位変動は集計軸が「部門・業態・季節・品番CD（服種）」のときに表示されます（ブランド軸は非対応）。
-          </p>
-          <p
-            v-else-if="!comparisonAvailable"
-            class="rounded-xl border border-slate-200 bg-white p-4 text-xs text-slate-400"
-          >
-            上の「期間（年月）」で開始・終了の両方を指定すると、前年同期比の順位変動を表示します。
-          </p>
-          <p
-            v-else
-            class="rounded-xl border border-slate-200 bg-white p-4 text-xs text-slate-400"
-          >
-            順位変動を表示できるデータがありません（比較期間にデータが無い可能性があります）。
-          </p>
-        </section>
       </div>
     </StatusBlock>
   </div>
