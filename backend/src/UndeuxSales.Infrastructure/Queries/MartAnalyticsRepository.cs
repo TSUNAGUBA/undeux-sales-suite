@@ -458,6 +458,156 @@ public sealed class MartAnalyticsRepository
     }
 
     /// <summary>
+    /// 特定品番の日次分析用に、日次系列（売上＋東京の平均気温）を返す。売上は sales_weekly の
+    /// 曜日別7列を実日付へ展開した派生（QueryDailyTrend と同方式）。気温は東京（standard）の
+    /// dim_climate 実測を優先し、未カバー日は標準気候（平年値）へフォールバックする。
+    /// </summary>
+    public async Task<DailySeriesResponse> GetDailySeriesAsync(
+        SalesQueryFilter filter, CancellationToken cancellationToken = default)
+    {
+        filter.EnsureValid();
+        await using var connection = await _connectionFactory.OpenConnectionAsync(cancellationToken);
+
+        var parameters = new DynamicParameters();
+        SalesFilterSql.AddParameters(filter, parameters);
+
+        var weeklySums = new List<string>();
+        var dailyValues = new List<string>();
+        for (var day = 1; day <= WeekCalendar.DaysInWeek; day++)
+        {
+            var quantity = SalesMetricSql.DailyQuantity(day);
+            weeklySums.Add($"SUM({quantity})::bigint AS q{day}");
+            weeklySums.Add($"SUM({SalesMetricSql.Amount(quantity)})::bigint AS a{day}");
+            weeklySums.Add($"SUM({SalesMetricSql.GrossProfit(quantity)})::bigint AS g{day}");
+            dailyValues.Add($"({day}, q{day}, a{day}, g{day})");
+        }
+
+        var sql = $"""
+            WITH per_week AS (
+                SELECT sw.import_date,
+                       {string.Join(",\n                       ", weeklySums)}
+                FROM sales_weekly sw
+                {SalesFilterSql.WhereClause(filter, "sw")}
+                GROUP BY sw.import_date
+            ),
+            expanded AS (
+                SELECT (per_week.import_date - 8 + d.day_index)::date AS date,
+                       d.quantity, d.amount, d.gross_profit
+                FROM per_week
+                CROSS JOIN LATERAL (VALUES
+                    {string.Join(",\n                    ", dailyValues)}
+                ) AS d(day_index, quantity, amount, gross_profit)
+            )
+            SELECT e.date, e.quantity, e.amount, e.gross_profit,
+                   dc.temp_avg AS temp_avg
+            FROM expanded e
+            LEFT JOIN mart.dim_climate dc
+                ON dc.area_code = 'standard' AND dc.the_date = e.date
+            ORDER BY e.date;
+            """;
+
+        var rawRows = (await connection.QueryAsync<DailySeriesRawRow>(
+            new CommandDefinition(sql, parameters, cancellationToken: cancellationToken))).ToList();
+
+        var points = rawRows.Select(r => new DailySeriesPoint(
+                r.Date, r.Quantity, r.Amount, r.GrossProfit,
+                r.TempAvg ?? ClimateModel.Daily(TemperatureArea.Standard, r.Date).Average))
+            .ToList();
+
+        return new DailySeriesResponse(ClimateModel.CityName(TemperatureArea.Standard), points);
+    }
+
+    /// <summary>
+    /// 帳票区分（売発注/情報発注）の前週比較で、品番3桁×単品4桁の SKU 遷移区分を返す。
+    /// 当週・前週は絞り込み後の sales_weekly に存在する最新2取込週。区分は空白（全/半角・前後）を
+    /// 正規化してから比較する。当週に在るSKUは new/unchanged/sale-to-info/info-to-sale、前週のみのSKUは dropped。
+    /// </summary>
+    public async Task<ChohyoTransitionResponse> GetChohyoTransitionAsync(
+        SalesQueryFilter filter, CancellationToken cancellationToken = default)
+    {
+        filter.EnsureValid();
+        await using var connection = await _connectionFactory.OpenConnectionAsync(cancellationToken);
+
+        var parameters = new DynamicParameters();
+        SalesFilterSql.AddParameters(filter, parameters);
+        var where = SalesFilterSql.WhereClause(filter, "sw");
+
+        // 帳票区分名の空白正規化（前後空白・全角/半角スペース除去）。元データの表記揺れに対応。
+        const string norm = "regexp_replace(sw.chohyo_kubun_name, '[[:space:]　]', '', 'g')";
+
+        var sql = $"""
+            WITH scoped AS (
+                SELECT sw.import_date, sw.gyotai_code, sw.shohin_kigou, sw.hinban_code, sw.tanpin_code,
+                       sw.hinmei, {norm} AS kubun, ({SalesMetricSql.WeekQuantity}) AS quantity, sw.zaikosu
+                FROM sales_weekly sw
+                {where}
+            ),
+            weeks AS (
+                SELECT DISTINCT import_date FROM scoped ORDER BY import_date DESC LIMIT 2
+            ),
+            cur_week AS (SELECT MAX(import_date) AS w FROM weeks),
+            prev_week AS (SELECT MIN(import_date) AS w FROM weeks),
+            cur AS (
+                SELECT gyotai_code, shohin_kigou, hinban_code, tanpin_code,
+                       MAX(hinmei) AS hinmei,
+                       COALESCE(MAX(kubun), '') AS kubun,
+                       COALESCE(SUM(quantity), 0)::bigint AS quantity,
+                       COALESCE(SUM(zaikosu), 0)::bigint  AS stock
+                FROM scoped
+                WHERE import_date = (SELECT w FROM cur_week)
+                GROUP BY gyotai_code, shohin_kigou, hinban_code, tanpin_code
+            ),
+            prev AS (
+                SELECT gyotai_code, shohin_kigou, hinban_code, tanpin_code,
+                       COALESCE(MAX(kubun), '') AS kubun
+                FROM scoped
+                WHERE import_date = (SELECT w FROM prev_week)
+                  AND (SELECT w FROM prev_week) < (SELECT w FROM cur_week)
+                GROUP BY gyotai_code, shohin_kigou, hinban_code, tanpin_code
+            )
+            SELECT COALESCE(cur.gyotai_code, prev.gyotai_code)   AS gyotai_code,
+                   COALESCE(cur.shohin_kigou, prev.shohin_kigou) AS shohin_kigou,
+                   COALESCE(cur.hinban_code, prev.hinban_code)   AS hinban_code,
+                   COALESCE(cur.tanpin_code, prev.tanpin_code)   AS tanpin_code,
+                   COALESCE(cur.hinmei, '')   AS hinmei,
+                   COALESCE(cur.kubun, '')    AS current_kubun,
+                   COALESCE(prev.kubun, '')   AS previous_kubun,
+                   CASE
+                       WHEN cur.gyotai_code IS NULL THEN 'dropped'
+                       WHEN prev.gyotai_code IS NULL THEN 'new'
+                       WHEN prev.kubun = '売発注' AND cur.kubun = '情報発注' THEN 'sale-to-info'
+                       WHEN prev.kubun = '情報発注' AND cur.kubun = '売発注' THEN 'info-to-sale'
+                       ELSE 'unchanged'
+                   END AS transition,
+                   COALESCE(cur.quantity, 0)::bigint AS quantity,
+                   COALESCE(cur.stock, 0)::bigint    AS stock
+            FROM cur
+            FULL OUTER JOIN prev
+                ON cur.gyotai_code  = prev.gyotai_code
+               AND cur.shohin_kigou = prev.shohin_kigou
+               AND cur.hinban_code  = prev.hinban_code
+               AND cur.tanpin_code  = prev.tanpin_code
+            ORDER BY hinban_code, tanpin_code
+            LIMIT 2000;
+            """;
+
+        var rows = (await connection.QueryAsync<ChohyoTransitionRow>(
+            new CommandDefinition(sql, parameters, cancellationToken: cancellationToken))).ToList();
+
+        // 当週・前週（表示用）。絞り込み後の最新2取込週。
+        var weeks = (await connection.QueryAsync<DateOnly>(new CommandDefinition(
+            $"SELECT DISTINCT sw.import_date FROM sales_weekly sw {where} ORDER BY sw.import_date DESC LIMIT 2",
+            parameters, cancellationToken: cancellationToken))).ToList();
+        DateOnly? currentWeek = weeks.Count > 0 ? weeks[0] : null;
+        DateOnly? previousWeek = weeks.Count > 1 ? weeks[1] : null;
+
+        return new ChohyoTransitionResponse(currentWeek, previousWeek, rows);
+    }
+
+    private sealed record DailySeriesRawRow(
+        DateOnly Date, long Quantity, long Amount, long GrossProfit, double? TempAvg);
+
+    /// <summary>
     /// 在庫アクション明細（SKU 単位・最新週スナップショット基準）をページングで取得する。
     /// 在庫一覧・滞留・不動・対応リストのタブが statuses / フラグ絞込だけを変えて共用する
     /// （SQL 骨格の多重化を避ける）。フラグ（inventory_action_flag）は自然キーで LEFT JOIN し、

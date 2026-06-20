@@ -12,6 +12,7 @@
 import type { Component } from 'vue'
 import {
   Boxes,
+  CalendarDays,
   CalendarPlus,
   CalendarRange,
   Database,
@@ -100,10 +101,11 @@ export const NAV_CATEGORIES: NavCategory[] = [
     id: 'weekly',
     label: '週間モニタリング',
     icon: CalendarRange,
-    description: '直近週の実績と前週比・週次推移を確認する',
+    description: '直近週の実績と前週比・週次推移、特定品番の日次分析を確認する',
     roles: ['supplier'],
     pages: [
       { path: '/mart/weekly', label: '週間モニタリング', icon: CalendarRange },
+      { path: '/mart/weekly-daily', label: '日次分析：特定品番', icon: CalendarDays },
     ],
   },
   {
