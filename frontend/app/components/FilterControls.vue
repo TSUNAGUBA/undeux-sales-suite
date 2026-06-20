@@ -15,7 +15,7 @@ const props = withDefaults(
   { scopeKey: 'sales-filter', hideYear: false },
 )
 
-const { filter, options, optionsError, loadOptions, years, businessTypeChipOptions } = useFilters(props.scopeKey)
+const { filter, options, optionsError, loadOptions, years } = useFilters(props.scopeKey)
 
 // 棚割1・平均在庫日数（在日）は sales 系・mart 系の両方が解釈する
 // （mart は dim_product.attributes / fact_inventory_snapshot.stock_days に適用）。
@@ -30,7 +30,6 @@ function toSelectOptions(items: CodeName[]): { value: string; text: string }[] {
   }))
 }
 
-const departmentOptions = computed(() => toSelectOptions(options.value?.departments ?? []))
 const seasonOptions = computed(() => toSelectOptions(options.value?.seasons ?? []))
 const tanawari1Options = computed(() =>
   (options.value?.tanawari1 ?? []).map((t) => ({ value: t, text: t })),
@@ -51,24 +50,20 @@ function removeHinban(value: string): void {
       フィルタ選択肢の取得に失敗しました: {{ optionsError }}
     </p>
 
-    <!-- 並び順は 業態 → 部門 → 年度 → 季節（→ 棚割1 → 平均在庫日数）。 -->
-    <!-- 業態はタグ（チップ・複数選択）。少数の選択肢をワンタップで切り替えられるようにする。 -->
-    <div class="mb-3">
-      <CrossTabMultiSelectChips
-        label="業態"
-        :options="businessTypeChipOptions"
-        :model-value="filter.businessTypes"
-        empty-label="業態候補がありません"
-        @update:model-value="(v: string[]) => (filter.businessTypes = v)"
-      />
-    </div>
+    <!-- 業態・部門は全社サマリー標準（ScopeFilterTags・タグ）で共通化（要件 #11）。複数選択。 -->
+    <ScopeFilterTags
+      class="mb-3"
+      :business-types="options?.businessTypes ?? []"
+      :departments="options?.departments ?? []"
+      :selected-business-types="filter.businessTypes"
+      :selected-departments="filter.departments"
+      multiple
+      @update:selected-business-types="(v: string[]) => (filter.businessTypes = v)"
+      @update:selected-departments="(v: string[]) => (filter.departments = v)"
+    />
 
+    <!-- 年度 → 季節 → 棚割1 → 平均在庫日数。 -->
     <div class="grid grid-cols-1 gap-3 sm:grid-cols-2 lg:grid-cols-3">
-      <MultiSelect
-        v-model="filter.departments"
-        label="部門"
-        :options="departmentOptions"
-      />
       <div v-if="!hideYear">
         <label class="mb-1 block text-xs font-medium text-slate-500">
           年度（1月〜12月）
