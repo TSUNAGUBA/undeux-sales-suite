@@ -59,7 +59,9 @@ public sealed record InventoryActionsResponse(
     InventoryActionsKpi? PreviousKpi,
     InventoryStatusCounts StatusCounts,
     IReadOnlyList<InventoryActionItem> Actions,
-    IReadOnlyList<InventoryDepartmentHealthRow> ByDepartment);
+    IReadOnlyList<InventoryDepartmentHealthRow> ByDepartment,
+    // 品番3桁（product_code）別の健全性（品番ポジショニング用）。includeHinban=true 時のみ・在庫上位50。
+    IReadOnlyList<InventoryDepartmentHealthRow> ByHinban);
 
 /// <summary>明細行に結合された在庫アクションフラグ1件（SoT: inventory_action_flag）。</summary>
 /// <remarks>FlaggedStatus は付与時の判定状態。現在の Status（行側）と異なる場合、

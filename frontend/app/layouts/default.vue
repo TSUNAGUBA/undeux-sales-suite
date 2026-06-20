@@ -14,8 +14,10 @@
  * ヘッダーのみ）。カテゴリ判定は route.path から導出するため、ページ側の設定は不要。
  */
 const route = useRoute()
+const { accountType } = useAccountType()
 
-const currentCategory = computed(() => findCategoryByPath(route.path))
+// タブバーはアカウント種別で表示ページを絞り込む（ロール外ページのタブは出さない）。
+const currentCategory = computed(() => visibleCategoryForPath(route.path, accountType.value))
 </script>
 
 <template>

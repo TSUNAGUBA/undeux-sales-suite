@@ -12,6 +12,10 @@
  *
  * FilterBar（FilterControls）を使う各分析ページと共有 state（useFilters）を共有しつつ、
  * クロス集計向けに集計単位・表示集計値の設定を加えた専用パネルとして構成している。
+ *
+ * 注: 業態/部門は本パネルではタブ（フィルター/集計単位/表示集計値）内のコンパクトなチップ複数選択
+ * （CrossTabMultiSelectChips）を継続使用する。全社サマリー標準の ScopeFilterTags（ページ上部の
+ * 単独タグ群）は条件パネルのタブ構成と整合しないため、#11 の標準とは意図的に併存させている。
  */
 
 import { ArrowLeftRight, ChevronDown, Filter, RotateCcw, Search, Thermometer } from 'lucide-vue-next'
@@ -194,14 +198,15 @@ const summaryText = computed(() => {
   >
     <!-- ヘッダ -->
     <div class="flex items-center justify-between gap-3 px-4 py-2.5">
-      <div class="flex min-w-0 items-baseline gap-3">
-        <h1 class="text-lg font-bold text-slate-800">クロス集計</h1>
+      <div class="flex min-w-0 flex-col">
+        <h2 class="text-base font-bold text-slate-800">集計条件</h2>
         <span class="truncate text-xs text-slate-500">{{ summaryText }}</span>
       </div>
 
+      <!-- 折り畳みトグルは狭幅（縦積み）でのみ表示。デスクトップはサイドバーで常時開く。 -->
       <button
         type="button"
-        class="inline-flex shrink-0 items-center gap-1.5 rounded-lg border border-slate-300 px-3 py-1.5 text-xs text-slate-700 hover:bg-slate-50"
+        class="inline-flex shrink-0 items-center gap-1.5 rounded-lg border border-slate-300 px-3 py-1.5 text-xs text-slate-700 hover:bg-slate-50 lg:hidden"
         :aria-expanded="panelOpen"
         aria-controls="cross-tab-condition-panel-body"
         @click="togglePanel"
@@ -233,11 +238,11 @@ const summaryText = computed(() => {
       フィルタ選択肢の取得に失敗しました: {{ optionsError }}
     </p>
 
-    <!-- 本体 -->
+    <!-- 本体。狭幅は panelOpen で折り畳み、デスクトップ（lg+）はサイドバーとして常時表示する。 -->
     <div
-      v-if="panelOpen"
+      v-show="panelOpen"
       id="cross-tab-condition-panel-body"
-      class="border-t border-slate-100 px-4 pb-4 pt-3"
+      class="border-t border-slate-100 px-4 pb-4 pt-3 lg:!block"
     >
       <!-- 条件タブ（縦積みでの高さ消費を避け、1セクションずつ横幅広く操作して表を常に見える状態に保つ） -->
       <nav class="mb-3 border-b border-slate-200" aria-label="条件設定の種別切替">
@@ -272,7 +277,7 @@ const summaryText = computed(() => {
 
       <!-- フィルター（主要 + 詳細） -->
       <div v-show="conditionTab === 'filter'">
-        <div class="grid grid-cols-1 gap-x-4 sm:grid-cols-2 xl:grid-cols-3">
+        <div class="grid grid-cols-1 gap-x-4">
           <!-- 業態（タグ・複数選択） -->
           <details class="mb-2" open>
             <summary class="cursor-pointer text-sm text-slate-700">
@@ -439,7 +444,7 @@ const summaryText = computed(() => {
           <p class="mb-2 text-xs text-slate-400">
             変更すると即座に再集計されます。
           </p>
-          <div class="grid grid-cols-1 gap-3 sm:grid-cols-2 lg:max-w-3xl">
+          <div class="grid grid-cols-1 gap-3">
             <div>
               <label class="mb-1 block text-xs font-medium text-slate-500">行（縦軸）</label>
               <select
@@ -504,7 +509,7 @@ const summaryText = computed(() => {
             </p>
           </div>
 
-          <div class="grid grid-cols-1 gap-x-4 gap-y-1.5 sm:grid-cols-2 lg:grid-cols-3">
+          <div class="grid grid-cols-1 gap-x-4 gap-y-1.5">
             <label
               v-for="m in metrics"
               :key="m.key"

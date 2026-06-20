@@ -3,15 +3,20 @@ import type { ScatterDataset } from '~/components/ScatterChartCard.vue'
 import type { InventoryDepartmentHealthRow, InventoryThresholds } from '~/types/api'
 
 /**
- * 部門ポジショニング4象限（横軸: 消化率% / 縦軸: 平均在庫日数 / 円の大きさ: 在庫数）。
+ * ポジショニング4象限（横軸: 消化率% / 縦軸: 平均在庫日数 / 円の大きさ: 在庫数）。
  * 基準線は閾値（消化率の滞留上限・滞留在庫日数）を API レスポンスの thresholds から引く。
  * 散布図・回帰分析ページ（消化率×値引き率）の4象限ガイドと同じ表現パターン。
- * 部門ごとに1データセットにすることで、ツールチップに部門名が表示される。
+ * 1行＝1データセットにすることで、ツールチップに区分名（部門名／品番3桁）が表示される。
+ * `rows` は部門別／品番3桁別いずれの健全性行も受け取れる（同一形状）。`title` で軸名を切り替える。
  */
-const props = defineProps<{
-  departments: InventoryDepartmentHealthRow[]
-  thresholds: InventoryThresholds
-}>()
+const props = withDefaults(
+  defineProps<{
+    rows: InventoryDepartmentHealthRow[]
+    thresholds: InventoryThresholds
+    title?: string
+  }>(),
+  { title: 'ポジショニング' },
+)
 
 /** 象限の色（基準線に対する位置で決定）。scatter ページの判定色と同系。 */
 const QUADRANT_COLORS = {
@@ -37,7 +42,7 @@ function bubbleRadius(stock: number, maxStock: number): number {
 }
 
 const datasets = computed<ScatterDataset[]>(() => {
-  const departments = props.departments.filter((d) => d.stock > 0)
+  const departments = props.rows.filter((d) => d.stock > 0)
   if (departments.length === 0) return []
 
   const maxStock = Math.max(...departments.map((d) => d.stock))
@@ -99,7 +104,7 @@ const quadrantGuide = [
 <template>
   <div>
     <ScatterChartCard
-      title="部門ポジショニング"
+      :title="title"
       x-label="消化率（%）"
       y-label="平均在庫日数（日）"
       :datasets="datasets"

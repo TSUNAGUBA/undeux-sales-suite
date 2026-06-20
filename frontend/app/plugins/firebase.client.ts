@@ -13,9 +13,12 @@ export default defineNuxtPlugin(() => {
 
   const user = useState<AuthUser | null>('auth-user', () => null)
   const authReady = useState<boolean>('auth-ready', () => false)
+  const { applyFromClaim } = useAccountType()
 
   // Firebase 未設定時もアプリが停止しないよう、準備完了として扱う。
+  // 未設定でもデモ用のアカウント種別（localStorage 上書き）は反映する。
   if (!firebase.apiKey) {
+    applyFromClaim(undefined)
     authReady.value = true
     return { provide: { firebaseAuth: null as Auth | null } }
   }
@@ -27,10 +30,23 @@ export default defineNuxtPlugin(() => {
   })
   const auth = getAuth(app)
 
-  onAuthStateChanged(auth, (firebaseUser) => {
+  onAuthStateChanged(auth, async (firebaseUser) => {
     user.value = firebaseUser
       ? { uid: firebaseUser.uid, email: firebaseUser.email }
       : null
+    // アカウント種別はカスタムクレーム accountType を SoT とする（デモ上書きがあれば優先）。
+    // クレーム取得失敗（ネットワーク等）でも認証フロー全体は止めない（原則4: 非ブロッキング）。
+    if (firebaseUser) {
+      try {
+        const result = await firebaseUser.getIdTokenResult()
+        applyFromClaim(result.claims.accountType)
+      } catch (error) {
+        console.error('[firebase] アカウント種別クレームの取得に失敗しました:', error)
+        applyFromClaim(undefined)
+      }
+    } else {
+      applyFromClaim(undefined)
+    }
     authReady.value = true
   })
 

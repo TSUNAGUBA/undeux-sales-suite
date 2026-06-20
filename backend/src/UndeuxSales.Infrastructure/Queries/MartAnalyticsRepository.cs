@@ -326,7 +326,7 @@ public sealed class MartAnalyticsRepository
     /// 全社サマリーのダイジェストが共用する。判定閾値の SoT は <see cref="InventoryHealthRules"/>。
     /// </summary>
     public async Task<InventoryActionsResponse> GetInventoryActionsAsync(
-        SalesQueryFilter filter, CancellationToken cancellationToken = default)
+        SalesQueryFilter filter, bool includeHinban = false, CancellationToken cancellationToken = default)
     {
         filter.EnsureValid();
         await using var connection = await _connectionFactory.OpenConnectionAsync(cancellationToken);
@@ -342,6 +342,7 @@ public sealed class MartAnalyticsRepository
                 null, null, thresholds, EmptyActionsKpi, null,
                 new InventoryStatusCounts(0, 0, 0, 0, 0),
                 Array.Empty<InventoryActionItem>(),
+                Array.Empty<InventoryDepartmentHealthRow>(),
                 Array.Empty<InventoryDepartmentHealthRow>());
         }
 
@@ -398,6 +399,43 @@ public sealed class MartAnalyticsRepository
                 row.HealthyStock, row.CautionStock, row.StagnantStock, row.DormantStock))
             .ToList();
 
+        // 品番ポジショニング用の品番3桁（product_code）別健全性（要求時のみ・在庫上位50）。
+        // 部門別クエリと同形で GROUP BY 軸のみ product_code に差し替える。在庫ダイジェスト等の
+        // 既存呼び出し（includeHinban=false）には追加コストを掛けない。
+        IReadOnlyList<InventoryDepartmentHealthRow> byHinban = Array.Empty<InventoryDepartmentHealthRow>();
+        if (includeHinban)
+        {
+            var hinbanSql = cte + $"""
+
+                SELECT COALESCE(NULLIF(dp.product_code, ''), '(未設定)') AS key,
+                       COALESCE(NULLIF(dp.product_code, ''), '(未設定)') AS label,
+                       COALESCE(SUM(c.stock), 0)::bigint            AS stock,
+                       COALESCE(SUM(c.stock_value_cost), 0)::bigint AS stock_value_cost,
+                       COALESCE(SUM(c.cum_sales), 0)::bigint        AS cumulative_sales,
+                       COALESCE(SUM(c.cum_delivery), 0)::bigint     AS cumulative_delivery,
+                       COALESCE(AVG(c.stock_days), 0)::float8       AS average_stock_days,
+                       COALESCE(SUM(c.stock) FILTER (WHERE c.status = '{InventoryHealthRules.StatusHealthy}'), 0)::bigint  AS healthy_stock,
+                       COALESCE(SUM(c.stock) FILTER (WHERE c.status = '{InventoryHealthRules.StatusCaution}'), 0)::bigint  AS caution_stock,
+                       COALESCE(SUM(c.stock) FILTER (WHERE c.status = '{InventoryHealthRules.StatusStagnant}'), 0)::bigint AS stagnant_stock,
+                       COALESCE(SUM(c.stock) FILTER (WHERE c.status = '{InventoryHealthRules.StatusDormant}'), 0)::bigint  AS dormant_stock
+                FROM classified c
+                JOIN mart.dim_sku     ds ON ds.sku_key     = c.sku_key
+                JOIN mart.dim_product dp ON dp.product_key = ds.product_key
+                GROUP BY COALESCE(NULLIF(dp.product_code, ''), '(未設定)')
+                ORDER BY stock DESC, key
+                LIMIT 50;
+                """;
+            var hinbanRaw = (await connection.QueryAsync<InventoryDepartmentHealthRawRow>(
+                new CommandDefinition(hinbanSql, parameters, cancellationToken: cancellationToken))).ToList();
+            byHinban = hinbanRaw
+                .Select(row => new InventoryDepartmentHealthRow(
+                    row.Key, row.Label, row.Stock, row.StockValueCost,
+                    AggregateMath.Ratio(row.CumulativeSales, row.CumulativeDelivery),
+                    row.AverageStockDays,
+                    row.HealthyStock, row.CautionStock, row.StagnantStock, row.DormantStock))
+                .ToList();
+        }
+
         var actions = InventoryHealthRules.BuildActions(new InventoryActionInput(
             aggregate.StagnantCount,
             aggregate.StagnantWithOrderCount,
@@ -416,8 +454,167 @@ public sealed class MartAnalyticsRepository
             new InventoryStatusCounts(
                 aggregate.HealthyCount, aggregate.CautionCount,
                 aggregate.StagnantCount, aggregate.DormantCount, aggregate.TotalCount),
-            actions, byDepartment);
+            actions, byDepartment, byHinban);
     }
+
+    /// <summary>
+    /// 特定品番の日次分析用に、日次系列（売上＋東京の平均気温）を返す。売上は sales_weekly の
+    /// 曜日別7列を実日付へ展開した派生（QueryDailyTrend と同方式）。気温は東京（standard）の
+    /// dim_climate 実測を優先し、未カバー日は標準気候（平年値）へフォールバックする。
+    /// </summary>
+    public async Task<DailySeriesResponse> GetDailySeriesAsync(
+        SalesQueryFilter filter, CancellationToken cancellationToken = default)
+    {
+        filter.EnsureValid();
+        await using var connection = await _connectionFactory.OpenConnectionAsync(cancellationToken);
+
+        var parameters = new DynamicParameters();
+        SalesFilterSql.AddParameters(filter, parameters);
+
+        var weeklySums = new List<string>();
+        var dailyValues = new List<string>();
+        for (var day = 1; day <= WeekCalendar.DaysInWeek; day++)
+        {
+            var quantity = SalesMetricSql.DailyQuantity(day);
+            weeklySums.Add($"SUM({quantity})::bigint AS q{day}");
+            weeklySums.Add($"SUM({SalesMetricSql.Amount(quantity)})::bigint AS a{day}");
+            weeklySums.Add($"SUM({SalesMetricSql.GrossProfit(quantity)})::bigint AS g{day}");
+            dailyValues.Add($"({day}, q{day}, a{day}, g{day})");
+        }
+
+        var sql = $"""
+            WITH per_week AS (
+                SELECT sw.import_date,
+                       {string.Join(",\n                       ", weeklySums)}
+                FROM sales_weekly sw
+                {SalesFilterSql.WhereClause(filter, "sw")}
+                GROUP BY sw.import_date
+            ),
+            expanded AS (
+                SELECT (per_week.import_date - 8 + d.day_index)::date AS date,
+                       d.quantity, d.amount, d.gross_profit
+                FROM per_week
+                CROSS JOIN LATERAL (VALUES
+                    {string.Join(",\n                    ", dailyValues)}
+                ) AS d(day_index, quantity, amount, gross_profit)
+            )
+            SELECT e.date, e.quantity, e.amount, e.gross_profit,
+                   dc.temp_avg AS temp_avg
+            FROM expanded e
+            LEFT JOIN mart.dim_climate dc
+                ON dc.area_code = 'standard' AND dc.the_date = e.date
+            ORDER BY e.date;
+            """;
+
+        var rawRows = (await connection.QueryAsync<DailySeriesRawRow>(
+            new CommandDefinition(sql, parameters, cancellationToken: cancellationToken))).ToList();
+
+        var points = rawRows.Select(r => new DailySeriesPoint(
+                r.Date, r.Quantity, r.Amount, r.GrossProfit,
+                r.TempAvg ?? ClimateModel.Daily(TemperatureArea.Standard, r.Date).Average))
+            .ToList();
+
+        return new DailySeriesResponse(ClimateModel.CityName(TemperatureArea.Standard), points);
+    }
+
+    /// <summary>
+    /// 帳票区分（売発注/情報発注）の前週比較で、品番3桁×単品4桁の SKU 遷移区分を返す。
+    /// 当週・前週は絞り込み後の sales_weekly に存在する最新2取込週。区分は空白（全/半角・前後）を
+    /// 正規化してから比較する。当週に在るSKUは new/unchanged/sale-to-info/info-to-sale、前週のみのSKUは dropped。
+    /// </summary>
+    public async Task<ChohyoTransitionResponse> GetChohyoTransitionAsync(
+        SalesQueryFilter filter, CancellationToken cancellationToken = default)
+    {
+        filter.EnsureValid();
+        await using var connection = await _connectionFactory.OpenConnectionAsync(cancellationToken);
+
+        var parameters = new DynamicParameters();
+        SalesFilterSql.AddParameters(filter, parameters);
+
+        // 先に絞り込み後の最新2取込週を確定する（import_date 索引が効く軽量クエリ）。本体の scoped を
+        // 当該2週へ限定することで、期間=全期間でも sales_weekly 全件スキャン＋全行 regexp_replace を避ける。
+        var weeks = (await connection.QueryAsync<DateOnly>(new CommandDefinition(
+            $"SELECT DISTINCT sw.import_date FROM sales_weekly sw {SalesFilterSql.WhereClause(filter, "sw")} ORDER BY sw.import_date DESC LIMIT 2",
+            parameters, cancellationToken: cancellationToken))).ToList();
+        if (weeks.Count == 0)
+        {
+            return new ChohyoTransitionResponse(null, null, Array.Empty<ChohyoTransitionRow>(), false);
+        }
+        var currentWeek = weeks[0];
+        DateOnly? previousWeek = weeks.Count > 1 ? weeks[1] : null;
+
+        parameters.Add("weeks", weeks);
+        parameters.Add("curWeek", currentWeek);
+        parameters.Add("prevWeek", previousWeek);
+
+        // 帳票区分名の空白正規化（前後空白・全角/半角スペース除去）。元データの表記揺れに対応。
+        const string norm = "regexp_replace(sw.chohyo_kubun_name, '[[:space:]　]', '', 'g')";
+        // 上限超過の可視化のため 1 件多く取得し、超過時は切り詰めて Truncated=true を返す。
+        const int rowLimit = 2000;
+
+        var sql = $"""
+            WITH scoped AS (
+                SELECT sw.import_date, sw.gyotai_code, sw.shohin_kigou, sw.hinban_code, sw.tanpin_code,
+                       sw.hinmei, {norm} AS kubun, ({SalesMetricSql.WeekQuantity}) AS quantity, sw.zaikosu
+                FROM sales_weekly sw
+                WHERE sw.import_date = ANY(@weeks){SalesFilterSql.AndClause(filter, "sw")}
+            ),
+            cur AS (
+                SELECT gyotai_code, shohin_kigou, hinban_code, tanpin_code,
+                       MAX(hinmei) AS hinmei,
+                       COALESCE(MAX(kubun), '') AS kubun,
+                       COALESCE(SUM(quantity), 0)::bigint AS quantity,
+                       COALESCE(SUM(zaikosu), 0)::bigint  AS stock
+                FROM scoped
+                WHERE import_date = @curWeek
+                GROUP BY gyotai_code, shohin_kigou, hinban_code, tanpin_code
+            ),
+            prev AS (
+                SELECT gyotai_code, shohin_kigou, hinban_code, tanpin_code,
+                       COALESCE(MAX(kubun), '') AS kubun
+                FROM scoped
+                WHERE import_date = @prevWeek
+                GROUP BY gyotai_code, shohin_kigou, hinban_code, tanpin_code
+            )
+            SELECT COALESCE(cur.gyotai_code, prev.gyotai_code)   AS gyotai_code,
+                   COALESCE(cur.shohin_kigou, prev.shohin_kigou) AS shohin_kigou,
+                   COALESCE(cur.hinban_code, prev.hinban_code)   AS hinban_code,
+                   COALESCE(cur.tanpin_code, prev.tanpin_code)   AS tanpin_code,
+                   COALESCE(cur.hinmei, '')   AS hinmei,
+                   COALESCE(cur.kubun, '')    AS current_kubun,
+                   COALESCE(prev.kubun, '')   AS previous_kubun,
+                   CASE
+                       WHEN cur.gyotai_code IS NULL THEN 'dropped'
+                       WHEN prev.gyotai_code IS NULL THEN 'new'
+                       WHEN prev.kubun = '売発注' AND cur.kubun = '情報発注' THEN 'sale-to-info'
+                       WHEN prev.kubun = '情報発注' AND cur.kubun = '売発注' THEN 'info-to-sale'
+                       ELSE 'unchanged'
+                   END AS transition,
+                   COALESCE(cur.quantity, 0)::bigint AS quantity,
+                   COALESCE(cur.stock, 0)::bigint    AS stock
+            FROM cur
+            FULL OUTER JOIN prev
+                ON cur.gyotai_code  = prev.gyotai_code
+               AND cur.shohin_kigou = prev.shohin_kigou
+               AND cur.hinban_code  = prev.hinban_code
+               AND cur.tanpin_code  = prev.tanpin_code
+            ORDER BY hinban_code, tanpin_code
+            LIMIT {rowLimit + 1};
+            """;
+
+        var rows = (await connection.QueryAsync<ChohyoTransitionRow>(
+            new CommandDefinition(sql, parameters, cancellationToken: cancellationToken))).ToList();
+        var truncated = rows.Count > rowLimit;
+        if (truncated)
+        {
+            rows = rows.Take(rowLimit).ToList();
+        }
+
+        return new ChohyoTransitionResponse(currentWeek, previousWeek, rows, truncated);
+    }
+
+    private sealed record DailySeriesRawRow(
+        DateOnly Date, long Quantity, long Amount, long GrossProfit, double? TempAvg);
 
     /// <summary>
     /// 在庫アクション明細（SKU 単位・最新週スナップショット基準）をページングで取得する。
@@ -1600,12 +1797,18 @@ public sealed class MartAnalyticsRepository
                 "COALESCE(NULLIF(dp.product_code, ''), '(未設定)')",
                 "COALESCE(NULLIF(dp.product_name, ''), NULLIF(dp.product_code, ''), '(未設定)')",
                 "Product"),
+            // 品番3桁（product_code）でグルーピングし、ラベルもコードを用いる軸。
+            // "product" がコードで集計しつつ品名でラベル付けするのに対し、本軸はコード表示（品番3桁分析用）。
+            "hinban" => (
+                "COALESCE(NULLIF(dp.product_code, ''), '(未設定)')",
+                "COALESCE(NULLIF(dp.product_code, ''), '(未設定)')",
+                "Hinban"),
             "brand" => (
                 "COALESCE(NULLIF(dp.brand, ''), '(未設定)')",
                 "COALESCE(NULLIF(dp.brand, ''), '(未設定)')",
                 "Brand"),
             _ => throw new AppException(ErrorCodes.UnknownDimension, 400,
-                $"集計軸 '{dimension}' は不正です（department / businessType / season / product / brand）。"),
+                $"集計軸 '{dimension}' は不正です（department / businessType / season / product / hinban / brand）。"),
         };
     }
 

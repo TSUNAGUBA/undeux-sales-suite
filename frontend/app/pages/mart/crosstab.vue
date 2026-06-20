@@ -318,61 +318,71 @@ onMounted(async () => {
       </p>
     </div>
 
-    <CrossTabConditionPanel
-      :dimensions="DIMENSIONS"
-      :metrics="METRICS"
-      :row-dimension-key="rowDimensionKey"
-      :column-dimension-key="columnDimensionKey"
-      :selected-metrics="selectedMetrics"
-      :metric-display-mode="metricDisplayMode"
-      :available-metrics="availableMetrics"
-      :filter-state="filter"
-      :temperature-area="temperatureArea"
-      :has-time-axis="hasTimeAxis"
-      :options-error="optionsError"
-      :available-years="years"
-      :loading="loading"
-      @update:row-dimension-key="(v) => (rowDimensionKey = v as CrosstabDimensionKey)"
-      @update:column-dimension-key="(v) => (columnDimensionKey = v as CrosstabDimensionKey)"
-      @update:selected-metrics="onUpdateSelectedMetrics"
-      @update:metric-display-mode="(v) => (metricDisplayMode = v)"
-      @update:filter-state="(v) => assignFilter(v)"
-      @update:temperature-area="(v) => (temperatureArea = v)"
-      @swap-dimensions="swapDimensions"
-      @apply="applyAndLoad"
-      @reset="resetAndLoad"
-      @remove-hinban="removeHinban"
-    />
+    <!--
+      左:条件パネル（デスクトップは固定幅サイドバー・自前スクロール）× 右:マトリクス（自前スクロール）。
+      フィルタを操作しながらマトリクスの変化を常時目視できるようにする（要件 #8）。狭幅では縦積み
+      （パネルは折り畳み可）。パネルをサイドバーの独立スクロール領域に置くことで、従来の単一カラム
+      flex で発生していた「パネルが圧縮され overflow-hidden で見切れる」問題も解消する。
+    -->
+    <div class="flex min-h-0 flex-1 flex-col gap-3 lg:flex-row lg:gap-4">
+      <div class="lg:w-80 lg:shrink-0 lg:overflow-y-auto xl:w-96">
+        <CrossTabConditionPanel
+          :dimensions="DIMENSIONS"
+          :metrics="METRICS"
+          :row-dimension-key="rowDimensionKey"
+          :column-dimension-key="columnDimensionKey"
+          :selected-metrics="selectedMetrics"
+          :metric-display-mode="metricDisplayMode"
+          :available-metrics="availableMetrics"
+          :filter-state="filter"
+          :temperature-area="temperatureArea"
+          :has-time-axis="hasTimeAxis"
+          :options-error="optionsError"
+          :available-years="years"
+          :loading="loading"
+          @update:row-dimension-key="(v) => (rowDimensionKey = v as CrosstabDimensionKey)"
+          @update:column-dimension-key="(v) => (columnDimensionKey = v as CrosstabDimensionKey)"
+          @update:selected-metrics="onUpdateSelectedMetrics"
+          @update:metric-display-mode="(v) => (metricDisplayMode = v)"
+          @update:filter-state="(v) => assignFilter(v)"
+          @update:temperature-area="(v) => (temperatureArea = v)"
+          @swap-dimensions="swapDimensions"
+          @apply="applyAndLoad"
+          @reset="resetAndLoad"
+          @remove-hinban="removeHinban"
+        />
+      </div>
 
-    <div class="flex min-h-0 flex-1 flex-col gap-2">
-      <StatusBlock
-        :loading="loading"
-        :error="errorMessage"
-        :empty="isBuilt && (!data || data.rowLabels.length === 0)"
-        empty-message="該当するデータがありません。フィルタを見直してください。"
-      >
-        <MartNotBuiltNotice v-if="!isBuilt" />
-        <div v-else class="flex h-full flex-col gap-2">
-          <div class="shrink-0 flex flex-wrap items-center justify-between gap-2 text-xs text-slate-500">
-            <p>
-              行 {{ data?.rowLabels.length ?? 0 }} ／ 列 {{ data?.columnLabels.length ?? 0 }}
-              <span v-if="data?.latestWeek"> ／ 最新取込週: {{ data.latestWeek }}（在庫スナップショット基準）</span>
-              <span v-if="hasTimeAxis"> ／ 在日・消化率・店頭在庫は時間軸との組合せでは表示されません</span>
-            </p>
-            <p v-if="cellCountWarning" class="rounded bg-amber-50 px-2 py-1 text-xs text-amber-700">
-              {{ cellCountWarning }}
-            </p>
+      <div class="flex min-h-0 flex-1 flex-col gap-2">
+        <StatusBlock
+          :loading="loading"
+          :error="errorMessage"
+          :empty="isBuilt && (!data || data.rowLabels.length === 0)"
+          empty-message="該当するデータがありません。フィルタを見直してください。"
+        >
+          <MartNotBuiltNotice v-if="!isBuilt" />
+          <div v-else class="flex h-full flex-col gap-2">
+            <div class="shrink-0 flex flex-wrap items-center justify-between gap-2 text-xs text-slate-500">
+              <p>
+                行 {{ data?.rowLabels.length ?? 0 }} ／ 列 {{ data?.columnLabels.length ?? 0 }}
+                <span v-if="data?.latestWeek"> ／ 最新取込週: {{ data.latestWeek }}（在庫スナップショット基準）</span>
+                <span v-if="hasTimeAxis"> ／ 在日・消化率・店頭在庫は時間軸との組合せでは表示されません</span>
+              </p>
+              <p v-if="cellCountWarning" class="rounded bg-amber-50 px-2 py-1 text-xs text-amber-700">
+                {{ cellCountWarning }}
+              </p>
+            </div>
+
+            <CrossTabTable
+              v-if="data"
+              :data="data"
+              :selected-metrics="selectedMetrics"
+              :metrics="METRICS"
+              :display-mode="metricDisplayMode"
+            />
           </div>
-
-          <CrossTabTable
-            v-if="data"
-            :data="data"
-            :selected-metrics="selectedMetrics"
-            :metrics="METRICS"
-            :display-mode="metricDisplayMode"
-          />
-        </div>
-      </StatusBlock>
+        </StatusBlock>
+      </div>
     </div>
   </div>
 </template>

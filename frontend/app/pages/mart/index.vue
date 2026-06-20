@@ -39,10 +39,11 @@ import type {
   KpiCardItem,
   MartBreakdownResponse,
   MartSummaryResponse,
+  TrendPoint,
 } from '~/types/api'
 import type { ExecutiveSummary } from '~/utils/executiveSummary'
 
-useHead({ title: '全社サマリー | UndeuxSales' })
+useHead({ title: '全社サマリー（月次） | UndeuxSales' })
 
 // mart 専用のフィルタスコープ。既存 sales 系（'sales-filter'）とは分離する。
 const MART_SCOPE = 'mart-filter'
@@ -110,12 +111,13 @@ const scopeLabel = computed(() => {
   return `${bt} × ${dept}`
 })
 
-function setBusinessType(code: string | null): void {
-  filter.value.businessTypes = code ? [code] : []
+// 業態/部門は共通の ScopeFilterTags（全社サマリー標準・単一選択）から受け取る。
+function onBusinessTypesChange(codes: string[]): void {
+  filter.value.businessTypes = codes
   void load()
 }
-function setDepartment(code: string | null): void {
-  filter.value.departments = code ? [code] : []
+function onDepartmentsChange(codes: string[]): void {
+  filter.value.departments = codes
   void load()
 }
 
@@ -228,13 +230,41 @@ const swotPanels = computed<SwotPanel[]>(() => {
 // ---------------------------------------------------------------
 // チャート・テーブル
 // ---------------------------------------------------------------
-const trendLabels = computed(() => (summary.value?.weeklyTrend ?? []).map((point) => point.date))
+// 月次売上推移（本年度 vs 前年度・前年同月比）。週次トレンドを月へ集計して2本の曲線を並べる。
+const MONTH_LABELS = ['1月', '2月', '3月', '4月', '5月', '6月', '7月', '8月', '9月', '10月', '11月', '12月']
+
+/** 週次トレンド（TrendPoint[]）を月別売上金額（12要素）へ集計する。 */
+function monthlyAmounts(trend: TrendPoint[] | undefined): number[] {
+  const byMonth = new Array<number>(12).fill(0)
+  for (const point of trend ?? []) {
+    const month = Number.parseInt(point.date.slice(5, 7), 10)
+    if (month >= 1 && month <= 12) {
+      byMonth[month - 1] = (byMonth[month - 1] ?? 0) + point.amount
+    }
+  }
+  return byMonth
+}
+
+const hasTrend = computed(() => (summary.value?.weeklyTrend?.length ?? 0) > 0)
+const trendLabels = MONTH_LABELS
 const trendSeries = computed(() => {
-  const trend = summary.value?.weeklyTrend ?? []
-  return [
-    { label: '売上金額', data: trend.map((p) => p.amount), color: '#4f46e5' },
-    { label: '粗利', data: trend.map((p) => p.grossProfit), color: '#059669' },
+  const year = filter.value.year
+  const series = [
+    {
+      label: year !== null ? `${year}年（本年度）` : '本期間',
+      data: monthlyAmounts(summary.value?.weeklyTrend),
+      color: '#4f46e5',
+    },
   ]
+  // 前年同月比較は年度選択時のみ。前年サマリー（補助・非ブロッキング取得）が揃ったら2本目を追加。
+  if (year !== null && summaryPrev.value) {
+    series.push({
+      label: `${year - 1}年（前年度）`,
+      data: monthlyAmounts(summaryPrev.value.weeklyTrend),
+      color: '#94a3b8',
+    })
+  }
+  return series
 })
 
 const breakdownLabels = computed(() => (breakdown.value?.rows ?? []).map((r) => r.label))
@@ -357,9 +387,9 @@ onMounted(async () => {
 <template>
   <div class="space-y-4">
     <div>
-      <h1 class="text-xl font-bold text-slate-800">全社サマリー</h1>
+      <h1 class="text-xl font-bold text-slate-800">全社サマリー（月次）</h1>
       <p class="text-sm text-slate-500">
-        業態・部門を選んで、主要指標とルールベースの所見（エグゼクティブサマリー）をレポート形式で確認します。
+        業態・部門を選んで、主要指標とルールベースの所見（エグゼクティブサマリー）を月次・前年同月比でレポート確認します。
         分析用ディメンショナルモデル（mart）から集計しています。
       </p>
     </div>
@@ -396,72 +426,16 @@ onMounted(async () => {
       フィルタ選択肢の取得に失敗しました: {{ optionsError }}
     </p>
 
-    <!-- 業態（セグメント）タブ -->
-    <nav class="border-b border-slate-200" aria-label="業態の切替">
-      <ul class="scrollbar-hide -mb-px flex gap-1 overflow-x-auto">
-        <li class="shrink-0">
-          <button
-            type="button"
-            class="whitespace-nowrap border-b-2 px-3 py-2.5 text-sm font-medium transition-colors"
-            :class="
-              activeBusinessType === null
-                ? 'border-indigo-600 text-indigo-700'
-                : 'border-transparent text-slate-500 hover:border-slate-300 hover:text-slate-800'
-            "
-            :aria-current="activeBusinessType === null ? 'page' : undefined"
-            @click="setBusinessType(null)"
-          >
-            すべて
-          </button>
-        </li>
-        <li v-for="bt in options?.businessTypes ?? []" :key="bt.code" class="shrink-0">
-          <button
-            type="button"
-            class="whitespace-nowrap border-b-2 px-3 py-2.5 text-sm font-medium transition-colors"
-            :class="
-              activeBusinessType === bt.code
-                ? 'border-indigo-600 text-indigo-700'
-                : 'border-transparent text-slate-500 hover:border-slate-300 hover:text-slate-800'
-            "
-            :aria-current="activeBusinessType === bt.code ? 'page' : undefined"
-            @click="setBusinessType(bt.code)"
-          >
-            {{ bt.shortName ?? bt.name ?? bt.code }}
-          </button>
-        </li>
-      </ul>
-    </nav>
-
-    <!-- 部門（サブセグメント）チップ ＋ 期間（年度） -->
-    <div class="flex flex-wrap items-center gap-2">
-      <span class="text-xs font-medium text-slate-400">部門</span>
-      <button
-        type="button"
-        class="inline-flex items-center rounded-full border px-3 py-1.5 text-xs font-medium transition-colors"
-        :class="
-          activeDepartment === null
-            ? 'border-indigo-500 bg-indigo-50 text-indigo-700'
-            : 'border-slate-200 bg-white text-slate-600 hover:border-indigo-300'
-        "
-        @click="setDepartment(null)"
-      >
-        すべて
-      </button>
-      <button
-        v-for="dept in options?.departments ?? []"
-        :key="dept.code"
-        type="button"
-        class="inline-flex items-center rounded-full border px-3 py-1.5 text-xs font-medium transition-colors"
-        :class="
-          activeDepartment === dept.code
-            ? 'border-indigo-500 bg-indigo-50 text-indigo-700'
-            : 'border-slate-200 bg-white text-slate-600 hover:border-indigo-300'
-        "
-        @click="setDepartment(dept.code)"
-      >
-        {{ dept.name ?? dept.code }}
-      </button>
-      <div class="ml-auto flex items-center gap-2">
+    <!-- 業態（タグ）＋ 部門（タグ）＋ 期間（年度）。全社サマリーの標準フィルタ（ScopeFilterTags／単一選択）。 -->
+    <ScopeFilterTags
+      :business-types="options?.businessTypes ?? []"
+      :departments="options?.departments ?? []"
+      :selected-business-types="filter.businessTypes"
+      :selected-departments="filter.departments"
+      @update:selected-business-types="onBusinessTypesChange"
+      @update:selected-departments="onDepartmentsChange"
+    >
+      <template #trailing>
         <label class="text-xs font-medium text-slate-400">期間（年度）</label>
         <select
           v-model="filter.year"
@@ -471,8 +445,8 @@ onMounted(async () => {
           <option :value="null">全期間</option>
           <option v-for="y in years" :key="y" :value="y">{{ y }}年</option>
         </select>
-      </div>
-    </div>
+      </template>
+    </ScopeFilterTags>
 
     <StatusBlock :loading="loading" :error="errorMessage">
       <div
@@ -570,10 +544,10 @@ onMounted(async () => {
           在庫アクションの取得に失敗しました（サマリーの表示には影響ありません）。
         </p>
 
-        <!-- 週次売上推移 -->
+        <!-- 月次売上推移（本年度 vs 前年度・前年同月比） -->
         <LineChartCard
-          v-if="trendLabels.length > 0"
-          title="週次売上推移グラフ"
+          v-if="hasTrend"
+          title="月次売上推移グラフ（本年度 vs 前年度・前年同月比）"
           :labels="trendLabels"
           :series="trendSeries"
         />

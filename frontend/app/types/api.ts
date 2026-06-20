@@ -6,6 +6,18 @@ export interface AuthUser {
   email: string | null
 }
 
+/**
+ * アカウント種別。
+ * - `supplier`（サプライヤー＝メーカー）: 自社商品の売上・在庫の管理/分析を行う。既存の「売れた結果を見る」画面群。
+ * - `buyer`（バイヤー＝小売）: 全サプライヤー横断で仕入予算・OTB を管理し、「未来の仕入意思決定」を行う。
+ *
+ * SoT は Firebase カスタムクレーム `accountType`（バックエンド発行）。未設定時の既定は `supplier`
+ * （既存ユーザー＝メーカー想定）。本プロダクトはモック段階のため、デモ用にローカル切替も許容する
+ * （`composables/useAccountType.ts`）。データスコープの物理的分離（メーカーは自社のみ）はマルチベンダ
+ * データ／バックエンド強制が前提のため後続。現状はナビゲーション/画面のロール出し分けで表現する。
+ */
+export type AccountType = 'supplier' | 'buyer'
+
 /** KPIカード1件の表示データ。 */
 export interface KpiCardItem {
   label: string
@@ -198,6 +210,8 @@ export interface InventoryActionsResponse {
   statusCounts: InventoryStatusCounts
   actions: InventoryActionItem[]
   byDepartment: InventoryDepartmentHealthRow[]
+  /** 品番3桁（product_code）別の健全性（品番ポジショニング用。includeHinban=true 時のみ・在庫上位50）。 */
+  byHinban: InventoryDepartmentHealthRow[]
 }
 
 /**
@@ -821,6 +835,56 @@ export interface MartIntroductionOptions {
   managers: string[]
   /** 服種＝品番CD の実値。 */
   hinbans: string[]
+}
+
+// ============================================================
+// 週間モニタリング — 日次分析（特定品番）
+// ============================================================
+
+/** 日次系列の1点（売上＋東京の平均気温）。気温は dim_climate 実測優先・未カバーは平年値。 */
+export interface DailySeriesPoint {
+  /** 実日付（yyyy-MM-dd）。 */
+  date: string
+  quantity: number
+  amount: number
+  grossProfit: number
+  /** 平均気温（東京）。 */
+  tempAvg: number
+}
+
+/** GET /api/mart/daily-series のレスポンス（気温参照都市は常に東京）。 */
+export interface DailySeriesResponse {
+  areaCity: string
+  points: DailySeriesPoint[]
+}
+
+/**
+ * 帳票区分の前週比較による SKU 遷移区分。
+ * new=当週新規 / unchanged=変化なし / sale-to-info=売→情 / info-to-sale=情→売 / dropped=情売→無。
+ */
+export type ChohyoTransitionKind = 'new' | 'unchanged' | 'sale-to-info' | 'info-to-sale' | 'dropped'
+
+/** 帳票区分遷移の1行（SKU＝業態×記号×品番3桁×単品4桁）。 */
+export interface ChohyoTransitionRow {
+  gyotaiCode: string
+  shohinKigou: string
+  hinbanCode: string
+  tanpinCode: string
+  hinmei: string
+  currentKubun: string
+  previousKubun: string
+  transition: ChohyoTransitionKind
+  quantity: number
+  stock: number
+}
+
+/** GET /api/mart/chohyo-transition のレスポンス。 */
+export interface ChohyoTransitionResponse {
+  currentWeek: string | null
+  previousWeek: string | null
+  rows: ChohyoTransitionRow[]
+  /** 行数が上限（2000）で切り詰められたか（品番未指定などで多数該当時）。 */
+  truncated: boolean
 }
 
 /** mart（スタースキーマ）の構築状態。フロントの鮮度表示・再構築UIに使う。 */

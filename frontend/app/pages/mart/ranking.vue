@@ -72,7 +72,8 @@ function defaultWeights(): CompositeWeight[] {
 // ---------------------------------------------------------------
 // ローカル state（自前コントロール）
 // ---------------------------------------------------------------
-const dimensionKey = ref<RankingDimensionKey>('hinban')
+// 集計軸の既定は「商品記号」（要件 #9）。RANKING_DIMENSIONS の先頭でもある。
+const dimensionKey = ref<RankingDimensionKey>('shohinKigo')
 const sortKey = ref<RankingSortKey>('amount')
 const order = ref<RankingOrder>('top')
 const topN = ref<number>(20)

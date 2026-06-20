@@ -80,20 +80,43 @@ public sealed class ProductMasterRepository
         // page は外部入力のため long で乗算し、巨大値でも負の OFFSET（int オーバーフロー）にしない。
         parameters.Add("offset", (long)(page - 1) * pageSize);
 
-        // SKU 統計・代表画像・売上実績（sales_weekly）を 1 商品 1 行に集約する。
-        // 売上実績は自然キー（業態×商品記号×品番）で結合する。売上数量は全期間合計、
-        // 店頭在庫数（zaikosu）と平均在庫日数（在日 zainiti の平均）は最新取込週スナップショット基準、
-        // 季節は最頻値（mode）。マスタにのみ存在し売上実績の無い商品は 0 / 空文字になる。
+        // パフォーマンス: 先に m_product をフィルタ＋ページング（page_products）してから、その
+        // ページ分（呼出側既定12件・サーバ既定 DefaultPageSize=24 件）の自然キーに対してのみ
+        // sales_weekly / m_product_sku を集約する。
+        // 旧実装は sales_weekly（約160万行）と m_product_sku 全体を毎リクエスト集約してから JOIN して
+        // いたため一覧表示が遅かった。集約対象をページ内商品に限定することで、自然キー索引
+        // （sales_weekly(gyotai_code, shohin_kigou, hinban_code, import_date)）を活かし大幅に高速化する。
+        // 結果（各商品の集計値・総件数）は旧実装と同一。
+        //
+        // total_count は page_products 内の COUNT(*) OVER ()（LIMIT 前のフィルタ一致全件）で算出する。
         var sql = $"""
-            WITH sku_stats AS (
-                SELECT product_id,
-                       COUNT(DISTINCT unit_cd)                          AS sku_count,
-                       COUNT(DISTINCT color_name)                       AS color_count,
-                       COUNT(DISTINCT size_name)                        AS size_count,
-                       MIN(sales_price) FILTER (WHERE sales_price > 0)  AS min_sales_price,
-                       MAX(sales_price) FILTER (WHERE sales_price > 0)  AS max_sales_price
-                FROM m_product_sku
-                GROUP BY product_id
+            WITH page_products AS (
+                SELECT mp.product_id,
+                       mp.business_category_cd,
+                       mp.business_category_sign,
+                       mp.division_cd,
+                       mp.division_name,
+                       mp.product_name,
+                       mp.brand,
+                       mp.product_sign,
+                       mp.manager,
+                       mp.product_type_crd,
+                       (COUNT(*) OVER ())::int AS total_count
+                FROM m_product mp
+                {ProductMasterFilterSql.WhereClause(filter, "mp")}
+                ORDER BY mp.business_category_cd, mp.product_sign, mp.product_type_crd, mp.product_id
+                LIMIT @limit OFFSET @offset
+            ),
+            sku_stats AS (
+                SELECT s.product_id,
+                       COUNT(DISTINCT s.unit_cd)                            AS sku_count,
+                       COUNT(DISTINCT s.color_name)                         AS color_count,
+                       COUNT(DISTINCT s.size_name)                          AS size_count,
+                       MIN(s.sales_price) FILTER (WHERE s.sales_price > 0)  AS min_sales_price,
+                       MAX(s.sales_price) FILTER (WHERE s.sales_price > 0)  AS max_sales_price
+                FROM m_product_sku s
+                WHERE s.product_id IN (SELECT product_id FROM page_products)
+                GROUP BY s.product_id
             ),
             sales_latest AS (
                 SELECT MAX(import_date) AS w FROM sales_weekly
@@ -107,18 +130,22 @@ public sealed class ProductMasterRepository
                        COALESCE(AVG(sw.zainiti) FILTER (WHERE sw.import_date = (SELECT w FROM sales_latest)), 0)::float8 AS average_stock_days,
                        COALESCE(mode() WITHIN GROUP (ORDER BY sw.kisetsu), '') AS kisetsu
                 FROM sales_weekly sw
+                JOIN page_products pp
+                  ON sw.gyotai_code  = pp.business_category_cd
+                 AND sw.shohin_kigou = pp.product_sign
+                 AND sw.hinban_code  = pp.product_type_crd
                 GROUP BY sw.gyotai_code, sw.shohin_kigou, sw.hinban_code
             )
-            SELECT mp.product_id,
-                   mp.business_category_cd,
-                   mp.business_category_sign,
-                   mp.division_cd,
-                   mp.division_name,
-                   mp.product_name,
-                   mp.brand,
-                   mp.product_sign,
-                   mp.manager,
-                   mp.product_type_crd,
+            SELECT pp.product_id,
+                   pp.business_category_cd,
+                   pp.business_category_sign,
+                   pp.division_cd,
+                   pp.division_name,
+                   pp.product_name,
+                   pp.brand,
+                   pp.product_sign,
+                   pp.manager,
+                   pp.product_type_crd,
                    COALESCE(ss.sku_count, 0)::int   AS sku_count,
                    COALESCE(ss.color_count, 0)::int AS color_count,
                    COALESCE(ss.size_count, 0)::int  AS size_count,
@@ -129,23 +156,21 @@ public sealed class ProductMasterRepository
                    COALESCE(sa.average_stock_days, 0)::float8 AS average_stock_days,
                    COALESCE(sa.kisetsu, '')                   AS kisetsu,
                    COALESCE(sa.store_stock, 0)::bigint        AS store_stock,
-                   (COUNT(*) OVER ())::int          AS total_count
-            FROM m_product mp
-            LEFT JOIN sku_stats ss ON ss.product_id = mp.product_id
+                   pp.total_count
+            FROM page_products pp
+            LEFT JOIN sku_stats ss ON ss.product_id = pp.product_id
             LEFT JOIN sales_agg sa
-                ON sa.gyotai_code  = mp.business_category_cd
-               AND sa.shohin_kigou = mp.product_sign
-               AND sa.hinban_code  = mp.product_type_crd
+                ON sa.gyotai_code  = pp.business_category_cd
+               AND sa.shohin_kigou = pp.product_sign
+               AND sa.hinban_code  = pp.product_type_crd
             LEFT JOIN LATERAL (
                 SELECT image_url
                 FROM m_product_sku
-                WHERE product_id = mp.product_id
+                WHERE product_id = pp.product_id
                 ORDER BY image_index, sku_item_id
                 LIMIT 1
             ) AS img ON true
-            {ProductMasterFilterSql.WhereClause(filter, "mp")}
-            ORDER BY mp.business_category_cd, mp.product_sign, mp.product_type_crd, mp.product_id
-            LIMIT @limit OFFSET @offset;
+            ORDER BY pp.business_category_cd, pp.product_sign, pp.product_type_crd, pp.product_id;
             """;
 
         var rawRows = (await connection.QueryAsync<MasterProductRawRow>(

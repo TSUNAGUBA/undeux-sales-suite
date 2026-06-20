@@ -78,8 +78,22 @@ public sealed class MartController : ControllerBase
     /// </summary>
     [HttpGet("inventory/actions")]
     public Task<InventoryActionsResponse> InventoryActions(
+        [FromQuery] SalesQueryFilter filter,
+        [FromQuery] bool includeHinban,
+        CancellationToken cancellationToken)
+        => _martRepository.GetInventoryActionsAsync(filter, includeHinban, cancellationToken);
+
+    /// <summary>特定品番の日次系列（売上＋東京の平均気温）を取得する（週間モニタリングの日次分析タブ）。</summary>
+    [HttpGet("daily-series")]
+    public Task<DailySeriesResponse> DailySeries(
         [FromQuery] SalesQueryFilter filter, CancellationToken cancellationToken)
-        => _martRepository.GetInventoryActionsAsync(filter, cancellationToken);
+        => _martRepository.GetDailySeriesAsync(filter, cancellationToken);
+
+    /// <summary>帳票区分（売発注/情報発注）の前週比較による SKU 遷移を取得する（品番3桁×単品4桁）。</summary>
+    [HttpGet("chohyo-transition")]
+    public Task<ChohyoTransitionResponse> ChohyoTransition(
+        [FromQuery] SalesQueryFilter filter, CancellationToken cancellationToken)
+        => _martRepository.GetChohyoTransitionAsync(filter, cancellationToken);
 
     /// <summary>
     /// 在庫アクション明細（SKU単位・最新週スナップショット基準）をページングで取得する。

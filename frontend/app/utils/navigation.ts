@@ -12,6 +12,7 @@
 import type { Component } from 'vue'
 import {
   Boxes,
+  CalendarDays,
   CalendarPlus,
   CalendarRange,
   Database,
@@ -24,10 +25,13 @@ import {
   Shirt,
   SlidersHorizontal,
   Tag,
+  Target,
   Telescope,
   TrendingUp,
   Upload,
+  Wallet,
 } from 'lucide-vue-next'
+import type { AccountType } from '~/types/api'
 
 /** ナビゲーション上のページ。カテゴリ配下のタブ1つに対応する。 */
 export interface NavPage {
@@ -42,6 +46,12 @@ export interface NavPage {
    * `/mart`（全社サマリー）は他ページの親パスでもあるため厳密一致のまま運用する。
    */
   matchSubroutes?: boolean
+  /**
+   * 表示を許可するアカウント種別。未指定はカテゴリの roles を継承（＝全許可）。
+   * 同一カテゴリ内でページごとに出し分けたい場合に指定する（例: 商品マスタ・週次取込は
+   * サプライヤーのみ、予算管理は両ロール）。
+   */
+  roles?: AccountType[]
 }
 
 /** 目的別カテゴリ。ホームのカード1枚・タブバー1本の単位。 */
@@ -54,6 +64,11 @@ export interface NavCategory {
   description: string
   /** カテゴリ配下のページ。先頭がカテゴリの既定ページ（カード・パンくず押下時の遷移先）。 */
   pages: NavPage[]
+  /**
+   * 表示を許可するアカウント種別。未指定は全ロールに表示する。
+   * 例: OTB管理はバイヤーのみ、メーカー向けモニタリング群はサプライヤーのみ。
+   */
+  roles?: AccountType[]
 }
 
 /**
@@ -62,10 +77,21 @@ export interface NavCategory {
  */
 export const NAV_CATEGORIES: NavCategory[] = [
   {
+    id: 'otb',
+    label: 'OTB管理',
+    icon: Target,
+    description: '全社・部門横断でOTB（仕入枠）と在庫健全性を俯瞰し、未来の仕入を意思決定する',
+    roles: ['buyer'],
+    pages: [
+      { path: '/mart/otb', label: '全社OTBサマリー', icon: Target },
+    ],
+  },
+  {
     id: 'monitoring',
     label: '販売モニタリング',
     icon: Gauge,
     description: '全社の売上・粗利の現状をまとめて把握する',
+    roles: ['supplier'],
     pages: [
       { path: '/mart', label: '全社サマリー', icon: LayoutDashboard },
       { path: '/mart/sales', label: '売上分析', icon: TrendingUp },
@@ -75,9 +101,11 @@ export const NAV_CATEGORIES: NavCategory[] = [
     id: 'weekly',
     label: '週間モニタリング',
     icon: CalendarRange,
-    description: '直近週の実績と前週比・週次推移を確認する',
+    description: '直近週の実績と前週比・週次推移、特定品番の日次分析を確認する',
+    roles: ['supplier'],
     pages: [
       { path: '/mart/weekly', label: '週間モニタリング', icon: CalendarRange },
+      { path: '/mart/weekly-daily', label: '日次分析：特定品番', icon: CalendarDays },
     ],
   },
   {
@@ -85,6 +113,7 @@ export const NAV_CATEGORIES: NavCategory[] = [
     label: '在庫マネジメント',
     icon: Boxes,
     description: '滞留・不動在庫を抽出し、発注抑制・値下げの判断につなげる',
+    roles: ['supplier'],
     pages: [
       { path: '/mart/inventory', label: '在庫マネジメント', icon: Boxes },
     ],
@@ -94,6 +123,7 @@ export const NAV_CATEGORIES: NavCategory[] = [
     label: 'ブランド/シリーズ分析',
     icon: Tag,
     description: 'ブランド・シリーズ（商品記号）軸で売れ行きを比較する',
+    roles: ['supplier'],
     pages: [
       { path: '/mart/brand', label: 'ブランド/シリーズ分析', icon: Tag },
     ],
@@ -103,6 +133,7 @@ export const NAV_CATEGORIES: NavCategory[] = [
     label: 'アイテム分析',
     icon: Package,
     description: '商品を起点に売れ行き・導入状況を深掘りする',
+    roles: ['supplier'],
     pages: [
       { path: '/mart/products', label: '商品別分析', icon: Package, matchSubroutes: true },
       { path: '/mart/introductions', label: '商品導入管理', icon: CalendarPlus },
@@ -124,10 +155,13 @@ export const NAV_CATEGORIES: NavCategory[] = [
     id: 'data',
     label: 'データ管理',
     icon: Database,
-    description: '商品マスタの整備と週次実績データの取込を行う',
+    description: '予算の登録と、商品マスタ・週次実績データの整備を行う',
     pages: [
-      { path: '/product-master', label: '商品マスタ', icon: Shirt, matchSubroutes: true },
-      { path: '/imports', label: '週次取込', icon: Upload },
+      // 予算管理は両ロール（バイヤー=仕入予算/売上予算、サプライヤー=売上予算）。
+      { path: '/mart/budget', label: '予算管理', icon: Wallet },
+      // 商品マスタ・週次取込は自社データ整備のためサプライヤー（メーカー）向け。
+      { path: '/product-master', label: '商品マスタ', icon: Shirt, matchSubroutes: true, roles: ['supplier'] },
+      { path: '/imports', label: '週次取込', icon: Upload, roles: ['supplier'] },
     ],
   },
 ]
@@ -171,4 +205,63 @@ export function findParentPath(currentPath: string): string | null {
     return page.path
   }
   return '/'
+}
+
+// ============================================================
+// アカウント種別（ロール）によるメニュー出し分け
+// ホーム・タブバー・パンくず・ガードは本群を SoT とする。
+// ============================================================
+
+/** カテゴリが指定ロールに表示可能か（roles 未指定は全許可）。 */
+export function isCategoryVisible(category: NavCategory, role: AccountType): boolean {
+  return category.roles === undefined || category.roles.includes(role)
+}
+
+/** ページが指定ロールに表示可能か（page.roles 未指定はカテゴリの roles を継承）。 */
+export function isNavPageVisible(page: NavPage, category: NavCategory, role: AccountType): boolean {
+  const roles = page.roles ?? category.roles
+  return roles === undefined || roles.includes(role)
+}
+
+/**
+ * 指定ロールに表示するカテゴリ一覧（カテゴリ・ページ双方を roles で絞り込む）。
+ * 表示ページが1つも残らないカテゴリは除外する。ホームのカード導出に使う。
+ */
+export function categoriesForRole(role: AccountType): NavCategory[] {
+  return NAV_CATEGORIES
+    .filter((category) => isCategoryVisible(category, role))
+    .map((category) => ({
+      ...category,
+      pages: category.pages.filter((page) => isNavPageVisible(page, category, role)),
+    }))
+    .filter((category) => category.pages.length > 0)
+}
+
+/**
+ * 現在パスが属するカテゴリを、指定ロールで表示可能なページだけに絞って返す。
+ * タブバー・パンくずのロール出し分けに使う。カテゴリ自体が非表示ロールの場合は undefined。
+ */
+export function visibleCategoryForPath(
+  currentPath: string,
+  role: AccountType,
+): NavCategory | undefined {
+  const category = findCategoryByPath(currentPath)
+  if (!category || !isCategoryVisible(category, role)) return undefined
+  return {
+    ...category,
+    pages: category.pages.filter((page) => isNavPageVisible(page, category, role)),
+  }
+}
+
+/**
+ * 指定パスが指定ロールに許可されているか（ミドルウェアのガードに使う）。
+ * どのカテゴリにも属さないパス（`/`・`/login`・カテゴリ外の詳細サブルート等）は許可する
+ * （過剰ブロックを避ける）。カテゴリに属するがロール非対象のページ・カテゴリは不許可。
+ */
+export function isPathAllowedForRole(currentPath: string, role: AccountType): boolean {
+  const category = findCategoryByPath(currentPath)
+  if (!category) return true
+  if (!isCategoryVisible(category, role)) return false
+  const page = category.pages.find((p) => isNavPageActive(p, currentPath))
+  return page ? isNavPageVisible(page, category, role) : true
 }
