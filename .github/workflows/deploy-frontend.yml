@@ -46,15 +46,43 @@ jobs:
           NUXT_PUBLIC_FIREBASE_PROJECT_ID: ${{ secrets.FIREBASE_PROJECT_ID }}
         run: npm run generate
 
-      - name: Firebase Hosting へデプロイ
+      # サービスアカウント JSON を事前検証し、"Failed to authenticate" の原因（空・不正JSON・
+      # プロジェクト不一致）をログで即座に切り分けられるようにする（private_key の中身は出力しない）。
+      - name: サービスアカウントの事前検証
         env:
           FIREBASE_SERVICE_ACCOUNT: ${{ secrets.FIREBASE_SERVICE_ACCOUNT }}
           FIREBASE_PROJECT_ID: ${{ secrets.FIREBASE_PROJECT_ID }}
         run: |
-          printf '%s' "$FIREBASE_SERVICE_ACCOUNT" > "$RUNNER_TEMP/firebase-sa.json"
-          export GOOGLE_APPLICATION_CREDENTIALS="$RUNNER_TEMP/firebase-sa.json"
+          if [ -z "${FIREBASE_SERVICE_ACCOUNT:-}" ]; then
+            echo "::error::FIREBASE_SERVICE_ACCOUNT シークレットが空です。サービスアカウントの JSON 全文を登録してください（deploy-guide ステップ1-4）。"
+            exit 1
+          fi
+          sa="$RUNNER_TEMP/firebase-sa-check.json"
+          printf '%s' "$FIREBASE_SERVICE_ACCOUNT" > "$sa"
+          if ! jq -e 'has("type") and has("project_id") and has("private_key") and has("client_email")' "$sa" >/dev/null 2>&1; then
+            echo "::error::FIREBASE_SERVICE_ACCOUNT が有効なサービスアカウント JSON ではありません（type/project_id/private_key/client_email が必要）。鍵JSONの全文をそのまま登録してください。"
+            rm -f "$sa"; exit 1
+          fi
+          echo "サービスアカウント: type=$(jq -r .type "$sa") project_id=$(jq -r .project_id "$sa") client_email=$(jq -r .client_email "$sa")"
+          if [ -n "${FIREBASE_PROJECT_ID:-}" ] && [ "$(jq -r .project_id "$sa")" != "$FIREBASE_PROJECT_ID" ]; then
+            echo "::warning::サービスアカウントの project_id が FIREBASE_PROJECT_ID シークレットと一致していません。デプロイ先プロジェクトを確認してください。"
+          fi
+          rm -f "$sa"
+
+      # ADC（Application Default Credentials）を Google 公式アクションで確実に設定する。
+      # 空・不正な鍵はここで明確なエラーになり、GOOGLE_APPLICATION_CREDENTIALS を後続へ export する。
+      # credentials_json 方式のため id-token 権限は不要。
+      - name: Google 認証（ADC）
+        uses: google-github-actions/auth@v2
+        with:
+          credentials_json: ${{ secrets.FIREBASE_SERVICE_ACCOUNT }}
+
+      - name: Firebase Hosting へデプロイ
+        env:
+          FIREBASE_PROJECT_ID: ${{ secrets.FIREBASE_PROJECT_ID }}
+        run: |
+          # 認証は前段の ADC（GOOGLE_APPLICATION_CREDENTIALS）を使用する。
           npx --yes firebase-tools@13 deploy \
             --only hosting \
             --project "$FIREBASE_PROJECT_ID" \
             --non-interactive
-          rm -f "$RUNNER_TEMP/firebase-sa.json"

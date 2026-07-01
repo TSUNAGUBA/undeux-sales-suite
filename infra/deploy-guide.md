@@ -120,6 +120,13 @@ $FirebaseAuthDomain = "$FirebaseProjectId.firebaseapp.com"
 $FirebaseServiceAccountPath = "C:\Users\you\Downloads\（ダウンロードしたファイル名）.json"
 ```
 
+> **権限（重要）:** Firebase Hosting へデプロイするサービスアカウントには **Firebase Hosting 管理者**
+> （`roles/firebasehosting.admin`）ロールが必要です（Firebase の「サービスアカウント」タブで生成した
+> 既定のアカウントは付与済み）。加えて、対象プロジェクトで **Firebase Hosting API** が有効である必要があります。
+> `deploy-frontend` が `Failed to authenticate` で失敗する場合は、まず `FIREBASE_SERVICE_ACCOUNT` シークレットに
+> **この JSON の全文**が登録されているか（空・一部欠けでないか）を確認してください（ワークフローの
+> 「サービスアカウントの事前検証」ステップのログに `project_id` / `client_email` が出ます）。
+
 ---
 
 ## ステップ2: AWS RDS（PostgreSQL）の作成
@@ -398,6 +405,7 @@ GitHub の **Actions** タブの「Run workflow」ボタンからも実行でき
 | `no space left on device`（旧構成の名残） | 本改修後、EC2 では **ビルドしない**ためこの失敗は原則発生しない。残存する旧イメージ/キャッシュで逼迫する場合は EC2 に SSH して `docker builder prune -af && docker image prune -af`（`--volumes` は付けない）。恒常的に不足するなら EBS 拡張（ステップ3-3 は 30GB 指定）を確認する |
 | API に HTTPS で繋がらない | DNS の A レコードが EC2 の固定IPを指しているか、反映済みか確認。nginx-proxy（acme-companion）の証明書取得には 80/443 の開放とDNS反映が必要 |
 | フロントから API 呼び出しが CORS エラー | `FRONTEND_ORIGIN` シークレットが実際のフロントURLと一致しているか確認し、`deploy-backend` を再実行 |
+| `deploy-frontend` が `Failed to authenticate` で失敗 | サービスアカウント認証の問題。ワークフローの「サービスアカウントの事前検証」ステップのログを確認する: ①`FIREBASE_SERVICE_ACCOUNT` が空/不正JSON → 鍵JSONの全文を登録し直す（ステップ1-4） ②`project_id` 不一致の警告 → 鍵と `FIREBASE_PROJECT_ID` のプロジェクトを揃える ③検証は通るが失敗 → サービスアカウントに **Firebase Hosting 管理者** ロール、対象プロジェクトで **Firebase Hosting API** 有効化を確認 |
 | ログインできない | Firebase の Authentication でメール/パスワードが有効か、利用者が登録済みか確認 |
 | 取込が 403 になる | 取込する利用者に `role=admin` カスタムクレームが必要（`infra/README.md` 参照） |
 | EC2 上のログを見たい | `ssh -i "$HOME\.ssh\undeux-ec2" ubuntu@<EC2IP>` で接続し `cd undeux-sales-suite/infra/aws; docker compose -f docker-compose.ec2.yml --env-file .env logs api` |
