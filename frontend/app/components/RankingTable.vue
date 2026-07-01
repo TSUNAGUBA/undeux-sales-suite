@@ -25,6 +25,11 @@ const props = defineProps<{
   growthLabel: string
   /** 行クリックでドリルダウンを許可するか。 */
   clickable?: boolean
+  /**
+   * 残在庫数・残在庫金額（最新週スナップショット）列を末尾（変動列の右）に追加するか。
+   * 商品記号別ランキングで在庫の積み上がりを併記するために使う。
+   */
+  showStockColumns?: boolean
 }>()
 
 const emit = defineEmits<{ rowClick: [row: RankingViewRow] }>()
@@ -84,6 +89,16 @@ function compositeText(row: RankingViewRow): string {
   return row.compositeScore === null ? '—' : row.compositeScore.toFixed(2)
 }
 
+/** 残在庫数（最新週スナップショット。未取得は '—'）。 */
+function stockText(row: RankingViewRow): string {
+  return row.values.stock === null ? '—' : formatNumber(row.values.stock)
+}
+
+/** 残在庫金額（原価ベース。未取得は '—'）。 */
+function stockValueText(row: RankingViewRow): string {
+  return row.values.stockValueCost === null ? '—' : formatCurrency(row.values.stockValueCost)
+}
+
 function onRowClick(row: RankingViewRow): void {
   if (props.clickable) {
     emit('rowClick', row)
@@ -119,6 +134,10 @@ function onRowClick(row: RankingViewRow): void {
               <th class="sticky top-0 z-10 whitespace-nowrap bg-slate-50 px-3 py-2.5 text-right font-medium">
                 成長率<span class="text-xs text-slate-400">（{{ growthLabel }}）</span>
               </th>
+            </template>
+            <template v-if="showStockColumns">
+              <th class="sticky top-0 z-10 whitespace-nowrap bg-slate-50 px-3 py-2.5 text-right font-medium">残在庫数</th>
+              <th class="sticky top-0 z-10 whitespace-nowrap bg-slate-50 px-3 py-2.5 text-right font-medium">残在庫金額</th>
             </template>
           </tr>
         </thead>
@@ -187,6 +206,10 @@ function onRowClick(row: RankingViewRow): void {
                 :class="growthClass(row)"
               >{{ growthText(row) }}</td>
             </template>
+            <template v-if="showStockColumns">
+              <td class="whitespace-nowrap px-3 py-2 text-right tabular-nums text-slate-600">{{ stockText(row) }}</td>
+              <td class="whitespace-nowrap px-3 py-2 text-right tabular-nums text-slate-600">{{ stockValueText(row) }}</td>
+            </template>
           </tr>
         </tbody>
       </table>
@@ -234,6 +257,14 @@ function onRowClick(row: RankingViewRow): void {
           <div v-if="showComparison" class="flex justify-between gap-2">
             <span class="text-slate-500">成長率（{{ growthLabel }}）</span>
             <span class="tabular-nums font-medium" :class="growthClass(row)">{{ growthText(row) }}</span>
+          </div>
+          <div v-if="showStockColumns" class="flex justify-between gap-2">
+            <span class="text-slate-500">残在庫数</span>
+            <span class="tabular-nums text-slate-700">{{ stockText(row) }}</span>
+          </div>
+          <div v-if="showStockColumns" class="flex justify-between gap-2">
+            <span class="text-slate-500">残在庫金額</span>
+            <span class="tabular-nums text-slate-700">{{ stockValueText(row) }}</span>
           </div>
         </div>
       </div>

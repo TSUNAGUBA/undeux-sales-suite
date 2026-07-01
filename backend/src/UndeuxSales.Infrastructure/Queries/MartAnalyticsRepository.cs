@@ -239,6 +239,9 @@ public sealed class MartAnalyticsRepository
     /// <summary>消化率×値引き率 散布図の最大点数。</summary>
     private const int MaxMarkdownPoints = 500;
 
+    /// <summary>商品詳細分析（SKU×週マトリクス）の最大 SKU 行数。</summary>
+    private const int MaxItemDetailRows = 300;
+
     /// <summary>
     /// 実気温（dim_climate）を採用する完全週の日数（月〜日）。これ未満の週は CSV 未カバーとみなし
     /// 標準気候（<see cref="ClimateModel"/>）へフォールバックする。
@@ -1048,6 +1051,213 @@ public sealed class MartAnalyticsRepository
             new CommandDefinition(sql, parameters, cancellationToken: cancellationToken));
     }
 
+    /// <summary>LIKE 用にエスケープし両端にワイルドカードを付与する（部分一致パターン）。</summary>
+    private static string LikePattern(string value)
+        => "%" + value.Replace("\\", "\\\\").Replace("%", "\\%").Replace("_", "\\_") + "%";
+
+    /// <summary>
+    /// 商品詳細分析（SKU×週マトリクス）の素材を mart から取得する。
+    /// 期間内に売数のある SKU（品番3桁×単品4桁）を期間売数の降順に最大 <see cref="MaxItemDetailRows"/> 件選び、
+    /// 各 SKU の週次（売数・在庫数・在日・当週売価）と属性を返す。共通フィルタ（業態・部門・季節・棚割1・
+    /// 在日・期間）に加え、品名（部分一致）・商品記号（部分一致）・品番3桁（完全一致）で絞り込む。
+    /// 売価変更（値下げ）検出・消化率（プロパー/値下げ）分解・週別/当週の表示切替はフロント側の表示射影。
+    /// </summary>
+    public async Task<ItemDetailResponse> GetItemDetailAsync(
+        SalesQueryFilter filter,
+        string? productName,
+        string? productSign,
+        string? productCode,
+        int limit,
+        CancellationToken cancellationToken = default)
+    {
+        filter.EnsureValid();
+        limit = Math.Clamp(limit <= 0 ? MaxItemDetailRows : limit, 1, MaxItemDetailRows);
+
+        await using var connection = await _connectionFactory.OpenConnectionAsync(cancellationToken);
+
+        var parameters = new DynamicParameters();
+        MartFilterSql.AddParameters(filter, parameters);
+
+        // 当週モードの基準週。名前フィルタは適用しない（週範囲の最新週は絞り込みで変わらないため、
+        // 名前パラメータ追加前に評価する）。
+        var latestWeek = await QueryLatestWeekAsync(connection, filter, parameters, cancellationToken);
+
+        // 品名・商品記号（部分一致）・品番3桁（完全一致）の追加条件を dp（dim_product）へ付与する。
+        var extraConditions = new List<string>();
+        if (!string.IsNullOrWhiteSpace(productName))
+        {
+            parameters.Add("itemProductName", LikePattern(productName));
+            extraConditions.Add("dp.product_name ILIKE @itemProductName ESCAPE '\\'");
+        }
+        if (!string.IsNullOrWhiteSpace(productSign))
+        {
+            parameters.Add("itemProductSign", LikePattern(productSign));
+            extraConditions.Add("dp.product_sign ILIKE @itemProductSign ESCAPE '\\'");
+        }
+        if (!string.IsNullOrWhiteSpace(productCode))
+        {
+            parameters.Add("itemProductCode", productCode.Trim());
+            extraConditions.Add("dp.product_code = @itemProductCode");
+        }
+        parameters.Add("itemLimit", limit);
+
+        // 期間内フローの WHERE（共通フィルタ + 追加条件）。
+        var baseConditions = MartFilterSql.Conditions(filter, "f");
+        var allConditions = string.Join(
+            " AND ",
+            new[] { baseConditions }.Concat(extraConditions).Where(c => !string.IsNullOrEmpty(c)));
+        var whereClause = allConditions.Length == 0 ? string.Empty : "WHERE " + allConditions;
+
+        // 1) 期間内に売数のある SKU を期間売数降順に選ぶ（属性・代表画像・期間売数・総件数）。
+        var metaSql = $"""
+            WITH flow AS (
+                SELECT f.sku_key,
+                       COALESCE(SUM(f.quantity), 0)::bigint AS period_quantity
+                FROM mart.fact_sales_weekly f
+                JOIN mart.dim_date     dd ON dd.date_key     = f.date_key
+                JOIN mart.dim_product  dp ON dp.product_key  = f.product_key
+                JOIN mart.dim_retailer dr ON dr.retailer_key = f.retailer_key
+                {whereClause}
+                GROUP BY f.sku_key
+            )
+            SELECT ds.sku_key                        AS sku_key,
+                   dp.channel_code                   AS gyotai_code,
+                   dp.product_sign                   AS shohin_kigou,
+                   dp.product_code                   AS hinban_code,
+                   ds.unit_code                      AS tanpin_code,
+                   COALESCE(dp.product_name, '')     AS hinmei,
+                   COALESCE(ds.variant_axis1_value, '') AS color_name,
+                   COALESCE(ds.variant_axis2_value, '') AS size_name,
+                   COALESCE(ds.list_price, 0)::bigint AS list_price,
+                   COALESCE(dp.season, '')           AS kisetsu,
+                   ds.attributes->>'donyu'           AS donyu,
+                   dp.department_code                AS department_code,
+                   dp.department_name                AS department_name,
+                   dp.brand                          AS brand,
+                   dp.manager                        AS manager,
+                   ds.image_url                      AS primary_image_url,
+                   flow.period_quantity              AS period_quantity,
+                   (COUNT(*) OVER ())::int            AS total_count
+            FROM flow
+            JOIN mart.dim_sku     ds ON ds.sku_key     = flow.sku_key
+            JOIN mart.dim_product dp ON dp.product_key = ds.product_key
+            ORDER BY flow.period_quantity DESC, dp.product_code, ds.unit_code
+            LIMIT @itemLimit;
+            """;
+
+        var metaRows = (await connection.QueryAsync<ItemDetailMetaRow>(
+            new CommandDefinition(metaSql, parameters, cancellationToken: cancellationToken))).ToList();
+
+        if (metaRows.Count == 0)
+        {
+            return new ItemDetailResponse(
+                Array.Empty<DateOnly>(), Array.Empty<ItemDetailRow>(), latestWeek, false);
+        }
+
+        var totalCount = metaRows[0].TotalCount;
+        var skuKeys = metaRows.Select(r => r.SkuKey).ToArray();
+
+        // 2) 選択 SKU の週次系列（売数・当週売価／在庫・在日・累計）。期間で限定する。
+        var weeklyParams = new DynamicParameters();
+        weeklyParams.Add("skuKeys", skuKeys);
+        if (filter.From.HasValue) weeklyParams.Add("from", filter.From.Value);
+        if (filter.To.HasValue) weeklyParams.Add("to", filter.To.Value);
+        var dateFrom = filter.From.HasValue ? " AND dd.week_monday >= @from" : string.Empty;
+        var dateTo = filter.To.HasValue ? " AND dd.week_monday <= @to" : string.Empty;
+
+        var salesSql = $"""
+            SELECT f.sku_key                          AS sku_key,
+                   dd.week_monday                     AS week,
+                   COALESCE(SUM(f.quantity), 0)::bigint   AS quantity,
+                   COALESCE(MAX(f.sale_price), 0)::bigint AS sale_price
+            FROM mart.fact_sales_weekly f
+            JOIN mart.dim_date dd ON dd.date_key = f.date_key
+            WHERE f.sku_key = ANY(@skuKeys){dateFrom}{dateTo}
+            GROUP BY f.sku_key, dd.week_monday;
+            """;
+        var salesRows = await connection.QueryAsync<ItemDetailSalesWeekRow>(
+            new CommandDefinition(salesSql, weeklyParams, cancellationToken: cancellationToken));
+
+        var stockSql = $"""
+            SELECT inv.sku_key                         AS sku_key,
+                   dd.week_monday                      AS week,
+                   COALESCE(SUM(inv.stock), 0)::bigint        AS stock,
+                   COALESCE(AVG(inv.stock_days), 0)::float8   AS stock_days,
+                   COALESCE(SUM(inv.cum_sales), 0)::bigint    AS cum_sales,
+                   COALESCE(SUM(inv.cum_delivery), 0)::bigint AS cum_delivery
+            FROM mart.fact_inventory_snapshot inv
+            JOIN mart.dim_date dd ON dd.date_key = inv.date_key
+            WHERE inv.sku_key = ANY(@skuKeys){dateFrom}{dateTo}
+            GROUP BY inv.sku_key, dd.week_monday;
+            """;
+        var stockRows = await connection.QueryAsync<ItemDetailStockWeekRow>(
+            new CommandDefinition(stockSql, weeklyParams, cancellationToken: cancellationToken));
+
+        // 週次を SKU×週で索引化する（GROUP BY で (sku, week) は一意）。
+        var salesBySku = salesRows
+            .GroupBy(r => r.SkuKey)
+            .ToDictionary(g => g.Key, g => g.ToDictionary(r => r.Week));
+        var stockBySku = stockRows
+            .GroupBy(r => r.SkuKey)
+            .ToDictionary(g => g.Key, g => g.ToDictionary(r => r.Week));
+
+        var allWeeks = new SortedSet<DateOnly>();
+        var rows = new List<ItemDetailRow>(metaRows.Count);
+        foreach (var meta in metaRows)
+        {
+            salesBySku.TryGetValue(meta.SkuKey, out var salesWeeks);
+            stockBySku.TryGetValue(meta.SkuKey, out var stockWeeks);
+
+            var weeks = new SortedSet<DateOnly>();
+            if (salesWeeks != null)
+            {
+                foreach (var w in salesWeeks.Keys) weeks.Add(w);
+            }
+            if (stockWeeks != null)
+            {
+                foreach (var w in stockWeeks.Keys) weeks.Add(w);
+            }
+
+            var points = new List<ItemDetailWeekPoint>(weeks.Count);
+            foreach (var w in weeks)
+            {
+                allWeeks.Add(w);
+                long qty = 0, salePrice = 0, stock = 0;
+                double stockDays = 0;
+                if (salesWeeks != null && salesWeeks.TryGetValue(w, out var s))
+                {
+                    qty = s.Quantity;
+                    salePrice = s.SalePrice;
+                }
+                if (stockWeeks != null && stockWeeks.TryGetValue(w, out var st))
+                {
+                    stock = st.Stock;
+                    stockDays = st.StockDays;
+                }
+                points.Add(new ItemDetailWeekPoint(w, qty, stock, stockDays, salePrice));
+            }
+
+            // 消化率用の累計は SKU の最新在庫週（最大週）の値を採用する。
+            long cumSales = 0, cumDelivery = 0;
+            if (stockWeeks != null && stockWeeks.Count > 0)
+            {
+                var latest = stockWeeks.Keys.Max();
+                var st = stockWeeks[latest];
+                cumSales = st.CumSales;
+                cumDelivery = st.CumDelivery;
+            }
+
+            rows.Add(new ItemDetailRow(
+                meta.GyotaiCode, meta.ShohinKigou, meta.HinbanCode, meta.TanpinCode,
+                meta.Hinmei, meta.ColorName, meta.SizeName, meta.ListPrice, meta.Kisetsu,
+                ParseDonyu(meta.Donyu), meta.DepartmentCode, meta.DepartmentName,
+                meta.Brand, meta.Manager, meta.PrimaryImageUrl,
+                meta.PeriodQuantity, cumSales, cumDelivery, points));
+        }
+
+        return new ItemDetailResponse(allWeeks.ToList(), rows, latestWeek, totalCount > limit);
+    }
+
     /// <summary>クロス集計マトリクス（行×列の2次元集計）を mart から取得する。</summary>
     /// <remarks>
     /// 帳票区分・棚割は mart の<b>集計軸（ディメンション）としては</b>保持しないため、それらを
@@ -1249,17 +1459,26 @@ public sealed class MartAnalyticsRepository
         if (latestWeek.HasValue)
         {
             parameters.Add("latestWeek", latestWeek.Value);
+            // 在庫金額（原価）は同一グレイン（週×小売×商品×SKU）で 1:1 に存在する
+            // fact_sales_weekly.cost_price を LEFT JOIN して算出する（在庫アクションと同方式。
+            // rebuild() が両ファクトを同一 CTE から INSERT するため欠落しない。防御的に COALESCE 0）。
             var snapshotSql = $"""
                 SELECT {keyExpr} AS key,
                        COALESCE(SUM(inv.stock), 0)::bigint        AS stock,
                        COALESCE(SUM(inv.cum_sales), 0)::bigint    AS cumulative_sales,
                        COALESCE(SUM(inv.cum_delivery), 0)::bigint AS cumulative_delivery,
-                       COALESCE(AVG(inv.stock_days), 0)::float8   AS stock_days
+                       COALESCE(AVG(inv.stock_days), 0)::float8   AS stock_days,
+                       COALESCE(SUM(inv.stock * COALESCE(f.cost_price, 0)), 0)::bigint AS stock_value_cost
                 FROM mart.fact_inventory_snapshot inv
                 JOIN mart.dim_date     dd ON dd.date_key     = inv.date_key
                 JOIN mart.dim_retailer dr ON dr.retailer_key = inv.retailer_key
                 JOIN mart.dim_product  dp ON dp.product_key  = inv.product_key
                 JOIN mart.dim_sku      ds ON ds.sku_key      = inv.sku_key
+                LEFT JOIN mart.fact_sales_weekly f
+                       ON f.date_key     = inv.date_key
+                      AND f.retailer_key = inv.retailer_key
+                      AND f.product_key  = inv.product_key
+                      AND f.sku_key      = inv.sku_key
                 WHERE dd.week_monday = @latestWeek{MartFilterSql.AndClause(filter, "inv")}
                 GROUP BY {groupBy};
                 """;
@@ -1277,6 +1496,7 @@ public sealed class MartAnalyticsRepository
                 acc.CumulativeSales = row.CumulativeSales;
                 acc.CumulativeDelivery = row.CumulativeDelivery;
                 acc.StockDays = row.StockDays;
+                acc.StockValueCost = row.StockValueCost;
             }
         }
 
@@ -1979,6 +2199,34 @@ internal sealed record MartIntroductionRawRow(
     long SalesQuantity,
     string? PrimaryImageUrl,
     int TotalCount);
+
+/// <summary>Dapper マッピング用の内部行（商品詳細分析の SKU メタ + 期間売数 + 総件数）。donyu は YYYYMMDD 文字列。</summary>
+internal sealed record ItemDetailMetaRow(
+    int SkuKey,
+    string GyotaiCode,
+    string ShohinKigou,
+    string HinbanCode,
+    string TanpinCode,
+    string Hinmei,
+    string ColorName,
+    string SizeName,
+    long ListPrice,
+    string Kisetsu,
+    string? Donyu,
+    string? DepartmentCode,
+    string? DepartmentName,
+    string? Brand,
+    string? Manager,
+    string? PrimaryImageUrl,
+    long PeriodQuantity,
+    int TotalCount);
+
+/// <summary>Dapper マッピング用の内部行（商品詳細分析の週次売数・当週売価）。</summary>
+internal sealed record ItemDetailSalesWeekRow(int SkuKey, DateOnly Week, long Quantity, long SalePrice);
+
+/// <summary>Dapper マッピング用の内部行（商品詳細分析の週次在庫・在日・累計）。</summary>
+internal sealed record ItemDetailStockWeekRow(
+    int SkuKey, DateOnly Week, long Stock, double StockDays, long CumSales, long CumDelivery);
 
 /// <summary>Dapper マッピング用の内部行（週次系列のフロー指標）。</summary>
 internal sealed record MartWeeklyFlowRow(DateOnly Week, long Quantity, long Amount, long GrossProfit);

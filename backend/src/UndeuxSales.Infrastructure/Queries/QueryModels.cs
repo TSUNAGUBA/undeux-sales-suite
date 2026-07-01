@@ -359,7 +359,8 @@ public sealed record RankingMetricValues(
     long GrossProfit,
     long? Stock,
     double? SellThroughRate,
-    double? StockDays);
+    double? StockDays,
+    long? StockValueCost);
 
 /// <summary>
 /// ランキング1行。<see cref="Current"/> が主期間、<see cref="Comparison"/> が比較期間。
@@ -531,3 +532,81 @@ public sealed record MartIntroductionOptions(
     IReadOnlyList<string> Brands,
     IReadOnlyList<string> Managers,
     IReadOnlyList<string> Hinbans);
+
+// ============================================================
+// 商品詳細分析（定番／トレンド）— SKU（品番3桁×単品4桁）× 週の明細マトリクス
+//
+// 視点はバイヤー＝部門、商品軸は商品記号≒7桁（品番3桁＋単品4桁）。バックエンドは SKU 単位の
+// 週次素材（売数・在庫数・在日・当週売価）＋ SKU 属性のみを返し、
+//   - 週別/当週の表示切替、
+//   - 在日の色分け（〜30/31-60/61〜）、
+//   - 売価変更（前週比で売価が下がった週＝値下げ）の検出、
+//   - 消化率（プロパー／値下げ）の分解、
+//   - サマリー・クリップボードコピー
+// はフロント側の表示射影とする（クロス集計・ランキングと同じ思想）。
+// ============================================================
+
+/// <summary>商品詳細分析の週次1点（SKU × 週）。</summary>
+/// <param name="Week">取込週（月曜）。</param>
+/// <param name="Quantity">当週の売数。</param>
+/// <param name="Stock">当週の店頭在庫数（スナップショット）。</param>
+/// <param name="StockDays">当週の在日（平均）。</param>
+/// <param name="SalePrice">当週の売価（baika の最大。売価変更＝値下げ検出に用いる。売上のない週は 0）。</param>
+public sealed record ItemDetailWeekPoint(
+    DateOnly Week,
+    long Quantity,
+    long Stock,
+    double StockDays,
+    long SalePrice);
+
+/// <summary>商品詳細分析の1行（SKU＝業態×記号×品番3桁×単品4桁）。</summary>
+/// <param name="GyotaiCode">業態コード。</param>
+/// <param name="ShohinKigou">商品記号。</param>
+/// <param name="HinbanCode">品番3桁。</param>
+/// <param name="TanpinCode">単品4桁。</param>
+/// <param name="Hinmei">品名。</param>
+/// <param name="ColorName">カラー（バリアント1軸）。</param>
+/// <param name="SizeName">サイズ（バリアント2軸）。</param>
+/// <param name="ListPrice">上代（定価。dim_sku.list_price。未登録は 0）。</param>
+/// <param name="Kisetsu">季節区分。</param>
+/// <param name="DonyuDate">導入日（dim_sku.attributes-&gt;&gt;'donyu' の YYYYMMDD。未設定・不正は null）。</param>
+/// <param name="DepartmentCode">部門コード。</param>
+/// <param name="DepartmentName">部門名。</param>
+/// <param name="Brand">ブランド。</param>
+/// <param name="Manager">担当者。</param>
+/// <param name="PrimaryImageUrl">代表画像URL（無ければ null）。</param>
+/// <param name="PeriodQuantity">期間内の売数合計（並び順・サマリー用）。</param>
+/// <param name="CumulativeSales">SKU の最新在庫週の累計売上数（消化率算出用）。</param>
+/// <param name="CumulativeDelivery">SKU の最新在庫週の累計納品数（消化率算出用）。</param>
+/// <param name="Points">週次の系列（取込週昇順。データのある週のみ）。</param>
+public sealed record ItemDetailRow(
+    string GyotaiCode,
+    string ShohinKigou,
+    string HinbanCode,
+    string TanpinCode,
+    string Hinmei,
+    string ColorName,
+    string SizeName,
+    long ListPrice,
+    string Kisetsu,
+    DateOnly? DonyuDate,
+    string? DepartmentCode,
+    string? DepartmentName,
+    string? Brand,
+    string? Manager,
+    string? PrimaryImageUrl,
+    long PeriodQuantity,
+    long CumulativeSales,
+    long CumulativeDelivery,
+    IReadOnlyList<ItemDetailWeekPoint> Points);
+
+/// <summary>商品詳細分析のレスポンス（SKU × 週マトリクスの素材）。</summary>
+/// <param name="Weeks">列展開に使う週（取込週昇順・全 SKU の和集合）。</param>
+/// <param name="Rows">SKU 行（期間売数の降順、最大件数で切り詰め）。</param>
+/// <param name="LatestWeek">フィルタ範囲内の最新取込週（当週モードの基準）。データなしは null。</param>
+/// <param name="Truncated">対象 SKU が上限を超え、行が切り詰められた場合 true。</param>
+public sealed record ItemDetailResponse(
+    IReadOnlyList<DateOnly> Weeks,
+    IReadOnlyList<ItemDetailRow> Rows,
+    DateOnly? LatestWeek,
+    bool Truncated);

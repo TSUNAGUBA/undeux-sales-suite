@@ -228,6 +228,21 @@ public sealed class MartController : ControllerBase
         => _martRepository.GetMarkdownScatterAsync(filter, cancellationToken);
 
     /// <summary>
+    /// 商品詳細分析（SKU×週マトリクス）の素材を mart から取得する（週別/当週の表示切替はフロント射影）。
+    /// 共通フィルタに加え、品名（部分一致）・商品記号（部分一致）・品番3桁（完全一致）で絞り込む。
+    /// </summary>
+    [HttpGet("item-detail")]
+    public Task<ItemDetailResponse> ItemDetail(
+        [FromQuery] SalesQueryFilter filter,
+        [FromQuery] string? productName,
+        [FromQuery] string? productSign,
+        [FromQuery] string? productCode,
+        [FromQuery] int limit,
+        CancellationToken cancellationToken)
+        => _martRepository.GetItemDetailAsync(
+            filter, productName, productSign, productCode, limit, cancellationToken);
+
+    /// <summary>
     /// 商品導入管理の一覧（商品単位・ページング）を mart から取得する。
     /// 期間は導入日（dim_sku.attributes->>'donyu'）基準。並びは導入日（既定: 降順）。
     /// </summary>

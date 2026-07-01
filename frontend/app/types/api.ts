@@ -549,6 +549,8 @@ export interface RankingMetricValues {
   stock: number | null
   sellThroughRate: number | null
   stockDays: number | null
+  /** 残在庫金額（原価ベース＝在庫数 × 原価の合計）。最新週スナップショットが無い場合 null。 */
+  stockValueCost: number | null
 }
 
 /** ランキング1行（主期間 current・比較期間 comparison）。 */
@@ -884,6 +886,62 @@ export interface ChohyoTransitionResponse {
   previousWeek: string | null
   rows: ChohyoTransitionRow[]
   /** 行数が上限（2000）で切り詰められたか（品番未指定などで多数該当時）。 */
+  truncated: boolean
+}
+
+// ============================================================
+// 商品詳細分析（定番／トレンド）— SKU × 週マトリクス
+// ============================================================
+
+/** 商品詳細分析の週次1点（SKU × 週）。 */
+export interface ItemDetailWeekPoint {
+  /** 取込週（月曜、yyyy-MM-dd）。 */
+  week: string
+  /** 当週の売数。 */
+  quantity: number
+  /** 当週の店頭在庫数。 */
+  stock: number
+  /** 当週の在日（平均）。 */
+  stockDays: number
+  /** 当週の売価（baika 最大。売価変更＝値下げ検出に用いる。売上のない週は 0）。 */
+  salePrice: number
+}
+
+/** 商品詳細分析の1行（SKU＝業態×記号×品番3桁×単品4桁）。 */
+export interface ItemDetailRow {
+  gyotaiCode: string
+  shohinKigou: string
+  hinbanCode: string
+  tanpinCode: string
+  hinmei: string
+  colorName: string
+  sizeName: string
+  /** 上代（定価）。未登録は 0。 */
+  listPrice: number
+  kisetsu: string
+  /** 導入日（yyyy-MM-dd。未設定は null）。 */
+  donyuDate: string | null
+  departmentCode: string | null
+  departmentName: string | null
+  brand: string | null
+  manager: string | null
+  primaryImageUrl: string | null
+  /** 期間内の売数合計。 */
+  periodQuantity: number
+  /** SKU の最新在庫週の累計売上数（消化率算出用）。 */
+  cumulativeSales: number
+  /** SKU の最新在庫週の累計納品数（消化率算出用）。 */
+  cumulativeDelivery: number
+  /** 週次の系列（取込週昇順・データのある週のみ）。 */
+  points: ItemDetailWeekPoint[]
+}
+
+/** 商品詳細分析のレスポンス（SKU × 週マトリクスの素材）。 */
+export interface ItemDetailResponse {
+  /** 列展開に使う週（取込週昇順・全 SKU の和集合）。 */
+  weeks: string[]
+  rows: ItemDetailRow[]
+  latestWeek: string | null
   truncated: boolean
 }
 

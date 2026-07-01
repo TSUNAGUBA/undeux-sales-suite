@@ -254,7 +254,8 @@ public sealed class SalesAnalyticsRepository
                        COALESCE(SUM(sw.zaikosu), 0)::bigint             AS stock,
                        COALESCE(SUM(sw.ruikei_uriage_count), 0)::bigint AS cumulative_sales,
                        COALESCE(SUM(sw.ruikei_nohin_count), 0)::bigint  AS cumulative_delivery,
-                       COALESCE(AVG(sw.zainiti), 0)::float8             AS stock_days
+                       COALESCE(AVG(sw.zainiti), 0)::float8             AS stock_days,
+                       COALESCE(SUM(sw.zaikosu * sw.genka), 0)::bigint  AS stock_value_cost
                 FROM sales_weekly sw
                 WHERE sw.import_date = @latestWeek{SalesFilterSql.AndClause(filter, "sw")}
                 GROUP BY {groupBy};
@@ -275,6 +276,7 @@ public sealed class SalesAnalyticsRepository
                 acc.CumulativeSales = row.CumulativeSales;
                 acc.CumulativeDelivery = row.CumulativeDelivery;
                 acc.StockDays = row.StockDays;
+                acc.StockValueCost = row.StockValueCost;
             }
         }
 
