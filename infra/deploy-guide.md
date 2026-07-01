@@ -406,7 +406,7 @@ GitHub の **Actions** タブの「Run workflow」ボタンからも実行でき
 | `no space left on device`（旧構成の名残） | 本改修後、EC2 では **ビルドしない**ためこの失敗は原則発生しない。残存する旧イメージ/キャッシュで逼迫する場合は EC2 に SSH して `docker builder prune -af && docker image prune -af`（`--volumes` は付けない）。恒常的に不足するなら EBS 拡張（ステップ3-3 は 30GB 指定）を確認する |
 | API に HTTPS で繋がらない | DNS の A レコードが EC2 の固定IPを指しているか、反映済みか確認。nginx-proxy（acme-companion）の証明書取得には 80/443 の開放とDNS反映が必要 |
 | フロントから API 呼び出しが CORS エラー | `FRONTEND_ORIGIN` シークレットが実際のフロントURLと一致しているか確認し、`deploy-backend` を再実行 |
-| `deploy-frontend` が `Failed to authenticate` で失敗 | サービスアカウント認証の問題。ワークフローの「サービスアカウントの事前検証」ステップのログを確認する: ①`FIREBASE_SERVICE_ACCOUNT` が空/不正JSON → 鍵JSONの全文を登録し直す（ステップ1-4） ②`project_id` 不一致の警告 → 鍵と `FIREBASE_PROJECT_ID` のプロジェクトを揃える ③検証は通るが失敗 → サービスアカウントに **Firebase Hosting 管理者** ロール、対象プロジェクトで **Firebase Hosting API** 有効化を確認 |
+| `deploy-frontend` が `Failed to authenticate` で失敗 | firebase-tools は CI で `GOOGLE_APPLICATION_CREDENTIALS` を取りこぼす既知不具合があるため（firebase-tools#10726 等）、本ワークフローは**公式アクション `FirebaseExtended/action-hosting-deploy`（channelId: live）**で SA 認証を行う。なお残る可能性は: ①`FIREBASE_SERVICE_ACCOUNT` が空/不正JSON → 鍵JSONの全文を登録し直す（ステップ1-4。事前検証ステップが `project_id`/`client_email` をログ出力） ②`project_id` 不一致の警告 → 鍵と `FIREBASE_PROJECT_ID` のプロジェクトを揃える ③検証は通るが失敗 → SA に **Firebase Hosting 管理者** ロール、対象プロジェクトで **Firebase Hosting API** 有効化を確認 |
 | ログインできない | Firebase の Authentication でメール/パスワードが有効か、利用者が登録済みか確認 |
 | 取込が 403 になる | 取込する利用者に `role=admin` カスタムクレームが必要（`infra/README.md` 参照） |
 | EC2 上のログを見たい | `ssh -i "$HOME\.ssh\undeux-ec2" ubuntu@<EC2IP>` で接続し `cd undeux-sales-suite/infra/aws; docker compose -f docker-compose.ec2.yml --env-file .env logs api` |

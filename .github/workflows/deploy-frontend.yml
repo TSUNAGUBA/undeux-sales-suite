@@ -69,20 +69,16 @@ jobs:
           fi
           rm -f "$sa"
 
-      # ADC（Application Default Credentials）を Google 公式アクションで確実に設定する。
-      # 空・不正な鍵はここで明確なエラーになり、GOOGLE_APPLICATION_CREDENTIALS を後続へ export する。
-      # credentials_json 方式のため id-token 権限は不要。
-      - name: Google 認証（ADC）
-        uses: google-github-actions/auth@v2
+      # Firebase 公式アクションで本番（live チャンネル）へデプロイする。
+      # 手動の GOOGLE_APPLICATION_CREDENTIALS 方式は firebase-tools の既知不具合（CI で ADC を
+      # 取りこぼし "Failed to authenticate" になる。firebase/firebase-tools#10726 等）を踏むため、
+      # サービスアカウント認証を確実に扱う公式アクションに委ねる（google-github-actions/auth は併用しない。
+      # 併用時に設定される CLOUDSDK_* 系の環境変数が firebase-tools の認証解決を阻害しうるため）。
+      # entryPoint 既定はリポジトリルート（firebase.json があり hosting.public=frontend/.output/public）。
+      # repoToken は PR プレビューコメント用途のため live デプロイでは不要（付与しない）。
+      - name: Firebase Hosting へデプロイ（本番 live チャンネル）
+        uses: FirebaseExtended/action-hosting-deploy@v0
         with:
-          credentials_json: ${{ secrets.FIREBASE_SERVICE_ACCOUNT }}
-
-      - name: Firebase Hosting へデプロイ
-        env:
-          FIREBASE_PROJECT_ID: ${{ secrets.FIREBASE_PROJECT_ID }}
-        run: |
-          # 認証は前段の ADC（GOOGLE_APPLICATION_CREDENTIALS）を使用する。
-          npx --yes firebase-tools@13 deploy \
-            --only hosting \
-            --project "$FIREBASE_PROJECT_ID" \
-            --non-interactive
+          firebaseServiceAccount: ${{ secrets.FIREBASE_SERVICE_ACCOUNT }}
+          projectId: ${{ secrets.FIREBASE_PROJECT_ID }}
+          channelId: live
