@@ -8,6 +8,15 @@ public sealed class ProductMasterFilter
     /// <summary>商品名・商品記号・品番・ブランドに対するフリーテキスト検索（部分一致）。</summary>
     public string? Search { get; set; }
 
+    /// <summary>品名（product_name）の部分一致（写真帳・商品詳細分析の専用フィルタ）。</summary>
+    public string? ProductName { get; set; }
+
+    /// <summary>商品記号（product_sign）の部分一致。</summary>
+    public string? ProductSign { get; set; }
+
+    /// <summary>品番3桁（product_type_crd）の完全一致。</summary>
+    public string? ProductCode { get; set; }
+
     /// <summary>業態コード（商品マスタ business_category_cd。複数選択時はいずれかに一致）。旧 UI 互換。</summary>
     public string[]? BusinessCategoryCds { get; set; }
 
@@ -81,16 +90,36 @@ internal static class ProductMasterFilterSql
     /// <summary>期間レンジの妥当性を検証する（From &gt; To は 400）。</summary>
     public static void EnsureValid(ProductMasterFilter filter) => SalesView(filter).EnsureValid();
 
+    /// <summary>LIKE 用にエスケープし、両端にワイルドカードを付与する（部分一致パターン）。</summary>
+    private static string LikePattern(string value)
+    {
+        var escaped = value
+            .Replace("\\", "\\\\")
+            .Replace("%", "\\%")
+            .Replace("_", "\\_");
+        return $"%{escaped}%";
+    }
+
     public static void AddParameters(ProductMasterFilter filter, DynamicParameters parameters)
     {
         if (!string.IsNullOrWhiteSpace(filter.Search))
         {
-            // LIKE 用にエスケープし、両端にワイルドカードを付与する。
-            var escaped = filter.Search
-                .Replace("\\", "\\\\")
-                .Replace("%", "\\%")
-                .Replace("_", "\\_");
-            parameters.Add("searchPattern", $"%{escaped}%");
+            parameters.Add("searchPattern", LikePattern(filter.Search));
+        }
+
+        if (!string.IsNullOrWhiteSpace(filter.ProductName))
+        {
+            parameters.Add("productNamePattern", LikePattern(filter.ProductName));
+        }
+
+        if (!string.IsNullOrWhiteSpace(filter.ProductSign))
+        {
+            parameters.Add("productSignPattern", LikePattern(filter.ProductSign));
+        }
+
+        if (!string.IsNullOrWhiteSpace(filter.ProductCode))
+        {
+            parameters.Add("productCode", filter.ProductCode.Trim());
         }
 
         if (filter.BusinessCategoryCds is { Length: > 0 })
@@ -129,6 +158,22 @@ internal static class ProductMasterFilterSql
                 + $"OR {alias}.product_sign     ILIKE @searchPattern ESCAPE '\\' "
                 + $"OR {alias}.product_type_crd ILIKE @searchPattern ESCAPE '\\' "
                 + $"OR COALESCE({alias}.brand, '') ILIKE @searchPattern ESCAPE '\\')");
+        }
+
+        // 品名・商品記号・品番3桁の個別フィルタ（写真帳・商品詳細分析）。フリーテキスト検索とは AND 結合。
+        if (!string.IsNullOrWhiteSpace(filter.ProductName))
+        {
+            conditions.Add($"{alias}.product_name ILIKE @productNamePattern ESCAPE '\\'");
+        }
+
+        if (!string.IsNullOrWhiteSpace(filter.ProductSign))
+        {
+            conditions.Add($"{alias}.product_sign ILIKE @productSignPattern ESCAPE '\\'");
+        }
+
+        if (!string.IsNullOrWhiteSpace(filter.ProductCode))
+        {
+            conditions.Add($"{alias}.product_type_crd = @productCode");
         }
 
         if (filter.BusinessCategoryCds is { Length: > 0 })

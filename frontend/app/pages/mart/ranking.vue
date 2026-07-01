@@ -646,13 +646,14 @@ onMounted(async () => {
             <RankingMoversChart v-if="comparisonActive" :items="moverItems" />
           </div>
 
-          <!-- ランキング表 -->
+          <!-- ランキング表（商品記号別は残在庫数・残在庫金額を変動列の直右に併記。比較なし時は行末） -->
           <RankingTable
             :rows="displayRows"
             :dimension-label="rankingDimensionLabel(dimensionKey)"
             :metric-columns="metricColumns"
             :show-composite="showComposite"
             :show-comparison="comparisonActive"
+            :show-stock-columns="dimensionKey === 'shohinKigo'"
             :growth-label="growthLabel"
             clickable
             @row-click="handleRowClick"

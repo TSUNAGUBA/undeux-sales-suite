@@ -17,6 +17,7 @@ import {
   CalendarRange,
   Database,
   Gauge,
+  Images,
   LayoutDashboard,
   LayoutGrid,
   ListOrdered,
@@ -24,6 +25,7 @@ import {
   ScatterChart,
   Shirt,
   SlidersHorizontal,
+  Table2,
   Tag,
   Target,
   Telescope,
@@ -72,8 +74,12 @@ export interface NavCategory {
 }
 
 /**
- * 目的別カテゴリの定義。並び順は「現状把握 → 深掘り → 探索・予測 → データ整備」という
- * 分析業務の思考順序に合わせている。
+ * 目的別カテゴリの定義。並び順は「全体モニタリング → 在庫マネジメント → アイテム分析 →
+ * データ管理 → 探索・予測分析」という現状把握→深掘り→整備→探索の思考順序に合わせている。
+ * OTB管理はバイヤー専用のため先頭に置く（サプライヤーには表示されない）。
+ *
+ * 旧「週間モニタリング」「ブランド/シリーズ分析」は独立カテゴリを廃し、アイテム分析配下の
+ * タブへ統合した（URL は不変のため下位互換を維持）。
  */
 export const NAV_CATEGORIES: NavCategory[] = [
   {
@@ -88,24 +94,13 @@ export const NAV_CATEGORIES: NavCategory[] = [
   },
   {
     id: 'monitoring',
-    label: '販売モニタリング',
+    label: '全体モニタリング',
     icon: Gauge,
     description: '全社の売上・粗利の現状をまとめて把握する',
     roles: ['supplier'],
     pages: [
       { path: '/mart', label: '全社サマリー', icon: LayoutDashboard },
       { path: '/mart/sales', label: '売上分析', icon: TrendingUp },
-    ],
-  },
-  {
-    id: 'weekly',
-    label: '週間モニタリング',
-    icon: CalendarRange,
-    description: '直近週の実績と前週比・週次推移、特定品番の日次分析を確認する',
-    roles: ['supplier'],
-    pages: [
-      { path: '/mart/weekly', label: '週間モニタリング', icon: CalendarRange },
-      { path: '/mart/weekly-daily', label: '日次分析：特定品番', icon: CalendarDays },
     ],
   },
   {
@@ -119,36 +114,19 @@ export const NAV_CATEGORIES: NavCategory[] = [
     ],
   },
   {
-    id: 'brand',
-    label: 'ブランド/シリーズ分析',
-    icon: Tag,
-    description: 'ブランド・シリーズ（商品記号）軸で売れ行きを比較する',
-    roles: ['supplier'],
-    pages: [
-      { path: '/mart/brand', label: 'ブランド/シリーズ分析', icon: Tag },
-    ],
-  },
-  {
     id: 'product',
     label: 'アイテム分析',
     icon: Package,
-    description: '商品を起点に売れ行き・導入状況を深掘りする',
+    description: '商品を起点に、写真帳・詳細分析・週次/ブランド動向・導入状況まで深掘りする',
     roles: ['supplier'],
     pages: [
       { path: '/mart/products', label: '商品別分析', icon: Package, matchSubroutes: true },
+      { path: '/mart/item-detail', label: '商品詳細分析', icon: Table2 },
+      { path: '/mart/photobook', label: '写真帳', icon: Images },
+      { path: '/mart/weekly', label: '週間モニタリング', icon: CalendarRange },
+      { path: '/mart/weekly-daily', label: '日次分析：特定品番', icon: CalendarDays },
+      { path: '/mart/brand', label: 'ブランド/シリーズ分析', icon: Tag },
       { path: '/mart/introductions', label: '商品導入管理', icon: CalendarPlus },
-    ],
-  },
-  {
-    id: 'exploration',
-    label: '探索・予測分析',
-    icon: Telescope,
-    description: '集計軸を切り替えた多角集計と統計分析・売上予測を行う',
-    pages: [
-      { path: '/mart/crosstab', label: 'クロス集計', icon: LayoutGrid },
-      { path: '/mart/ranking', label: 'ランキング分析', icon: ListOrdered },
-      { path: '/mart/scatter', label: '散布図・回帰分析', icon: ScatterChart },
-      { path: '/mart/simulation', label: '重回帰シミュレーター', icon: SlidersHorizontal },
     ],
   },
   {
@@ -162,6 +140,18 @@ export const NAV_CATEGORIES: NavCategory[] = [
       // 商品マスタ・週次取込は自社データ整備のためサプライヤー（メーカー）向け。
       { path: '/product-master', label: '商品マスタ', icon: Shirt, matchSubroutes: true, roles: ['supplier'] },
       { path: '/imports', label: '週次取込', icon: Upload, roles: ['supplier'] },
+    ],
+  },
+  {
+    id: 'exploration',
+    label: '探索・予測分析',
+    icon: Telescope,
+    description: '集計軸を切り替えた多角集計と統計分析・売上予測を行う',
+    pages: [
+      { path: '/mart/crosstab', label: 'クロス集計', icon: LayoutGrid },
+      { path: '/mart/ranking', label: 'ランキング分析', icon: ListOrdered },
+      { path: '/mart/scatter', label: '散布図・回帰分析', icon: ScatterChart },
+      { path: '/mart/simulation', label: '重回帰シミュレーター', icon: SlidersHorizontal },
     ],
   },
 ]

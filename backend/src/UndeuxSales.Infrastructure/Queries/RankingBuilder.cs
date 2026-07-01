@@ -6,9 +6,10 @@ namespace UndeuxSales.Infrastructure.Queries;
 internal sealed record RankingFlowRow(
     string Key, string Label, long Quantity, long Amount, long GrossProfit);
 
-/// <summary>Dapper マッピング用のランキングスナップショット行（キー別の在庫・累計・在日）。</summary>
+/// <summary>Dapper マッピング用のランキングスナップショット行（キー別の在庫・累計・在日・在庫金額）。</summary>
 internal sealed record RankingSnapshotRow(
-    string Key, long Stock, long CumulativeSales, long CumulativeDelivery, double StockDays);
+    string Key, long Stock, long CumulativeSales, long CumulativeDelivery, double StockDays,
+    long StockValueCost);
 
 /// <summary>1期間ぶんのランキング集計結果（キー別の集計累計 + 最新取込週）。</summary>
 internal sealed record RankingPeriodResult(
@@ -31,6 +32,8 @@ internal sealed class RankingAccumulator
     public long CumulativeSales { get; set; }
     public long CumulativeDelivery { get; set; }
     public double StockDays { get; set; }
+    /// <summary>最新週スナップショットの在庫金額（原価ベース＝在庫数 × 原価の合計）。残在庫金額。</summary>
+    public long StockValueCost { get; set; }
 }
 
 /// <summary>
@@ -126,6 +129,8 @@ internal static class RankingBuilder
             ? (double)a.CumulativeSales / a.CumulativeDelivery * 100.0
             : (double?)null;
         double? stockDays = a.HasSnapshot ? a.StockDays : (double?)null;
-        return new RankingMetricValues(a.Quantity, a.Amount, a.GrossProfit, stock, sellThroughRate, stockDays);
+        long? stockValueCost = a.HasSnapshot ? a.StockValueCost : (long?)null;
+        return new RankingMetricValues(
+            a.Quantity, a.Amount, a.GrossProfit, stock, sellThroughRate, stockDays, stockValueCost);
     }
 }

@@ -149,6 +149,76 @@ public sealed class MartApiIntegrationTests
     }
 
     [Fact]
+    public async Task Mart_Ranking_IncludesStockValueCost()
+    {
+        await RebuildMartAsync();
+        var client = CreateAuthedClient();
+
+        var ranking = await client.GetFromJsonAsync<RankingResponse>(
+            $"/api/mart/ranking?dimension=department&{SeedRange}");
+
+        Assert.NotNull(ranking);
+        var dept01 = ranking!.Rows.Single(r => r.Key == "01");
+        var dept02 = ranking.Rows.Single(r => r.Key == "02");
+
+        // 最新週(2026-05-11)の在庫: 部門01 = 44+10 = 54、部門02 = 20。
+        Assert.Equal(54L, dept01.Current!.Stock);
+        Assert.Equal(20L, dept02.Current!.Stock);
+        // 残在庫金額(原価) = Σ(在庫 × 原価): 部門01 = 44×400 + 10×800 = 25600、部門02 = 20×600 = 12000。
+        Assert.Equal(25600L, dept01.Current!.StockValueCost);
+        Assert.Equal(12000L, dept02.Current!.StockValueCost);
+    }
+
+    [Fact]
+    public async Task Mart_ItemDetail_ReturnsSkuWeeklyMatrix()
+    {
+        await RebuildMartAsync();
+        var client = CreateAuthedClient();
+
+        var response = await client.GetFromJsonAsync<ItemDetailResponse>(
+            $"/api/mart/item-detail?{SeedRange}");
+
+        Assert.NotNull(response);
+        Assert.False(response!.Truncated);
+        Assert.Equal(2, response.Weeks.Count); // シードは2週
+        Assert.Equal(3, response.Rows.Count);  // SKU 3件
+
+        var row = response.Rows.Single(r => r.HinbanCode == "100" && r.TanpinCode == "0001");
+        Assert.Equal(13, row.PeriodQuantity); // 7 + 6
+        Assert.Equal("標準色", row.ColorName);
+        Assert.Equal("M", row.SizeName);
+        // 消化率算出用の累計は SKU の最新在庫週(2026-05-11)基準。
+        Assert.Equal(26, row.CumulativeSales);
+        Assert.Equal(30, row.CumulativeDelivery);
+
+        var latest = row.Points.Single(p => p.Week == new DateOnly(2026, 5, 11));
+        Assert.Equal(6, latest.Quantity);
+        Assert.Equal(44, latest.Stock);
+        Assert.Equal(1000, latest.SalePrice);
+    }
+
+    [Fact]
+    public async Task Mart_ItemDetail_FiltersByProductCodeAndSign()
+    {
+        await RebuildMartAsync();
+        var client = CreateAuthedClient();
+
+        // 品番3桁の完全一致（200）→ (02,200,0001) の1件。
+        var byCode = await client.GetFromJsonAsync<ItemDetailResponse>(
+            $"/api/mart/item-detail?{SeedRange}&productCode=200");
+        Assert.NotNull(byCode);
+        Assert.Single(byCode!.Rows);
+        Assert.Equal("200", byCode.Rows[0].HinbanCode);
+
+        // 商品記号の部分一致（S100）→ 品番100 の2 SKU。
+        var bySign = await client.GetFromJsonAsync<ItemDetailResponse>(
+            $"/api/mart/item-detail?{SeedRange}&productSign=S100");
+        Assert.NotNull(bySign);
+        Assert.Equal(2, bySign!.Rows.Count);
+        Assert.All(bySign.Rows, r => Assert.Equal("100", r.HinbanCode));
+    }
+
+    [Fact]
     public async Task Mart_Crosstab_DepartmentByHinban_ReturnsMatrixWithStock()
     {
         await RebuildMartAsync();
