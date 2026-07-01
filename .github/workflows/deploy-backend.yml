@@ -5,6 +5,12 @@ name: deploy-backend
 #   単独実行: GitHub の Actions タブ → "deploy-backend" → "Run workflow"
 #   一括実行: "deploy-all"（backend → frontend の順で本ワークフローを呼び出す）
 # 必要なシークレット・EC2 の事前準備は infra/deploy-guide.md を参照。
+#
+# ビルド戦略（2026-07 改修）:
+#   従来は EC2 上で `docker compose build`（.NET SDK 展開）していたが、EC2 のルートディスク
+#   （6.8GB）が SDK 展開に耐えられず "no space left on device" が再発したため、
+#   イメージのビルドは本 CI（Actions ランナー・大容量）で行い GHCR へ push、
+#   EC2 は pull + run のみに変更した。EC2 に .NET SDK を載せないことでディスク要件を恒久的に下げる。
 on:
   workflow_dispatch:
   # deploy-all からの再利用呼び出し（secrets は inherit で受け取る）。
@@ -16,8 +22,10 @@ concurrency:
   group: deploy
   cancel-in-progress: false
 
+# GHCR へ push するため packages: write が必要（GITHUB_TOKEN を使用。追加の永続シークレット不要）。
 permissions:
   contents: read
+  packages: write
 
 jobs:
   deploy:
@@ -25,6 +33,48 @@ jobs:
     steps:
       - name: チェックアウト
         uses: actions/checkout@v4
+
+      # イメージ参照（GHCR・小文字化した owner/repo）。api/dataloader の 2 イメージを SHA + latest でタグ付けする。
+      - name: イメージ参照の決定
+        id: meta
+        run: |
+          repo="ghcr.io/$(echo '${{ github.repository }}' | tr '[:upper:]' '[:lower:]')"
+          echo "repo=$repo" >> "$GITHUB_OUTPUT"
+          echo "tag=${{ github.sha }}" >> "$GITHUB_OUTPUT"
+
+      - name: Buildx セットアップ
+        uses: docker/setup-buildx-action@v3
+
+      - name: GHCR へログイン
+        uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: API イメージをビルド・push（ここで C# がコンパイルされる）
+        uses: docker/build-push-action@v6
+        with:
+          context: ./backend
+          target: api
+          push: true
+          tags: |
+            ${{ steps.meta.outputs.repo }}-api:${{ steps.meta.outputs.tag }}
+            ${{ steps.meta.outputs.repo }}-api:latest
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+
+      - name: DataLoader イメージをビルド・push
+        uses: docker/build-push-action@v6
+        with:
+          context: ./backend
+          target: dataloader
+          push: true
+          tags: |
+            ${{ steps.meta.outputs.repo }}-dataloader:${{ steps.meta.outputs.tag }}
+            ${{ steps.meta.outputs.repo }}-dataloader:latest
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
 
       - name: SSH 鍵の準備
         env:
@@ -42,30 +92,42 @@ jobs:
           FIREBASE_PROJECT_ID: ${{ secrets.FIREBASE_PROJECT_ID }}
           FRONTEND_ORIGIN: ${{ secrets.FRONTEND_ORIGIN }}
           API_DOMAIN: ${{ secrets.API_DOMAIN }}
+          IMAGE_REPO: ${{ steps.meta.outputs.repo }}
+          IMAGE_TAG: ${{ steps.meta.outputs.tag }}
         run: |
           {
             echo "UNDEUX_DB_CONNECTION=$DB_CONNECTION"
             echo "UNDEUX_FIREBASE_PROJECT_ID=$FIREBASE_PROJECT_ID"
             echo "UNDEUX_FRONTEND_ORIGIN=$FRONTEND_ORIGIN"
             echo "UNDEUX_API_DOMAIN=$API_DOMAIN"
+            echo "UNDEUX_IMAGE_REPO=$IMAGE_REPO"
+            echo "UNDEUX_IMAGE_TAG=$IMAGE_TAG"
           } > deploy.env
 
-      - name: プロジェクトファイルを EC2 へ同期
+      # EC2 はビルドしないため backend ソースは同期しない。dataloader が volume で参照する
+      # 初期ダンプ（refference）・スキーマ（db）と、compose/デプロイスクリプト（infra）のみ同期する。
+      - name: デプロイ資材を EC2 へ同期
         env:
           EC2_USER: ${{ secrets.EC2_USER }}
           EC2_HOST: ${{ secrets.EC2_HOST }}
         run: |
           rsync -az --delete --exclude='.env' \
             -e "ssh -i ~/.ssh/deploy_key" \
-            backend db refference infra \
+            db refference infra \
             "$EC2_USER@$EC2_HOST:~/undeux-sales-suite/"
           scp -i ~/.ssh/deploy_key deploy.env \
             "$EC2_USER@$EC2_HOST:~/undeux-sales-suite/infra/aws/.env"
 
-      - name: EC2 上でデプロイを実行
+      # GHCR ログインはトークンを stdin で渡し（プロセス引数に残さない）、続けて pull+run のデプロイを実行する。
+      # GITHUB_TOKEN はジョブ実行中のみ有効な一時トークンで、EC2 側に永続保存しない（末尾で logout）。
+      - name: EC2 上でデプロイを実行（GHCR から pull）
         env:
           EC2_USER: ${{ secrets.EC2_USER }}
           EC2_HOST: ${{ secrets.EC2_HOST }}
+          REGISTRY_USER: ${{ github.actor }}
+          REGISTRY_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
+          printf '%s' "$REGISTRY_TOKEN" | ssh -i ~/.ssh/deploy_key "$EC2_USER@$EC2_HOST" \
+            "docker login ghcr.io -u '$REGISTRY_USER' --password-stdin"
           ssh -i ~/.ssh/deploy_key "$EC2_USER@$EC2_HOST" \
             "bash ~/undeux-sales-suite/infra/aws/deploy-ec2.sh"

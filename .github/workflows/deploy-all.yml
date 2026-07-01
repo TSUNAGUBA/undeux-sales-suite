@@ -21,8 +21,11 @@ concurrency:
   group: deploy
   cancel-in-progress: false
 
+# 呼び出す deploy-backend が GHCR へ push するため packages: write を付与する
+# （再利用ワークフローの GITHUB_TOKEN 権限は呼び出し側の permissions で頭打ちになるため）。
 permissions:
   contents: read
+  packages: write
 
 jobs:
   backend:
