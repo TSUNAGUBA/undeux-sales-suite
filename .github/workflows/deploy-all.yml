@@ -15,11 +15,13 @@ name: deploy-all
 on:
   workflow_dispatch:
 
-# 単独の deploy-backend / deploy-frontend と同一グループでキューイングし、
-# デプロイ系ワークフローの同時実行（rsync --delete の多重実行等）を防ぐ。
-concurrency:
-  group: deploy
-  cancel-in-progress: false
+# concurrency は本（親）ワークフローには設定しない。
+# 呼び出す deploy-backend / deploy-frontend が `concurrency: group: deploy` を持つため、
+# 親も同じグループを宣言すると「親がグループを保持したまま子が同グループを待つ」構図になり、
+# GitHub Actions が concurrency デッドロックを検出して実行を打ち切る
+# （"a deadlock was detected for concurrency group: 'deploy'"）。
+# デプロイ操作（rsync --delete 等）の排他は子ワークフロー側の `deploy` グループで担保されるため、
+# 親はグループを持たなくてよい（子が直列化されるため多重実行も起きない）。
 
 # 呼び出す deploy-backend が GHCR へ push するため packages: write を付与する
 # （再利用ワークフローの GITHUB_TOKEN 権限は呼び出し側の permissions で頭打ちになるため）。
