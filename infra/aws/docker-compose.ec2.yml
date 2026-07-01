@@ -22,9 +22,9 @@ x-logging: &bounded-logging
 services:
   dataloader:
     logging: *bounded-logging
-    build:
-      context: ../../backend
-      target: dataloader
+    # イメージは CI（deploy-backend ワークフロー）でビルドし GHCR へ push 済み。EC2 は pull のみ。
+    # UNDEUX_IMAGE_REPO / UNDEUX_IMAGE_TAG は GitHub Actions が .env に書き込む。
+    image: "${UNDEUX_IMAGE_REPO}-dataloader:${UNDEUX_IMAGE_TAG}"
     environment:
       ConnectionStrings__Default: "${UNDEUX_DB_CONNECTION}"
       UNDEUX_DUMP_PATH: /refference
@@ -41,9 +41,8 @@ services:
 
   api:
     logging: *bounded-logging
-    build:
-      context: ../../backend
-      target: api
+    # イメージは CI（deploy-backend ワークフロー）でビルドし GHCR へ push 済み。EC2 は pull のみ。
+    image: "${UNDEUX_IMAGE_REPO}-api:${UNDEUX_IMAGE_TAG}"
     environment:
       ASPNETCORE_ENVIRONMENT: Production
       ConnectionStrings__Default: "${UNDEUX_DB_CONNECTION}"

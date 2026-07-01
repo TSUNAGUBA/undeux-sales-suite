@@ -318,9 +318,20 @@ gh run watch --repo $Repo
 > 単独で実行できます（従来どおり）。deploy-all はバックエンド失敗時に
 > フロントエンドのデプロイを自動的に中止します。
 
-- **deploy-backend** は初回約8〜12分（イメージビルド＋初期データ約160万行の投入）。
+- **deploy-backend** は初回約8〜12分（**イメージビルドは CI（GitHub Actions）で実行**し GHCR へ push、
+  EC2 は pull + 初期データ約160万行の投入）。2回目以降は初期投入がスキップされ数分。
 - **deploy-frontend** は約2〜3分。
 - GitHub の **Actions** タブからも進行状況・ログを確認できます。
+
+> **バックエンドのビルド方式（2026-07 改修）:** EC2 のルートディスク枯渇（`.NET SDK` 展開で
+> `no space left on device`）を恒久回避するため、API/DataLoader のイメージは **CI（Actions ランナー）で
+> ビルドして GHCR（`ghcr.io/<owner>/<repo>-api` / `-dataloader`）へ push** し、EC2 は `docker compose pull`
+> するだけに変更しました。前提は2つだけです:
+> 1. リポジトリの **Actions に packages 書込権限**（ワークフローの `permissions: packages: write` で付与済み。
+>    Organization 側で GITHUB_TOKEN のパッケージ作成を制限している場合は許可が必要）。
+> 2. **EC2 から `ghcr.io` への outbound 通信**（従来 `mcr.microsoft.com` へ到達できているため通常は問題なし）。
+> GHCR ログインはワークフローが一時トークン（`GITHUB_TOKEN`）を `--password-stdin` で渡し、
+> デプロイ後に EC2 側で `docker logout` します（永続シークレット不要）。
 
 ---
 
@@ -382,8 +393,9 @@ GitHub の **Actions** タブの「Run workflow」ボタンからも実行でき
 
 | 症状 | 対処 |
 |------|------|
-| `deploy-backend` がビルドで失敗 | EC2 のメモリ不足の可能性。インスタンスタイプを `t3.medium` 以上にする |
-| ビルドが `no space left on device` で失敗 | デプロイ世代ごとのビルドキャッシュ蓄積が原因。`deploy-ec2.sh` がビルド前に自動クリーンアップする（再実行すれば回復する）。それでも不足する場合は EC2 に SSH して、まず `docker builder prune -af && docker image prune -af` を実行する（共用 EC2 では `docker system prune -af` は停止中の他プロジェクトのコンテナも削除するため最終手段。いずれも `--volumes` は付けない）。恒常的に不足するなら EBS ボリュームの拡張を検討する |
+| `deploy-backend` が**イメージビルド（CI）**で失敗 | Actions のログで `dotnet publish` のコンパイルエラーを確認して修正する（ビルドは Actions ランナー上で実行される）。GHCR への push で `denied` なら、リポジトリ/Organization の Actions パッケージ書込権限（`permissions: packages: write` の許可）を確認する |
+| EC2 の `docker compose pull` が失敗 | EC2 が `ghcr.io` へ到達できるか（outbound 443）と、ワークフローの GHCR ログインが成功しているかを確認する。手動時は EC2 で `docker login ghcr.io` 済みか確認 |
+| `no space left on device`（旧構成の名残） | 本改修後、EC2 では **ビルドしない**ためこの失敗は原則発生しない。残存する旧イメージ/キャッシュで逼迫する場合は EC2 に SSH して `docker builder prune -af && docker image prune -af`（`--volumes` は付けない）。恒常的に不足するなら EBS 拡張（ステップ3-3 は 30GB 指定）を確認する |
 | API に HTTPS で繋がらない | DNS の A レコードが EC2 の固定IPを指しているか、反映済みか確認。nginx-proxy（acme-companion）の証明書取得には 80/443 の開放とDNS反映が必要 |
 | フロントから API 呼び出しが CORS エラー | `FRONTEND_ORIGIN` シークレットが実際のフロントURLと一致しているか確認し、`deploy-backend` を再実行 |
 | ログインできない | Firebase の Authentication でメール/パスワードが有効か、利用者が登録済みか確認 |

@@ -36,7 +36,7 @@ cd ~/undeux-sales-suite/infra/aws
 
 | 操作 | コマンド |
 |------|---------|
-| 手動デプロイ | `bash deploy-ec2.sh` |
+| 手動デプロイ | `docker login ghcr.io` 済みの状態で `bash deploy-ec2.sh`（イメージは CI で GHCR にビルド済み。EC2 は pull のみ） |
 | APIログ表示 | `docker compose -f docker-compose.ec2.yml --env-file .env logs -f api` |
 | 再起動 | `docker compose -f docker-compose.ec2.yml --env-file .env restart api` |
 | 状態確認 | `docker compose -f docker-compose.ec2.yml --env-file .env ps` |
@@ -52,6 +52,8 @@ cd ~/undeux-sales-suite/infra/aws
 | `UNDEUX_FIREBASE_PROJECT_ID` | Firebase プロジェクトID（IDトークン検証） |
 | `UNDEUX_FRONTEND_ORIGIN` | 許可するフロントエンドのオリジン（CORS） |
 | `UNDEUX_API_DOMAIN` | API のドメイン名（nginx-proxy の `VIRTUAL_HOST` / `LETSENCRYPT_HOST` に使用） |
+| `UNDEUX_IMAGE_REPO` | GHCR のイメージ参照ベース（例 `ghcr.io/tsunaguba/undeux-sales-suite`）。`-api` / `-dataloader` を付けて pull |
+| `UNDEUX_IMAGE_TAG` | pull するイメージタグ（デプロイ時の commit SHA）。CI が生成 |
 
 ## 監視
 
