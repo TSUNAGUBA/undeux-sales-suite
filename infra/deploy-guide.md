@@ -400,6 +400,7 @@ GitHub の **Actions** タブの「Run workflow」ボタンからも実行でき
 
 | 症状 | 対処 |
 |------|------|
+| `deploy-all` が `a deadlock was detected for concurrency group: 'deploy'` で失敗 | 親（`deploy-all`）と子（`deploy-backend`/`deploy-frontend`）が同じ `concurrency` グループを持つと発生する。**親には `concurrency` を設定しない**（排他は子側の `deploy` グループで担保）。修正済み。個別ワークフロー実行では発生しない |
 | `deploy-backend` が**イメージビルド（CI）**で失敗 | Actions のログで `dotnet publish` のコンパイルエラーを確認して修正する（ビルドは Actions ランナー上で実行される）。GHCR への push で `denied` なら、リポジトリ/Organization の Actions パッケージ書込権限（`permissions: packages: write` の許可）を確認する |
 | EC2 の `docker compose pull` が失敗 | EC2 が `ghcr.io` へ到達できるか（outbound 443）と、ワークフローの GHCR ログインが成功しているかを確認する。手動時は EC2 で `docker login ghcr.io` 済みか確認 |
 | `no space left on device`（旧構成の名残） | 本改修後、EC2 では **ビルドしない**ためこの失敗は原則発生しない。残存する旧イメージ/キャッシュで逼迫する場合は EC2 に SSH して `docker builder prune -af && docker image prune -af`（`--volumes` は付けない）。恒常的に不足するなら EBS 拡張（ステップ3-3 は 30GB 指定）を確認する |
