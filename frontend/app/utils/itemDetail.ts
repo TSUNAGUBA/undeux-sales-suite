@@ -304,11 +304,9 @@ export function buildWeeklyClipboard(
       const htmlKind = `<td style="${TH}">${escapeHtml(kind.label)}</td>`
       const htmlWeeks = weekCells
         .map((c) => {
-          const style = c.color
-            ? `${TD};color:${c.color}`
-            : c.markdown
-              ? `${TD};background-color:#fee2e2`
-              : `${TD};text-align:right`
+          let style = `${TD};text-align:right`
+          if (c.color) style += `;color:${c.color}`
+          if (c.markdown) style += ';background-color:#fee2e2'
           return `<td style="${style}">${escapeHtml(c.text)}</td>`
         })
         .join('')

@@ -78,23 +78,17 @@ export function computeRisingItems(
     })
 
   const hasComparison = (previous?.length ?? 0) > 0
+  // 「急上昇」の順位は伸び率（前年同期比）降順が基準。画像有無で並びを歪めない（真の TOP を表示し、
+  // 画像が無い行は ProductImage のプレースホルダで描画する）。同率・伸び率不明は当期数量降順で決める。
   const sorted = enriched.slice().sort((a, b) => {
     if (hasComparison) {
-      // 伸び率降順（null は最下位）。同率は当期数量降順。
       const ag = a.growthPercent ?? Number.NEGATIVE_INFINITY
       const bg = b.growthPercent ?? Number.NEGATIVE_INFINITY
       if (ag !== bg) return bg - ag
     }
     return b.quantity - a.quantity
   })
-
-  // 画像ありを優先しつつ、不足分は画像なしで補完（順序は上のソートを維持）。
-  const withImage = sorted.filter((i) => i.imageUrl)
-  const withoutImage = sorted.filter((i) => !i.imageUrl)
-  const picked = [...withImage, ...withoutImage].slice(0, limit)
-  // 比較ありのときは「伸びている（growth>0）」ものだけに絞る余地があるが、
-  // 0件表示を避けるため当期数量の多い行で必ず埋める（コメント側で基準を明示する）。
-  return picked
+  return sorted.slice(0, limit)
 }
 
 /** 符号付きパーセント表記（"+12.3%" / "−4.5%"）。 */

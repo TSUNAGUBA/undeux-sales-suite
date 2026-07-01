@@ -74,7 +74,7 @@ const budgetGaugeWidth = computed(() => {
 const budgetCommentText = computed(() => budgetComment(budgetAchievement.value))
 const risingCommentText = computed(() => risingComment(risingItems.value))
 
-/** 急上昇アイテムの遷移先（商品マスタ結合済みは商品詳細分析へ、無ければ商品別分析一覧へ）。 */
+/** 急上昇アイテムの遷移先（商品マスタ結合済みは商品別分析の詳細へ、無ければ商品別分析一覧へ）。 */
 function risingItemHref(item: RisingItem): string {
   return item.masterProductId ? `/mart/products/${item.masterProductId}` : '/mart/products'
 }
