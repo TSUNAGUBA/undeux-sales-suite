@@ -25,6 +25,7 @@ import {
   ScatterChart,
   Shirt,
   SlidersHorizontal,
+  Store,
   Table2,
   Tag,
   Target,
@@ -118,7 +119,9 @@ export const NAV_CATEGORIES: NavCategory[] = [
     label: 'アイテム分析',
     icon: Package,
     description: '商品を起点に、写真帳・詳細分析・週次/ブランド動向・導入状況まで深掘りする',
-    roles: ['supplier'],
+    // メーカー（supplier）向けに構築したアイテム分析を、小売（buyer）へ配下タブごと丸ごと移植する。
+    // ページは mart 集計（両ロール共通のデータ源）で描画するため、ロール固有の分岐は不要。
+    roles: ['supplier', 'buyer'],
     pages: [
       { path: '/mart/products', label: '商品別分析', icon: Package, matchSubroutes: true },
       { path: '/mart/item-detail', label: '商品詳細分析', icon: Table2 },
@@ -127,6 +130,17 @@ export const NAV_CATEGORIES: NavCategory[] = [
       { path: '/mart/weekly-daily', label: '日次分析：特定品番', icon: CalendarDays },
       { path: '/mart/brand', label: 'ブランド/シリーズ分析', icon: Tag },
       { path: '/mart/introductions', label: '商品導入管理', icon: CalendarPlus },
+    ],
+  },
+  {
+    id: 'store',
+    label: '店舗分析',
+    icon: Store,
+    description: '発注タイプ・店舗属性・商品属性の条件を組み合わせ、売れている商品ランキングを見る',
+    // 小売（buyer）専用。現状は店舗粒度の実データが不足するためモックで表現する。
+    roles: ['buyer'],
+    pages: [
+      { path: '/mart/store-analysis', label: '店舗別売れ筋ランキング', icon: Store },
     ],
   },
   {

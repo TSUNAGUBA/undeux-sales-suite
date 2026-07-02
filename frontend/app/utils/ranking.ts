@@ -332,6 +332,27 @@ export function growthPercent(current: number | null, previous: number | null): 
 }
 
 /**
+ * 直近在日（在庫日数＝days of supply）の近似。
+ *
+ * 要件の定義は「前週末在庫を期首在庫とみなし、週内における在庫日数を算出する」だが、
+ * ランキングは期間集計（週明細を持たない）ため、現在の店頭在庫を期首在庫とみなし
+ * 「店頭在庫 ÷ 期間平均日販」で近似する（平均日販 = 期間売数 ÷ 期間週数 ÷ 7）。
+ * 在庫が null（スナップショット欠落）は null、在庫 0 は 0、販売が無い（velocity 0）は算出不能で null。
+ */
+export function estimateStockDaysOfSupply(
+  stock: number | null,
+  periodQuantity: number,
+  periodWeeks: number,
+): number | null {
+  if (stock === null) return null
+  if (stock <= 0) return 0
+  if (periodWeeks <= 0 || periodQuantity <= 0) return null
+  const dailySales = periodQuantity / periodWeeks / 7
+  if (dailySales <= 0) return null
+  return stock / dailySales
+}
+
+/**
  * 表示用に集約したランキング1行（順位・複合スコア・構成比・ABC・順位変動・成長率を含む）。
  * テーブル・スロープチャートはこの型を共有する。当期に存在する行のみ生成するため
  * <see cref="values"/> は非 null。
@@ -361,6 +382,8 @@ export interface RankingViewRow {
   comparisonValues: RankingMetricValues | null
   /** 成長率（%、基準指標）。算出不能は null。 */
   growth: number | null
+  /** 直近在日（在庫日数＝days of supply の近似。算出不能は null）。 */
+  daysOfSupply: number | null
 }
 
 /** パレート図の1棒（基準指標値 + 累積構成比 + ABC ランク）。 */

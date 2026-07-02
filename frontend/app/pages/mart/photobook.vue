@@ -2,20 +2,15 @@
 /**
  * 写真帳（/mart/photobook）— アイテム分析タブ。
  *
- * 商品マスタ（m_product / m_product_sku）を画像主体のギャラリーで閲覧する画面。
- * 商品画像と商品/SKU 情報（品番・記号・品名・価格・色数・サイズ数・SKU数・売上数量・在庫等）を
- * カードで一覧する。カード押下で商品の詳細分析（/mart/products/{id}）へ遷移する。
+ * 商品マスタ（m_product / m_product_sku）を投入企画書レイアウトのスペックシートで一覧する画面。
+ * 各カードは 品番・品名・PB・素材・上代・画像・（カラー）・サイズ／カラー・投入日・受注日・先付 等を
+ * 表示する（商品マスタに無い項目は空白）。1〜4アイテムを選択して Excel 出力できる。
  *
- * フィルターは要件の4種:
- *   ⓪ 業態・部門（ScopeFilterTags・複数選択）
- *   ① 品名（部分一致）
- *   ② 商品記号（部分一致）
- *   ③ 品番3桁（完全一致）
- * 業態・部門の選択肢は /api/filters（全社サマリー標準）から取得し、検索は /api/product-master に渡す。
- * データ源は商品マスタ（sales_weekly 直参照）で、分析 mart の構築有無に依存しない。
+ * フィルターは要件の4種（業態・部門・品名・商品記号・品番3桁）。データ源は商品マスタ
+ * （sales_weekly 直参照）で、分析 mart の構築有無に依存しない。
  */
-import { RotateCcw, Search } from 'lucide-vue-next'
-import type { MasterProductPage } from '~/types/api'
+import { Download, RotateCcw, Search, X } from 'lucide-vue-next'
+import type { MasterProductPage, MasterProductSummary } from '~/types/api'
 
 useHead({ title: '写真帳 | UndeuxSales' })
 
@@ -43,6 +38,37 @@ const totalPages = computed(() => {
   const total = result.value?.totalCount ?? 0
   return total === 0 ? 1 : Math.ceil(total / pageSize)
 })
+
+// ---------------------------------------------------------------
+// 選択（Excel 出力。ページを跨いで最大4件まで保持する）。
+// ---------------------------------------------------------------
+const MAX_SELECTION = 4
+const selectedMap = ref<Map<string, MasterProductSummary>>(new Map())
+const selectedProducts = computed<MasterProductSummary[]>(() => [...selectedMap.value.values()])
+const canSelectMore = computed(() => selectedMap.value.size < MAX_SELECTION)
+
+function isSelected(id: string): boolean {
+  return selectedMap.value.has(id)
+}
+
+function toggleSelect(product: MasterProductSummary): void {
+  const next = new Map(selectedMap.value)
+  if (next.has(product.productId)) {
+    next.delete(product.productId)
+  } else if (next.size < MAX_SELECTION) {
+    next.set(product.productId, product)
+  }
+  selectedMap.value = next
+}
+
+function clearSelection(): void {
+  selectedMap.value = new Map()
+}
+
+function exportExcel(): void {
+  if (selectedProducts.value.length === 0) return
+  downloadPhotobookExcel(selectedProducts.value, '写真帳.xls')
+}
 
 function buildQuery(): Record<string, unknown> {
   const query: Record<string, unknown> = { page: page.value, pageSize }
@@ -115,8 +141,8 @@ onMounted(async () => {
     <div>
       <h1 class="text-xl font-bold text-slate-800">写真帳</h1>
       <p class="text-sm text-slate-500">
-        商品画像を主体に、商品/SKU 情報（品番・記号・品名・価格・色数・サイズ数・SKU数・売上数量・在庫）を
-        一覧します。カードを押すと商品の詳細分析へ遷移します。
+        商品を投入企画書レイアウトのスペックシートで一覧します（商品マスタに無い項目は空白）。
+        1〜4アイテムを選択して Excel 出力できます。
       </p>
     </div>
 
@@ -125,7 +151,7 @@ onMounted(async () => {
         フィルタ選択肢の取得に失敗しました: {{ optionsError }}
       </p>
 
-      <!-- ⓪ 業態・部門（全社サマリー標準の ScopeFilterTags・複数選択） -->
+      <!-- 業態・部門（全社サマリー標準の ScopeFilterTags・複数選択） -->
       <ScopeFilterTags
         :business-types="options?.businessTypes ?? []"
         :departments="options?.departments ?? []"
@@ -136,7 +162,7 @@ onMounted(async () => {
         @update:selected-departments="onDepartmentsChange"
       />
 
-      <!-- ①②③ 品名（部分一致）・商品記号（部分一致）・品番3桁 -->
+      <!-- 品名（部分一致）・商品記号（部分一致）・品番3桁 -->
       <div class="mt-3 grid grid-cols-1 gap-3 border-t border-dashed border-slate-200 pt-3 sm:grid-cols-3">
         <div>
           <label class="mb-1 block text-xs font-medium text-slate-500">品名（部分一致）</label>
@@ -192,6 +218,34 @@ onMounted(async () => {
       </div>
     </CollapsiblePanel>
 
+    <!-- 選択・Excel 出力ツールバー -->
+    <div class="flex flex-wrap items-center justify-between gap-2 rounded-xl border border-slate-200 bg-white px-3 py-2">
+      <p class="text-sm text-slate-600">
+        全 {{ formatNumber(result?.totalCount ?? 0) }} 件
+        <span class="ml-2 text-xs text-slate-400">選択 {{ selectedProducts.length }} / {{ MAX_SELECTION }}</span>
+      </p>
+      <div class="flex items-center gap-2">
+        <button
+          v-if="selectedProducts.length > 0"
+          type="button"
+          class="inline-flex items-center gap-1 rounded-lg border border-slate-300 px-2.5 py-1.5 text-xs font-medium text-slate-600 hover:bg-slate-50"
+          @click="clearSelection"
+        >
+          <X class="h-3.5 w-3.5" />
+          選択解除
+        </button>
+        <button
+          type="button"
+          class="inline-flex items-center gap-1.5 rounded-lg bg-emerald-600 px-3 py-1.5 text-sm font-medium text-white transition-colors hover:bg-emerald-500 disabled:cursor-not-allowed disabled:opacity-40"
+          :disabled="selectedProducts.length === 0"
+          @click="exportExcel"
+        >
+          <Download class="h-4 w-4" />
+          Excel 出力
+        </button>
+      </div>
+    </div>
+
     <StatusBlock
       :loading="loading"
       :error="errorMessage"
@@ -199,14 +253,15 @@ onMounted(async () => {
       empty-message="該当する商品が見つかりません。フィルター条件を変更してください。"
     >
       <div class="space-y-3">
-        <p class="text-sm text-slate-600">全 {{ formatNumber(result?.totalCount ?? 0) }} 件</p>
-
-        <div class="grid grid-cols-2 gap-4 sm:grid-cols-3 lg:grid-cols-4 xl:grid-cols-5">
-          <ProductMasterCard
+        <div class="grid grid-cols-1 gap-3 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4">
+          <PhotobookSpecSheet
             v-for="product in result?.items ?? []"
             :key="product.productId"
             :product="product"
+            :selected="isSelected(product.productId)"
+            :disabled="!canSelectMore"
             :href="`/mart/products/${product.productId}`"
+            @toggle="toggleSelect(product)"
           />
         </div>
 

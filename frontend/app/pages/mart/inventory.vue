@@ -1,6 +1,7 @@
 <script setup lang="ts">
 import {
   AlertOctagon,
+  ArrowLeftRight,
   Boxes,
   CalendarClock,
   CircleDollarSign,
@@ -12,6 +13,7 @@ import {
   Scale,
   Search,
   Snowflake,
+  Warehouse,
 } from 'lucide-vue-next'
 import type { Component } from 'vue'
 import type {
@@ -44,7 +46,7 @@ import type {
 useHead({ title: '在庫マネジメント | UndeuxSales' })
 
 const MART_SCOPE = 'mart-filter'
-const { toQuery, addToFilter, loadOptions } = useFilters(MART_SCOPE)
+const { filter, options, toQuery, addToFilter, loadOptions } = useFilters(MART_SCOPE)
 const { get, post } = useApi()
 const { isBuilt, refreshStatus } = useMart()
 const route = useRoute()
@@ -57,20 +59,27 @@ const TABS: ReadonlyArray<{ key: TabKey; label: string; icon: Component }> = [
   { key: 'items', label: '在庫一覧', icon: Boxes },
   { key: 'stagnant', label: '滞留在庫', icon: AlertOctagon },
   { key: 'dormant', label: '不動在庫', icon: Snowflake },
+  { key: 'warehouse', label: '残在庫', icon: Warehouse },
+  { key: 'orderClass', label: '発注区分', icon: ArrowLeftRight },
   { key: 'flags', label: '対応リスト', icon: ClipboardList },
 ]
-type TabKey = 'dashboard' | 'items' | 'stagnant' | 'dormant' | 'flags'
-type ListTabKey = Exclude<TabKey, 'dashboard'>
+type TabKey = 'dashboard' | 'items' | 'stagnant' | 'dormant' | 'warehouse' | 'orderClass' | 'flags'
+/** サーバ API（/inventory/items）を使う明細タブ。残在庫・発注区分はモックのため含めない。 */
+type ListTabKey = 'items' | 'stagnant' | 'dormant' | 'flags'
 /** 行選択（フラグ一括登録）を提供するタブ。対応リストは状態変更のみのため対象外。 */
 type SelectableTabKey = Exclude<ListTabKey, 'flags'>
 
 const LIST_TAB_KEYS = ['items', 'stagnant', 'dormant', 'flags'] as const
 
 function parseTab(value: unknown): TabKey {
-  return value === 'items' || value === 'stagnant' || value === 'dormant' || value === 'flags'
+  return value === 'items' || value === 'stagnant' || value === 'dormant'
+    || value === 'warehouse' || value === 'orderClass' || value === 'flags'
     ? value
     : 'dashboard'
 }
+
+/** 発注区分の履歴生成に使う直近週（昇順・最大12週）。 */
+const recentWeeks = computed<string[]>(() => (options.value?.weeks ?? []).slice(-12))
 
 /** URL がタブ状態の SoT（直リンク・戻る/進むに追従）。 */
 const activeTab = computed<TabKey>(() => parseTab(route.query.tab))
@@ -143,19 +152,11 @@ async function loadActions(): Promise<void> {
   }
 }
 
-// ---- ポジショニング（部門 / 品番3桁） ----
-// 既定は品番3桁（要件 #6: 部門ポジショニング→品番ポジショニング）。フィルターで部門を絞ると
-// その部門内の品番3桁で見られる（部門＞品番の行き来）。
-type PositioningMode = 'department' | 'hinban'
-const positioningMode = ref<PositioningMode>('hinban')
-const positioningRows = computed(() =>
-  positioningMode.value === 'hinban'
-    ? (actions.value?.byHinban ?? [])
-    : (actions.value?.byDepartment ?? []),
-)
-const positioningTitle = computed(() =>
-  positioningMode.value === 'hinban' ? '品番3桁ポジショニング' : '部門ポジショニング',
-)
+// ---- 商品記号ポジショニング ----
+// byShohinKigo は API 未提供のため、品番3桁別の健全性（byHinban・includeHinban=true）から
+// 商品記号へ決定的に展開したモックで表現する。フィルターで部門等を絞ると byHinban 経由で反映される。
+// 系列（商品記号）が多く凡例は邪魔になるため非表示にし、マウスオーバーで商品記号を表示する。
+const positioningRows = computed(() => mockShohinKigoPositioning(actions.value?.byHinban ?? []))
 
 // ---- 明細タブ群（/api/mart/inventory/items 共用） ----
 
@@ -272,6 +273,8 @@ async function ensureTabLoaded(tab: TabKey): Promise<void> {
     if (!actionsLoaded.value && !actionsLoading.value) await loadActions()
     return
   }
+  // 残在庫・発注区分はモック（クライアント側 computed）で描画するため、サーバ取得は不要。
+  if (tab === 'warehouse' || tab === 'orderClass') return
   if (tab === 'flags' && !flagsSummaryLoaded.value) {
     void loadFlagsSummary()
   }
@@ -456,8 +459,9 @@ async function refreshAfterFlagMutation(): Promise<void> {
 
   // 絞込中の最終ページで最後の行が絞込対象外になると、現在ページが範囲外になり
   // 空表示に取り残される。その場合は最終ページへ丸めて再取得する。
+  // 対象は明細タブ（listStates を持つタブ）のみ。残在庫・発注区分・ダッシュボードは除外。
   const tab = activeTab.value
-  if (tab !== 'dashboard') {
+  if (tab !== 'dashboard' && tab !== 'warehouse' && tab !== 'orderClass') {
     const state = listStates[tab]
     const total = state.response?.totalCount ?? 0
     if ((state.response?.items.length ?? 0) === 0 && total > 0 && state.page > 1) {
@@ -844,35 +848,15 @@ onMounted(async () => {
                 </div>
 
                 <div class="rounded-xl border border-slate-200 bg-white p-4">
-                  <div class="mb-2 flex flex-wrap items-center gap-2">
-                    <span class="mr-auto text-xs text-slate-400">
-                      フィルターで部門を絞ると、その部門内の品番3桁で分析できます（部門＞品番）。
-                    </span>
-                    <div class="inline-flex shrink-0 overflow-hidden rounded-lg border border-slate-300 text-xs">
-                      <button
-                        type="button"
-                        class="px-2.5 py-1 transition-colors"
-                        :class="positioningMode === 'hinban' ? 'bg-indigo-600 text-white' : 'bg-white text-slate-600 hover:bg-slate-50'"
-                        :aria-pressed="positioningMode === 'hinban'"
-                        @click="positioningMode = 'hinban'"
-                      >
-                        品番3桁
-                      </button>
-                      <button
-                        type="button"
-                        class="px-2.5 py-1 transition-colors"
-                        :class="positioningMode === 'department' ? 'bg-indigo-600 text-white' : 'bg-white text-slate-600 hover:bg-slate-50'"
-                        :aria-pressed="positioningMode === 'department'"
-                        @click="positioningMode = 'department'"
-                      >
-                        部門
-                      </button>
-                    </div>
-                  </div>
+                  <p class="mb-2 text-xs text-slate-400">
+                    商品記号別の消化率×在庫日数のポジショニング。凡例は非表示で、マウスオーバーで商品記号を表示します
+                    （フィルターで業態・部門を絞ると対象が変わります）。
+                  </p>
                   <InventoryQuadrantChart
                     :rows="positioningRows"
                     :thresholds="actions.thresholds"
-                    :title="positioningTitle"
+                    title="商品記号ポジショニング"
+                    hide-legend
                   />
                 </div>
               </div>
@@ -892,6 +876,27 @@ onMounted(async () => {
               </div>
             </div>
           </StatusBlock>
+        </section>
+
+        <!-- ============ 残在庫（倉庫在庫・モック） ============ -->
+        <section v-else-if="activeTab === 'warehouse'" aria-label="残在庫">
+          <InventoryWarehouseTab
+            :business-type-options="options?.businessTypes ?? []"
+            :department-options="options?.departments ?? []"
+            :selected-business-types="filter.businessTypes"
+            :selected-departments="filter.departments"
+          />
+        </section>
+
+        <!-- ============ 発注区分（売発注／情報発注・モック） ============ -->
+        <section v-else-if="activeTab === 'orderClass'" aria-label="発注区分">
+          <InventoryOrderClassTab
+            :business-type-options="options?.businessTypes ?? []"
+            :department-options="options?.departments ?? []"
+            :selected-business-types="filter.businessTypes"
+            :selected-departments="filter.departments"
+            :recent-weeks="recentWeeks"
+          />
         </section>
 
         <!-- ============ 明細タブ（在庫一覧 / 滞留 / 不動 / 対応リスト） ============ -->

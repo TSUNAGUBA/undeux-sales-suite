@@ -29,6 +29,7 @@ import type {
   CrosstabMatrixResponse,
   CrosstabMetricInfo,
   CrosstabMetricKey,
+  ItemDetailResponse,
   KpiCardItem,
   MasterProductDetail,
   ProductPage,
@@ -37,6 +38,7 @@ import type {
   WeeklySeriesResponse,
 } from '~/types/api'
 import type { ComboChartAxis, ComboChartSeries } from '~/components/ComboChartCard.vue'
+import type { ItemDetailRowCategory } from '~/utils/itemDetail'
 
 useHead({ title: '商品詳細分析 | UndeuxSales' })
 
@@ -139,6 +141,24 @@ function martQueryOf(summary: import('~/types/api').MasterProductSummary): Recor
   return query
 }
 
+/**
+ * 商品詳細分析（/api/mart/item-detail）用のクエリ。item-detail は業態×商品記号×品番で絞る
+ * （martQueryOf の shohinKigos/hinbans キーとは別名のため専用に組む）。表示側で配下SKUに再絞り込みする。
+ */
+function itemDetailQueryOf(summary: import('~/types/api').MasterProductSummary): Record<string, unknown> {
+  const query: Record<string, unknown> = {
+    businessTypes: [summary.businessCategoryCd],
+    productSign: summary.productSign,
+    productCode: summary.productTypeCrd,
+    limit: 300,
+  }
+  if (year.value !== null) {
+    query.from = `${year.value}-01-01`
+    query.to = `${year.value}-12-31`
+  }
+  return query
+}
+
 // ---------------------------------------------------------------
 // mart 集計（サマリーKPI・週次系列・SKU実績）
 // ---------------------------------------------------------------
@@ -156,8 +176,12 @@ const areaOptions = TEMPERATURE_AREAS
 const martSummary = ref<{ kpi: import('~/types/api').MartKpi } | null>(null)
 const weekly = ref<WeeklySeriesResponse | null>(null)
 const skuPerformance = ref<ProductPage | null>(null)
+const itemDetail = ref<ItemDetailResponse | null>(null)
 const analyticsLoading = ref(true)
 const analyticsError = ref<string | null>(null)
+
+// 配下SKU週次明細（商品詳細分析の表）で表示する行区分（この商品スコープでは気温は共通のため省く）。
+const PRODUCT_DETAIL_CATEGORIES: ItemDetailRowCategory[] = ['quantity', 'stock', 'stockDays', 'salePrice']
 
 // 期間・エリア切替の連打で古い応答が後着しても表示を上書きしないためのリクエスト世代。
 // analyticsRequestSeq は全体ロード、weeklyRequestSeq は週次のみ取得（loadWeeklyOnly）用。
@@ -181,10 +205,11 @@ async function loadAnalytics(): Promise<void> {
       martSummary.value = null
       weekly.value = null
       skuPerformance.value = null
+      itemDetail.value = null
       return
     }
     const query = martQueryOf(summary)
-    const [summaryResult, weeklyResult, skuResult] = await Promise.all([
+    const [summaryResult, weeklyResult, skuResult, itemDetailResult] = await Promise.all([
       get<import('~/types/api').MartSummaryResponse>('/api/mart/summary', query),
       get<WeeklySeriesResponse>('/api/mart/weekly-series', { ...query, area: area.value }),
       get<ProductPage>('/api/mart/products', {
@@ -194,11 +219,13 @@ async function loadAnalytics(): Promise<void> {
         page: 1,
         pageSize: 200,
       }),
+      get<ItemDetailResponse>('/api/mart/item-detail', itemDetailQueryOf(summary)),
     ])
     if (seq !== analyticsRequestSeq) return
     martSummary.value = summaryResult
     weekly.value = weeklyResult
     skuPerformance.value = skuResult
+    itemDetail.value = itemDetailResult
   } catch (error) {
     if (seq === analyticsRequestSeq) {
       analyticsError.value = apiErrorMessage(error)
@@ -403,6 +430,23 @@ const trendAxes: ComboChartAxis[] = [
   { id: 'y1', position: 'right', label: '円（売上金額）', gridOff: true },
   { id: 'y2', position: 'right', label: '℃（気温）', beginAtZero: false, gridOff: true },
 ]
+
+// ---------------------------------------------------------------
+// 商品詳細分析（配下SKU週次明細）— {id} 配下のSKU（同一 業態×記号×品番）のみに絞る。
+// ---------------------------------------------------------------
+const itemDetailView = computed(() => {
+  if (!itemDetail.value) return null
+  const v = buildItemDetailView(itemDetail.value)
+  const s = detail.value?.summary
+  if (!s) return v
+  const rows = v.rows.filter(
+    (r) =>
+      r.gyotaiCode === s.businessCategoryCd
+      && r.shohinKigou === s.productSign
+      && r.hinbanCode === s.productTypeCrd,
+  )
+  return { weeks: v.weeks, rows, latestWeek: v.latestWeek, truncated: v.truncated }
+})
 
 // ---------------------------------------------------------------
 // クロス集計（商品スコープ固定。行・列とメトリクスのみ選択）
@@ -775,6 +819,27 @@ onMounted(async () => {
                 class="rounded-xl border border-slate-200 bg-white p-8 text-center text-sm text-slate-400"
               >
                 選択した期間に売上データがありません。
+              </p>
+            </section>
+
+            <!-- 商品詳細分析（配下SKU週次明細）。商品詳細分析ページと同じ週別マトリクス表現。 -->
+            <section class="space-y-2">
+              <h2 class="text-sm font-semibold text-slate-700">商品詳細分析（配下SKU）</h2>
+              <p class="text-xs text-slate-400">
+                この商品の配下SKUについて、週ごとの「売数／在庫数／在日／販売価格」を表示します
+                （在日の色分け・値下げ週の強調あり）。
+              </p>
+              <ItemDetailWeeklyTable
+                v-if="itemDetailView && itemDetailView.rows.length > 0"
+                :weeks="itemDetailView.weeks"
+                :rows="itemDetailView.rows"
+                :visible-categories="PRODUCT_DETAIL_CATEGORIES"
+              />
+              <p
+                v-else
+                class="rounded-xl border border-slate-200 bg-white p-6 text-center text-sm text-slate-400"
+              >
+                配下SKUの週次明細がありません。
               </p>
             </section>
 

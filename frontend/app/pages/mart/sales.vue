@@ -6,32 +6,26 @@
  *   気温は週平均/最高/最低の3種とエリア（標準=東京/寒冷=札幌/温暖=那覇）を切り替えられる。
  * - 週次明細テーブル: 週ごとの売上金額・売上数量・気温・店頭在庫・在日・消化率。
  *   品番フィルタ（ドリルダウン）を適用すると品番単位の週次詳細になる。
- * - 集計軸別の売上構成（部門・業態・季節・品番CD（服種）・ブランド）。
+ *
+ * 期間指定（年月 from-to）はフィルターの最上部に置き、業態・部門フィルタ（FilterBar）と一体で扱う。
+ * 売上金額ランキング・順位変動・部門別売上ランキングは目的が薄いため本ページからは除外し、
+ * ランキング系の分析は「探索・予測分析 > ランキング分析」に集約する。
  *
  * データ源は /api/mart/*（fact_sales_weekly / fact_inventory_snapshot / 気温 dim_climate）。
  */
 import type {
-  MartBreakdownResponse,
-  BreakdownRow,
-  RankingDimensionKey,
-  RankingMetricKey,
-  RankingResponse,
   TemperatureArea,
   WeeklySeriesPoint,
   WeeklySeriesResponse,
 } from '~/types/api'
 import type { ComboChartAxis, ComboChartSeries } from '~/components/ComboChartCard.vue'
-import type { MoverItem } from '~/utils/ranking'
 
 useHead({ title: '売上分析 | UndeuxSales' })
 
 const MART_SCOPE = 'mart-filter'
-const { toQuery, addToFilter, loadOptions, options } = useFilters(MART_SCOPE)
+const { toQuery, loadOptions, options } = useFilters(MART_SCOPE)
 const { get } = useApi()
 const { isBuilt, refreshStatus } = useMart()
-
-const dimension = ref('department')
-const metric = ref('amount')
 
 // 気温の定義: エリア（標準/寒冷/温暖）× 種別（平均/最高/最低）。週は月曜〜日曜。
 const area = ref<TemperatureArea>('standard')
@@ -45,7 +39,6 @@ const tempMeasureOptions: { value: TempMeasure; label: string }[] = [
 const areaOptions = TEMPERATURE_AREAS
 
 const weekly = ref<WeeklySeriesResponse | null>(null)
-const breakdown = ref<MartBreakdownResponse | null>(null)
 const loading = ref(true)
 const errorMessage = ref<string | null>(null)
 
@@ -94,119 +87,6 @@ function periodQuery(): Record<string, unknown> {
   if (range.from) query.from = range.from
   if (range.to) query.to = range.to
   return query
-}
-
-// ---------------------------------------------------------------
-// 順位変動（別ページ＝ランキング分析の RankingMoversChart を本ページにも表示）。
-// 現在の集計軸 × 前年同期比較で算出する（ブランド軸はランキング API 非対応のため除外）。
-// ---------------------------------------------------------------
-const MOVERS_DIM_MAP: Partial<Record<string, RankingDimensionKey>> = {
-  department: 'department',
-  businessType: 'businessType',
-  season: 'season',
-  product: 'product',
-  hinban: 'hinban',
-}
-const moversDim = computed<RankingDimensionKey | undefined>(() => MOVERS_DIM_MAP[dimension.value])
-
-/** 前年同期の比較範囲（現在の from-to を1年戻す）。両端が確定している場合のみ。 */
-function previousYearRange(): { compareFrom: string; compareTo: string } | null {
-  const range = dateRange()
-  if (!range.from || !range.to) return null
-  const shiftYear = (d: string): string => {
-    const [y, m, day] = d.split('-')
-    return `${Number.parseInt(y!, 10) - 1}-${m}-${day}`
-  }
-  return { compareFrom: shiftYear(range.from), compareTo: shiftYear(range.to) }
-}
-const comparisonAvailable = computed(() => previousYearRange() !== null)
-
-const moversData = ref<RankingResponse | null>(null)
-// 連打・期間変更で古い応答が後着しても上書きしないリクエスト世代。
-let moversSeq = 0
-
-async function loadMovers(baseQuery: Record<string, unknown>): Promise<void> {
-  const seq = ++moversSeq
-  moversData.value = null
-  const dim = moversDim.value
-  const compare = previousYearRange()
-  if (!dim || !compare || periodInvalid.value) return
-  try {
-    const res = await get<RankingResponse>('/api/mart/ranking', {
-      ...baseQuery,
-      dimension: dim,
-      compareFrom: compare.compareFrom,
-      compareTo: compare.compareTo,
-    })
-    if (seq !== moversSeq) return
-    moversData.value = res
-  } catch (error) {
-    // 順位変動は補助表示。取得失敗で売上分析本体は止めない（原則4）。
-    if (seq === moversSeq) {
-      console.error('[sales] 順位変動の取得に失敗しました:', error)
-      moversData.value = null
-    }
-  }
-}
-
-const moverItems = computed<MoverItem[]>(() => {
-  const data = moversData.value
-  if (!data) return []
-  const metricKey = metric.value as RankingMetricKey
-  const curRank = assignRanks(
-    data.rows
-      .filter((r) => r.current)
-      .map((r) => ({ key: r.key, value: metricRawValue(r.current, metricKey), tieBreak: r.current!.amount })),
-    'higher',
-  )
-  const prevRank = assignRanks(
-    data.rows
-      .filter((r) => r.comparison)
-      .map((r) => ({ key: r.key, value: metricRawValue(r.comparison, metricKey), tieBreak: r.comparison!.amount })),
-    'higher',
-  )
-  const items: MoverItem[] = []
-  for (const r of data.rows) {
-    if (!r.current) continue
-    const rank = curRank.get(r.key)
-    if (rank === undefined) continue
-    const pr = prevRank.get(r.key) ?? null
-    items.push({
-      key: r.key,
-      label: r.label,
-      rank,
-      prevRank: pr,
-      isNew: r.comparison === null,
-      delta: pr !== null ? pr - rank : null,
-    })
-  }
-  return items
-})
-
-// mart 集計軸（breakdown エンドポイントが対応する軸）。日次・カラー/サイズ別は mart 売上分析では非対応。
-const dimensionOptions = [
-  { value: 'department', label: '部門別' },
-  { value: 'businessType', label: '業態別' },
-  { value: 'season', label: '季節別' },
-  { value: 'product', label: '品番CD（服種）別' },
-  { value: 'hinban', label: '品番3桁別' },
-  { value: 'brand', label: 'ブランド別' },
-]
-
-const metricOptions = [
-  { value: 'amount', label: '売上金額' },
-  { value: 'quantity', label: '売上数量' },
-  { value: 'grossProfit', label: '粗利' },
-]
-
-const metricLabel = computed(
-  () => metricOptions.find((item) => item.value === metric.value)?.label ?? '売上金額',
-)
-
-function metricValue(row: BreakdownRow): number {
-  if (metric.value === 'quantity') return row.quantity
-  if (metric.value === 'grossProfit') return row.grossProfit
-  return row.amount
 }
 
 const tempMeasureLabel = computed(
@@ -290,42 +170,7 @@ const weeklyColumns = computed(() => [
   },
 ])
 
-// ---------------------------------------------------------------
-// 集計軸別の売上構成（既存どおり）
-// ---------------------------------------------------------------
-
-const breakdownLabels = computed(() => (breakdown.value?.rows ?? []).map((r) => r.label))
-const breakdownData = computed(() => (breakdown.value?.rows ?? []).map(metricValue))
-
-const tableColumns = [
-  { key: 'label', label: '区分' },
-  {
-    key: 'quantity',
-    label: '数量',
-    align: 'right' as const,
-    format: (row: BreakdownRow) => formatNumber(row.quantity),
-  },
-  {
-    key: 'amount',
-    label: '売上金額',
-    align: 'right' as const,
-    format: (row: BreakdownRow) => formatCurrency(row.amount),
-  },
-  {
-    key: 'grossProfit',
-    label: '粗利',
-    align: 'right' as const,
-    format: (row: BreakdownRow) => formatCurrency(row.grossProfit),
-  },
-  {
-    key: 'sharePercent',
-    label: '構成比',
-    align: 'right' as const,
-    format: (row: BreakdownRow) => formatPercent(row.sharePercent),
-  },
-]
-
-// 期間・エリア・集計軸の連続変更で古い応答が後着しても表示を上書きしないためのリクエスト世代。
+// 期間・エリアの連続変更で古い応答が後着しても表示を上書きしないためのリクエスト世代。
 let salesLoadSeq = 0
 
 async function load(): Promise<void> {
@@ -337,25 +182,12 @@ async function load(): Promise<void> {
     if (seq !== salesLoadSeq) return
     if (!isBuilt.value) {
       weekly.value = null
-      breakdown.value = null
-      moversData.value = null
       return
     }
     const query = periodQuery()
-    const [weeklyResult, breakdownResult] = await Promise.all([
-      get<WeeklySeriesResponse>('/api/mart/weekly-series', { ...query, area: area.value }),
-      get<MartBreakdownResponse>('/api/mart/breakdown', {
-        ...query,
-        dimension: dimension.value,
-        metric: metric.value,
-        limit: 15,
-      }),
-    ])
+    const weeklyResult = await get<WeeklySeriesResponse>('/api/mart/weekly-series', { ...query, area: area.value })
     if (seq !== salesLoadSeq) return
     weekly.value = weeklyResult
-    breakdown.value = breakdownResult
-    // 順位変動は補助表示のため非ブロッキングで取得（本体の表示を待たせない）。
-    void loadMovers(query)
   } catch (error) {
     if (seq === salesLoadSeq) {
       errorMessage.value = apiErrorMessage(error)
@@ -365,32 +197,6 @@ async function load(): Promise<void> {
       loading.value = false
     }
   }
-}
-
-function handleBreakdownDrill(row: BreakdownRow): void {
-  const currentDim = dimension.value
-  let targetRow = 'category:hinban'
-
-  if (currentDim === 'department') {
-    addToFilter('departments', row.key)
-  } else if (currentDim === 'businessType') {
-    addToFilter('businessTypes', row.key)
-  } else if (currentDim === 'season') {
-    addToFilter('seasons', row.key)
-  } else if (currentDim === 'product') {
-    // mart breakdown の product は品番CD（product_code）が key。
-    addToFilter('hinbans', row.key)
-    targetRow = 'category:hinban'
-  } else if (currentDim === 'hinban') {
-    // 品番3桁（product_code）で絞り込み、単品（品番-単品）の内訳へドリルする。
-    addToFilter('hinbans', row.key)
-    targetRow = 'category:product'
-  }
-
-  navigateTo({
-    path: '/mart/crosstab',
-    query: { rowDimension: targetRow, columnDimension: 'time:year' },
-  })
 }
 
 // エリア変更はバックエンドの気温が変わるため再取得する。
@@ -419,14 +225,12 @@ onMounted(async () => {
     <div>
       <h1 class="text-xl font-bold text-slate-800">売上分析</h1>
       <p class="text-sm text-slate-500">
-        分析 mart（fact_sales_weekly / fact_inventory_snapshot）の週次推移と集計軸別の売上構成（日次は mart 非対応）。
+        分析 mart（fact_sales_weekly / fact_inventory_snapshot）の週次売上推移と週次明細（日次は mart 非対応）。
         気温は mart の気温データ（実測 dim_climate、未カバー週は標準気候へフォールバック）。
       </p>
     </div>
 
-    <FilterBar :scope-key="MART_SCOPE" hide-year @apply="load" />
-
-    <!-- 期間（年月 from-to）。年度（単一選択）に代わる期間指定。 -->
+    <!-- 期間（年月 from-to）。フィルターの最上部に置く（業態・部門フィルタと一体で扱う）。 -->
     <div class="flex flex-wrap items-end gap-3 rounded-xl border border-slate-200 bg-white p-3 shadow-sm">
       <div>
         <label class="mb-1 block text-xs font-medium text-slate-500">期間（年月）開始</label>
@@ -454,9 +258,11 @@ onMounted(async () => {
         開始が終了より後です。期間を見直してください。
       </p>
       <p v-else class="text-xs text-slate-400">
-        年月の from-to で期間を指定します（未指定の端は開放）。順位変動には開始・終了の両方が必要です。
+        年月の from-to で期間を指定します（未指定の端は開放）。
       </p>
     </div>
+
+    <FilterBar :scope-key="MART_SCOPE" hide-year @apply="load" />
 
     <div class="flex flex-wrap items-center gap-2">
       <select
@@ -499,87 +305,12 @@ onMounted(async () => {
           />
         </div>
 
-        <div class="flex flex-wrap items-end gap-3">
-          <div>
-            <label class="mb-1 block text-xs font-medium text-slate-500">集計軸</label>
-            <select
-              v-model="dimension"
-              class="rounded-lg border border-slate-300 bg-white px-3 py-2 text-sm"
-              @change="load"
-            >
-              <option v-for="opt in dimensionOptions" :key="opt.value" :value="opt.value">
-                {{ opt.label }}
-              </option>
-            </select>
-          </div>
-          <div>
-            <label class="mb-1 block text-xs font-medium text-slate-500">指標</label>
-            <select
-              v-model="metric"
-              class="rounded-lg border border-slate-300 bg-white px-3 py-2 text-sm"
-              @change="load"
-            >
-              <option v-for="opt in metricOptions" :key="opt.value" :value="opt.value">
-                {{ opt.label }}
-              </option>
-            </select>
-          </div>
+        <div
+          v-else
+          class="rounded-xl border border-slate-200 bg-white p-8 text-center text-sm text-slate-400"
+        >
+          選択した期間に売上データがありません。
         </div>
-
-        <!-- 売上金額ランキング（左）× 順位変動（右）を横並び（要件 #5） -->
-        <div class="grid grid-cols-1 gap-3 lg:grid-cols-2">
-          <!-- 左: 売上金額ランキング（上位15） -->
-          <div>
-            <BarChartCard
-              v-if="breakdownLabels.length > 0"
-              :title="`${metricLabel}ランキング（上位15）`"
-              :labels="breakdownLabels"
-              :data="breakdownData"
-              :series-label="metricLabel"
-              color="#4f46e5"
-              horizontal
-            />
-            <div
-              v-else
-              class="flex min-h-[20rem] items-center justify-center rounded-xl border border-slate-200 bg-white p-8 text-center text-sm text-slate-400"
-            >
-              選択した条件に該当するデータがありません。
-            </div>
-          </div>
-
-          <!-- 右: 順位変動（前年同期比）。ランキング分析と同じ RankingMoversChart を再利用。 -->
-          <section class="space-y-1">
-            <h3 class="text-sm font-semibold text-slate-700">順位変動（前年同期比）</h3>
-            <RankingMoversChart v-if="moverItems.length > 0" :items="moverItems" />
-            <p
-              v-else-if="!moversDim"
-              class="rounded-xl border border-slate-200 bg-white p-4 text-xs text-slate-400"
-            >
-              順位変動は集計軸が「部門・業態・季節・品番CD（服種）・品番3桁」のときに表示されます（ブランド軸は非対応）。
-            </p>
-            <p
-              v-else-if="!comparisonAvailable"
-              class="rounded-xl border border-slate-200 bg-white p-4 text-xs text-slate-400"
-            >
-              上の「期間（年月）」で開始・終了の両方を指定すると、前年同期比の順位変動を表示します。
-            </p>
-            <p
-              v-else
-              class="rounded-xl border border-slate-200 bg-white p-4 text-xs text-slate-400"
-            >
-              順位変動を表示できるデータがありません（比較期間にデータが無い可能性があります）。
-            </p>
-          </section>
-        </div>
-
-        <!-- 集計軸別の明細（全幅。クリックで該当軸をクロス集計へドリル）。 -->
-        <DataTable
-          :columns="tableColumns"
-          :rows="breakdown?.rows ?? []"
-          :row-key="(row: BreakdownRow) => row.key"
-          clickable
-          @row-click="handleBreakdownDrill"
-        />
       </div>
     </StatusBlock>
   </div>
