@@ -67,7 +67,7 @@ function clearSelection(): void {
 
 function exportExcel(): void {
   if (selectedProducts.value.length === 0) return
-  downloadPhotobookExcel(selectedProducts.value, '写真帳.xls')
+  downloadPhotobookExcel(selectedProducts.value, '写真帳.xlsx')
 }
 
 function buildQuery(): Record<string, unknown> {
