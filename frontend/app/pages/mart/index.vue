@@ -171,7 +171,9 @@ const monthlyYoY = computed<{ monthLabel: string; amount: YoYPair; quantity: YoY
   if (idx < 0 || filter.value.year === null || !summaryPrev.value) return null
   const cur = monthlyTotals(summary.value?.weeklyTrend)[idx]
   const prev = monthlyTotals(summaryPrev.value.weeklyTrend)[idx]
-  if (!cur || !prev) return null
+  // 締まった直近月に当年売上が無い（データ欠損の月間ギャップ等）場合は、−100% の誤表示を避けるため
+  // 比較不能として null にする（当月の売上が真に 0 のときも比較を出さない方が誤解を招かない）。
+  if (!cur || !prev || cur.amount <= 0) return null
   // 前年が 0（＝前年同月にデータ無し）の指標は比較不能として previous=null にする。
   const pair = (c: number, p: number): YoYPair => ({ current: c, previous: p || null })
   return {

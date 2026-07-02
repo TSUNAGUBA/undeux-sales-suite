@@ -145,7 +145,7 @@ function resetKigou(): void {
             <td class="whitespace-nowrap border-l border-slate-100 px-2 py-1.5 text-right tabular-nums text-slate-600">{{ formatNumber(row.ruikeiNohinCount) }}</td>
             <td class="whitespace-nowrap px-2 py-1.5 text-right tabular-nums text-slate-600">{{ formatNumber(row.ruikeiUriageCount) }}</td>
             <td class="whitespace-nowrap px-2 py-1.5 text-right tabular-nums text-slate-600">{{ formatNumber(row.zaikosu) }}</td>
-            <td class="whitespace-nowrap border-l border-slate-100 px-2 py-1.5 text-right tabular-nums font-medium text-violet-700">{{ formatNumber(row.orderNotDelivered) }}</td>
+            <td class="whitespace-nowrap border-l border-slate-100 px-2 py-1.5 text-right tabular-nums font-medium text-violet-700">{{ formatDecimal(row.orderNotDelivered, 1) }}</td>
             <td class="whitespace-nowrap border-l border-slate-100 px-2 py-1.5 text-right tabular-nums text-slate-600">{{ formatNumber(row.reservedStock) }}</td>
             <td class="whitespace-nowrap px-2 py-1.5 text-right tabular-nums font-semibold text-amber-700">{{ formatNumber(row.warehouseStock) }}</td>
           </tr>
@@ -167,7 +167,7 @@ function resetKigou(): void {
           <div class="flex justify-between"><span class="text-slate-500">納品数</span><span class="tabular-nums">{{ formatNumber(row.ruikeiNohinCount) }}</span></div>
           <div class="flex justify-between"><span class="text-slate-500">売上数</span><span class="tabular-nums">{{ formatNumber(row.ruikeiUriageCount) }}</span></div>
           <div class="flex justify-between"><span class="text-slate-500">在庫数(店頭)</span><span class="tabular-nums">{{ formatNumber(row.zaikosu) }}</span></div>
-          <div class="flex justify-between"><span class="text-slate-500">発注済未納品</span><span class="tabular-nums font-medium text-violet-700">{{ formatNumber(row.orderNotDelivered) }}</span></div>
+          <div class="flex justify-between"><span class="text-slate-500">発注済未納品</span><span class="tabular-nums font-medium text-violet-700">{{ formatDecimal(row.orderNotDelivered, 1) }}</span></div>
           <div class="flex justify-between"><span class="text-slate-500">取置在庫</span><span class="tabular-nums">{{ formatNumber(row.reservedStock) }}</span></div>
           <div class="flex justify-between"><span class="text-slate-500">倉庫在庫数</span><span class="tabular-nums font-semibold text-amber-700">{{ formatNumber(row.warehouseStock) }}</span></div>
         </div>

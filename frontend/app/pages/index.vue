@@ -169,7 +169,7 @@ onMounted(async () => {
             </div>
           </div>
 
-          <!-- 本日のインサイト & おすすめ -->
+          <!-- 今週のインサイト & おすすめ -->
           <div>
             <div class="mb-2 flex items-center gap-1.5">
               <Sparkles class="h-5 w-5 text-indigo-500" />

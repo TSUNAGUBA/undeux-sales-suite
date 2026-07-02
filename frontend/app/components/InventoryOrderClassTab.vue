@@ -81,6 +81,20 @@ function openHistory(row: OrderClassRow): void {
 function closeHistory(): void {
   historyRow.value = null
 }
+
+// Escape キーでモーダルを閉じる（開いている間だけ window リスナを張る）。
+function onModalKeydown(event: KeyboardEvent): void {
+  if (event.key === 'Escape') closeHistory()
+}
+watch(historyRow, (row) => {
+  if (import.meta.server) return
+  if (row) window.addEventListener('keydown', onModalKeydown)
+  else window.removeEventListener('keydown', onModalKeydown)
+})
+onBeforeUnmount(() => {
+  if (import.meta.server) return
+  window.removeEventListener('keydown', onModalKeydown)
+})
 /** 履歴の各点が前週から変化したか（強調用）。 */
 function isChangePoint(row: OrderClassRow, index: number): boolean {
   return index > 0 && row.history[index]!.orderClass !== row.history[index - 1]!.orderClass

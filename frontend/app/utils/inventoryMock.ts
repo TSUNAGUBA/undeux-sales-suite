@@ -126,7 +126,8 @@ export function buildWarehouseMock(
           const seed = hashString(`${bt}|${dept}|${k}|${t}`)
           const hatchu = Math.round((50 + seededUnit(seed) * 450) * 10) / 10
           const sakizuke = Math.round(hatchu * (0.1 + seededUnit(seed + 1) * 0.3))
-          const nohin = Math.round(hatchu * (0.5 + seededUnit(seed + 2) * 0.5))
+          // 納品数は発注数を超えない（発注 ≥ 納品 ≥ 売上 の不変条件。hatchu は小数のため floor で上限を取る）。
+          const nohin = Math.min(Math.floor(hatchu), Math.round(hatchu * (0.5 + seededUnit(seed + 2) * 0.5)))
           const uriage = Math.round(nohin * (0.3 + seededUnit(seed + 3) * 0.6))
           const remain = Math.max(0, nohin - uriage)
           rows.push({
@@ -142,7 +143,8 @@ export function buildWarehouseMock(
             ruikeiNohinCount: nohin,
             ruikeiUriageCount: uriage,
             zaikosu: Math.round(remain * (0.4 + seededUnit(seed + 4) * 0.3)),
-            orderNotDelivered: Math.max(0, Math.round(hatchu) - nohin),
+            // 発注(小数) − 納品(整数)。nohin ≤ floor(hatchu) のため常に ≥ 0。小数1桁で保持。
+            orderNotDelivered: Math.round((hatchu - nohin) * 10) / 10,
             reservedStock: Math.round(seededUnit(seed + 6) * 20),
             warehouseStock: Math.round(remain * (0.2 + seededUnit(seed + 5) * 0.3)),
           })
