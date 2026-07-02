@@ -69,16 +69,37 @@ jobs:
           fi
           rm -f "$sa"
 
-      # Firebase 公式アクションで本番（live チャンネル）へデプロイする。
-      # 手動の GOOGLE_APPLICATION_CREDENTIALS 方式は firebase-tools の既知不具合（CI で ADC を
-      # 取りこぼし "Failed to authenticate" になる。firebase/firebase-tools#10726 等）を踏むため、
-      # サービスアカウント認証を確実に扱う公式アクションに委ねる（google-github-actions/auth は併用しない。
-      # 併用時に設定される CLOUDSDK_* 系の環境変数が firebase-tools の認証解決を阻害しうるため）。
-      # entryPoint 既定はリポジトリルート（firebase.json があり hosting.public=frontend/.output/public）。
-      # repoToken は PR プレビューコメント用途のため live デプロイでは不要（付与しない）。
-      - name: Firebase Hosting へデプロイ（本番 live チャンネル）
-        uses: FirebaseExtended/action-hosting-deploy@v0
-        with:
-          firebaseServiceAccount: ${{ secrets.FIREBASE_SERVICE_ACCOUNT }}
-          projectId: ${{ secrets.FIREBASE_PROJECT_ID }}
-          channelId: live
+      # Firebase Hosting（本番 live チャンネル）へデプロイする。
+      # 公式アクション（FirebaseExtended/action-hosting-deploy）は「公開中と完全に同一内容の再デプロイ」を
+      # 失敗として扱う（HTTP 400 FAILED_PRECONDITION: "is the current active version"）。差分ゼロの重複デプロイ
+      # （deploy-all と deploy-frontend の連続実行等）でジョブが赤くなるのを避けるため、シェルで firebase-tools を
+      # 実行し、この no-op（＝サイトは既に最新）のみ成功扱いにして冪等化する。それ以外の失敗は従来どおり失敗させる。
+      # 認証はサービスアカウント JSON をファイル化し GOOGLE_APPLICATION_CREDENTIALS で渡す
+      # （firebase-tools 15 系は本 env を確実に解決する。google-github-actions/auth は併用しない＝CLOUDSDK_* が
+      # 認証解決を阻害しうるため）。firebase.json はリポジトリルート（hosting.public=frontend/.output/public）。
+      - name: Firebase Hosting へデプロイ（本番 live チャンネル・冪等）
+        env:
+          FIREBASE_SERVICE_ACCOUNT: ${{ secrets.FIREBASE_SERVICE_ACCOUNT }}
+          FIREBASE_PROJECT_ID: ${{ secrets.FIREBASE_PROJECT_ID }}
+        run: |
+          set -uo pipefail
+          sa="$RUNNER_TEMP/firebase-sa-deploy.json"
+          printf '%s' "$FIREBASE_SERVICE_ACCOUNT" > "$sa"
+          export GOOGLE_APPLICATION_CREDENTIALS="$sa"
+          set +e
+          out="$(npx -y firebase-tools@latest deploy --only hosting --project "$FIREBASE_PROJECT_ID" --non-interactive 2>&1)"
+          code=$?
+          set -e
+          rm -f "$sa"
+          echo "$out"
+          if [ "$code" -eq 0 ]; then
+            echo "デプロイ成功。"
+            exit 0
+          fi
+          # 差分ゼロ（公開中と同一版）は no-op として成功扱いにする（サイトは既に最新）。
+          if printf '%s' "$out" | grep -q "is the current active version"; then
+            echo "::notice::公開中の内容と同一のため、リリースはスキップされました（差分ゼロの no-op。サイトは最新です）。"
+            exit 0
+          fi
+          echo "::error::Firebase デプロイに失敗しました。上記ログを確認してください。"
+          exit "$code"
