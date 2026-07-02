@@ -20,6 +20,7 @@
  */
 import { Check, ClipboardCopy, RotateCcw, Search } from 'lucide-vue-next'
 import type { ItemDetailResponse } from '~/types/api'
+import type { ItemDetailRowCategory } from '~/utils/itemDetail'
 
 useHead({ title: '商品詳細分析 | UndeuxSales' })
 
@@ -36,7 +37,14 @@ const departments = ref<string[]>([])
 const productName = ref('')
 const productSign = ref('')
 const productCode = ref('')
+const tanawari1 = ref('')
+const tanawari2 = ref('')
 const year = ref<number | null>(null)
+
+// 品名 AND・棚割の適用値（画面表示のクライアント側フィルタ基準）。適用ボタンで確定する。
+const appliedProductName = ref('')
+const appliedTanawari1 = ref('')
+const appliedTanawari2 = ref('')
 
 const mode = ref<ItemDetailMode>('weekly')
 
@@ -44,7 +52,32 @@ const raw = ref<ItemDetailResponse | null>(null)
 const loading = ref(true)
 const errorMessage = ref<string | null>(null)
 
-const view = computed(() => (raw.value ? buildItemDetailView(raw.value) : null))
+/** 品名フィルタ入力をトークン分割（カンマ・スペース・読点区切り、空要素除去）。 */
+function nameTokens(value: string): string[] {
+  return value.split(/[\s,、，]+/).map((t) => t.trim()).filter(Boolean)
+}
+
+const fullView = computed(() => (raw.value ? buildItemDetailView(raw.value) : null))
+
+/**
+ * 表示ビュー: 品名（全トークンを含む AND 部分一致）・棚割1/棚割2（部分一致）で行を絞る。
+ * 棚割はレスポンス未提供のためモック値（buildItemDetailView が付与）に対して絞り込む。
+ */
+const view = computed(() => {
+  const v = fullView.value
+  if (!v) return null
+  const tokens = nameTokens(appliedProductName.value)
+  const t1 = appliedTanawari1.value
+  const t2 = appliedTanawari2.value
+  if (tokens.length === 0 && !t1 && !t2) return v
+  const rows = v.rows.filter(
+    (r) =>
+      tokens.every((t) => r.hinmei.includes(t))
+      && (!t1 || r.tanawari1.includes(t1))
+      && (!t2 || r.tanawari2.includes(t2)),
+  )
+  return { weeks: v.weeks, rows, latestWeek: v.latestWeek, truncated: v.truncated }
+})
 const summary = computed(() => computeItemDetailSummary(view.value?.rows ?? []))
 const summaryFmt = computed(() => formatSummary(summary.value))
 
@@ -53,9 +86,12 @@ function buildQuery(): Record<string, unknown> {
   const query: Record<string, unknown> = { limit: 100 }
   if (businessTypes.value.length > 0) query.businessTypes = businessTypes.value
   if (departments.value.length > 0) query.departments = departments.value
-  if (productName.value.trim()) query.productName = productName.value.trim()
+  // 品名 AND はクライアント側で行うため、サーバへは先頭トークンのみ渡して母集団を粗く絞る。
+  const tokens = nameTokens(productName.value)
+  if (tokens.length > 0) query.productName = tokens[0]
   if (productSign.value.trim()) query.productSign = productSign.value.trim()
   if (productCode.value.trim()) query.productCode = productCode.value.trim()
+  // 棚割はレスポンス未提供（モック）のためクライアント側で絞る。サーバへは送らない。
   if (year.value !== null) {
     query.from = `${year.value}-01-01`
     query.to = `${year.value}-12-31`
@@ -69,6 +105,10 @@ async function load(): Promise<void> {
   const seq = ++loadSeq
   loading.value = true
   errorMessage.value = null
+  // クライアント側フィルタ（品名 AND・棚割）の適用値を確定する。
+  appliedProductName.value = productName.value
+  appliedTanawari1.value = tanawari1.value.trim()
+  appliedTanawari2.value = tanawari2.value.trim()
   try {
     await refreshStatus()
     if (seq !== loadSeq) return
@@ -99,8 +139,58 @@ function resetFilters(): void {
   productName.value = ''
   productSign.value = ''
   productCode.value = ''
+  tanawari1.value = ''
+  tanawari2.value = ''
   reload()
 }
+
+// ---------------------------------------------------------------
+// 行区分（売数・在庫数・在日・販売価格・気温[東京/札幌/沖縄]）の表示/非表示
+// デフォルト全表示。最終表示条件は localStorage に保存し次回再現する（週別マトリクスに適用）。
+// ---------------------------------------------------------------
+const ROW_CATEGORY_STORAGE_KEY = 'undeux.itemDetail.rowCategories'
+const ALL_CATEGORY_KEYS = ITEM_DETAIL_ROW_CATEGORIES.map((c) => c.key)
+
+function loadCategoryVisibility(): Record<ItemDetailRowCategory, boolean> {
+  const all = Object.fromEntries(ALL_CATEGORY_KEYS.map((k) => [k, true])) as Record<ItemDetailRowCategory, boolean>
+  if (import.meta.server) return all
+  try {
+    const rawValue = window.localStorage.getItem(ROW_CATEGORY_STORAGE_KEY)
+    if (!rawValue) return all
+    const parsed = JSON.parse(rawValue) as Record<string, unknown>
+    for (const k of ALL_CATEGORY_KEYS) {
+      if (typeof parsed[k] === 'boolean') all[k] = parsed[k]
+    }
+  } catch {
+    // 破損した保存値は無視して全表示にフォールバック（非ブロッキング）。
+  }
+  return all
+}
+
+const categoryVisible = ref<Record<ItemDetailRowCategory, boolean>>(loadCategoryVisibility())
+
+/** 表示中の行区分（最低1つは残す＝全OFFで空表示にしない）。 */
+const visibleCategories = computed<ItemDetailRowCategory[]>(() => {
+  const list = ALL_CATEGORY_KEYS.filter((k) => categoryVisible.value[k])
+  return list.length > 0 ? list : ['quantity']
+})
+
+function toggleCategory(key: ItemDetailRowCategory): void {
+  categoryVisible.value = { ...categoryVisible.value, [key]: !categoryVisible.value[key] }
+}
+
+watch(
+  categoryVisible,
+  (val) => {
+    if (import.meta.server) return
+    try {
+      window.localStorage.setItem(ROW_CATEGORY_STORAGE_KEY, JSON.stringify(val))
+    } catch {
+      // 保存不可（プライベートモード等）でも表示切替は機能させる（非ブロッキング）。
+    }
+  },
+  { deep: true },
+)
 
 function onBusinessTypesChange(codes: string[]): void {
   businessTypes.value = codes
@@ -130,7 +220,9 @@ async function copyTable(): Promise<void> {
   const v = view.value
   if (!v || v.rows.length === 0) return
   const { html, text } =
-    mode.value === 'weekly' ? buildWeeklyClipboard(v.weeks, v.rows) : buildCurrentClipboard(v.rows)
+    mode.value === 'weekly'
+      ? buildWeeklyClipboard(v.weeks, v.rows, visibleCategories.value)
+      : buildCurrentClipboard(v.rows)
   const ok = await copyHtmlToClipboard(html, text)
   showFeedback(ok)
 }
@@ -174,14 +266,14 @@ onMounted(async () => {
         @update:selected-departments="onDepartmentsChange"
       />
 
-      <!-- ①②③ 品名・商品記号（部分一致）・品番3桁（完全一致）＋ 期間 -->
-      <div class="mt-3 grid grid-cols-1 gap-3 border-t border-dashed border-slate-200 pt-3 sm:grid-cols-2 lg:grid-cols-4">
+      <!-- ①②③ 品名（AND部分一致）・商品記号（部分一致）・品番3桁（完全一致）・棚割1/2・期間 -->
+      <div class="mt-3 grid grid-cols-1 gap-3 border-t border-dashed border-slate-200 pt-3 sm:grid-cols-2 lg:grid-cols-3">
         <div>
-          <label class="mb-1 block text-xs font-medium text-slate-500">品名（部分一致）</label>
+          <label class="mb-1 block text-xs font-medium text-slate-500">品名（部分一致・AND）</label>
           <input
             v-model="productName"
             type="search"
-            placeholder="例: デニム"
+            placeholder="例: デニム 黒（スペース/カンマ区切りで全て含む）"
             class="w-full rounded-lg border border-slate-300 bg-white px-3 py-2 text-sm text-slate-700"
             @keydown.enter.prevent="reload"
           >
@@ -202,6 +294,26 @@ onMounted(async () => {
             v-model="productCode"
             type="search"
             placeholder="例: 558"
+            class="w-full rounded-lg border border-slate-300 bg-white px-3 py-2 text-sm text-slate-700"
+            @keydown.enter.prevent="reload"
+          >
+        </div>
+        <div>
+          <label class="mb-1 block text-xs font-medium text-slate-500">棚割1（部分一致）</label>
+          <input
+            v-model="tanawari1"
+            type="search"
+            placeholder="例: A01"
+            class="w-full rounded-lg border border-slate-300 bg-white px-3 py-2 text-sm text-slate-700"
+            @keydown.enter.prevent="reload"
+          >
+        </div>
+        <div>
+          <label class="mb-1 block text-xs font-medium text-slate-500">棚割2（部分一致）</label>
+          <input
+            v-model="tanawari2"
+            type="search"
+            placeholder="例: L1"
             class="w-full rounded-lg border border-slate-300 bg-white px-3 py-2 text-sm text-slate-700"
             @keydown.enter.prevent="reload"
           >
@@ -321,6 +433,27 @@ onMounted(async () => {
           </div>
         </div>
 
+        <!-- 行区分の表示/非表示（週別のみ。最終状態は localStorage に保存） -->
+        <div
+          v-if="mode === 'weekly'"
+          class="flex flex-wrap items-center gap-x-3 gap-y-1.5 rounded-lg border border-slate-200 bg-slate-50/60 px-3 py-2"
+        >
+          <span class="text-xs font-medium text-slate-500">行区分:</span>
+          <label
+            v-for="c in ITEM_DETAIL_ROW_CATEGORIES"
+            :key="c.key"
+            class="inline-flex cursor-pointer items-center gap-1 text-xs text-slate-600"
+          >
+            <input
+              type="checkbox"
+              class="accent-indigo-600"
+              :checked="categoryVisible[c.key]"
+              @change="toggleCategory(c.key)"
+            >
+            {{ c.label }}
+          </label>
+        </div>
+
         <p v-if="view?.truncated" class="rounded bg-amber-50 px-2 py-1 text-xs text-amber-700">
           対象 SKU が多いため上限件数で打ち切りました。フィルタで絞り込んでください。
         </p>
@@ -332,80 +465,13 @@ onMounted(async () => {
           該当する SKU がありません。フィルタを見直してください。
         </div>
 
-        <!-- 週別マトリクス -->
-        <div
+        <!-- 週別マトリクス（メタ列＋行区分＋週。表示中の行区分のみ描画） -->
+        <ItemDetailWeeklyTable
           v-else-if="mode === 'weekly'"
-          class="overflow-auto rounded-xl border border-slate-200 bg-white"
-        >
-          <table class="text-xs" style="border-collapse: separate; border-spacing: 0">
-            <thead>
-              <tr>
-                <th class="sticky left-0 z-20 whitespace-nowrap border-b border-r border-slate-200 bg-slate-50 px-2 py-2 text-left font-semibold text-slate-600">品番/単品</th>
-                <th class="whitespace-nowrap border-b border-r border-slate-200 bg-slate-50 px-2 py-2 text-left font-semibold text-slate-600">品名 / カラー / サイズ</th>
-                <th class="whitespace-nowrap border-b border-r border-slate-200 bg-slate-50 px-2 py-2 text-right font-semibold text-slate-600">上代</th>
-                <th class="whitespace-nowrap border-b border-r border-slate-200 bg-slate-50 px-2 py-2 text-center font-semibold text-slate-600">区分</th>
-                <th
-                  v-for="w in view!.weeks"
-                  :key="w"
-                  class="whitespace-nowrap border-b border-l border-slate-200 bg-slate-50 px-2 py-2 text-right font-medium text-slate-500"
-                >{{ w.slice(5) }}</th>
-              </tr>
-            </thead>
-            <tbody>
-              <template v-for="row in view!.rows" :key="row.key">
-                <!-- 売数 -->
-                <tr class="border-t border-slate-200">
-                  <th
-                    rowspan="3"
-                    class="sticky left-0 z-10 whitespace-nowrap border-r border-slate-200 bg-white px-2 py-1 text-left align-top font-semibold text-slate-700"
-                  >
-                    {{ row.hinbanCode }}-{{ row.tanpinCode }}
-                  </th>
-                  <td rowspan="3" class="border-r border-slate-200 px-2 py-1 align-top text-slate-600">
-                    <div class="max-w-[160px] truncate font-medium text-slate-700" :title="row.hinmei">{{ row.hinmei || '—' }}</div>
-                    <div class="text-[11px] text-slate-400">{{ row.colorName || '—' }} / {{ row.sizeName || '—' }}</div>
-                  </td>
-                  <td rowspan="3" class="border-r border-slate-200 px-2 py-1 text-right align-top tabular-nums text-slate-600">
-                    {{ formatCurrency(row.listPrice) }}
-                  </td>
-                  <td class="border-r border-slate-200 px-2 py-1 text-center text-slate-500">売数</td>
-                  <td
-                    v-for="w in view!.weeks"
-                    :key="`q-${w}`"
-                    class="border-l border-slate-100 px-2 py-1 text-right tabular-nums"
-                    :class="row.pointByWeek.get(w)?.isMarkdown ? 'bg-rose-100 font-semibold text-rose-700' : 'text-slate-700'"
-                    :title="row.pointByWeek.get(w)?.isMarkdown ? `値下げ週（売価 ${formatCurrency(row.pointByWeek.get(w)!.salePrice)}）` : undefined"
-                  >
-                    {{ row.pointByWeek.has(w) ? formatNumber(row.pointByWeek.get(w)!.quantity) : '' }}
-                  </td>
-                </tr>
-                <!-- 在庫数 -->
-                <tr>
-                  <td class="border-r border-t border-slate-100 px-2 py-1 text-center text-slate-500">在庫数</td>
-                  <td
-                    v-for="w in view!.weeks"
-                    :key="`s-${w}`"
-                    class="border-l border-t border-slate-100 px-2 py-1 text-right tabular-nums text-slate-600"
-                  >
-                    {{ row.pointByWeek.has(w) ? formatNumber(row.pointByWeek.get(w)!.stock) : '' }}
-                  </td>
-                </tr>
-                <!-- 在日 -->
-                <tr>
-                  <td class="border-r border-t border-slate-100 px-2 py-1 text-center text-slate-500">在日</td>
-                  <td
-                    v-for="w in view!.weeks"
-                    :key="`d-${w}`"
-                    class="border-l border-t border-slate-100 px-2 py-1 text-right tabular-nums"
-                    :class="stockDaysColorClass(row.pointByWeek.get(w)?.stockDays ?? null)"
-                  >
-                    {{ (row.pointByWeek.get(w)?.stockDays ?? 0) > 0 ? formatDecimal(row.pointByWeek.get(w)!.stockDays, 1) : '' }}
-                  </td>
-                </tr>
-              </template>
-            </tbody>
-          </table>
-        </div>
+          :weeks="view!.weeks"
+          :rows="view!.rows"
+          :visible-categories="visibleCategories"
+        />
 
         <!-- 当週テーブル（売上参照ファイル準拠・1 SKU 1 行） -->
         <div v-else class="overflow-auto rounded-xl border border-slate-200 bg-white">

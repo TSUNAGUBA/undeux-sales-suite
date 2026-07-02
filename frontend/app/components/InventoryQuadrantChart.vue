@@ -14,8 +14,10 @@ const props = withDefaults(
     rows: InventoryDepartmentHealthRow[]
     thresholds: InventoryThresholds
     title?: string
+    /** 凡例（系列一覧）を非表示にするか。系列が多い商品記号ポジショニング等で使う（マウスオーバーで名称表示）。 */
+    hideLegend?: boolean
   }>(),
-  { title: 'ポジショニング' },
+  { title: 'ポジショニング', hideLegend: false },
 )
 
 /** 象限の色（基準線に対する位置で決定）。scatter ページの判定色と同系。 */
@@ -110,6 +112,7 @@ const quadrantGuide = [
       :datasets="datasets"
       x-suffix="%"
       y-suffix="日"
+      :hide-legend="hideLegend"
       begin-at-zero
     />
     <div class="mt-3 grid grid-cols-1 gap-1.5 sm:grid-cols-2">

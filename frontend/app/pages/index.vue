@@ -3,7 +3,7 @@
  * ホーム（ダッシュボード + 目的別メニュー）。
  *
  * サプライヤー向けには最上部に「全体モニタリング > 全社サマリー」のカード型サマリー（主要KPI）と、
- * 「本日のインサイト & おすすめ」（今週の急上昇アイテム TOP3・全社売上の予算達成率メーター）を
+ * 「今週のインサイト & おすすめ」（今週の急上昇アイテム TOP3・全社売上の予算達成率メーター）を
  * ルールベースの一言コメント付きで表示する（LLM 基盤が無いため、所見は主要指標から機械生成する）。
  * その下に、目的（カテゴリ）を選んでドリルダウンするポータル型メニュー（categoriesForRole）を置く。
  *
@@ -169,11 +169,11 @@ onMounted(async () => {
             </div>
           </div>
 
-          <!-- 本日のインサイト & おすすめ -->
+          <!-- 今週のインサイト & おすすめ -->
           <div>
             <div class="mb-2 flex items-center gap-1.5">
               <Sparkles class="h-5 w-5 text-indigo-500" />
-              <h2 class="text-lg font-bold text-slate-800">本日のインサイト & おすすめ</h2>
+              <h2 class="text-lg font-bold text-slate-800">今週のインサイト & おすすめ</h2>
             </div>
             <div class="grid grid-cols-1 gap-4 lg:grid-cols-2">
               <!-- 今週の急上昇 TOP3 -->

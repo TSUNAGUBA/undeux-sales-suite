@@ -26,8 +26,9 @@ const props = defineProps<{
   /** 行クリックでドリルダウンを許可するか。 */
   clickable?: boolean
   /**
-   * 残在庫数・残在庫金額（最新週スナップショット）列を末尾（変動列の右）に追加するか。
-   * 商品記号別ランキングで在庫の積み上がりを併記するために使う。
+   * 残在庫金額（原価ベース・最新週スナップショット）列を末尾（変動列の右）に追加するか。
+   * 商品記号別ランキングで在庫金額の積み上がりを併記するために使う。
+   * 残在庫数は常時表示の「店頭在庫数」列と同値のため、本フラグでは金額のみ併記する。
    */
   showStockColumns?: boolean
 }>()
@@ -89,9 +90,14 @@ function compositeText(row: RankingViewRow): string {
   return row.compositeScore === null ? '—' : row.compositeScore.toFixed(2)
 }
 
-/** 残在庫数（最新週スナップショット。未取得は '—'）。 */
+/** 店頭在庫数（最新週スナップショット。未取得は '—'）。 */
 function stockText(row: RankingViewRow): string {
   return row.values.stock === null ? '—' : formatNumber(row.values.stock)
+}
+
+/** 直近在日（在庫日数の近似。算出不能は '—'）。 */
+function daysOfSupplyText(row: RankingViewRow): string {
+  return row.daysOfSupply === null ? '—' : `${formatDecimal(row.daysOfSupply, 1)} 日`
 }
 
 /** 残在庫金額（原価ベース。未取得は '—'）。 */
@@ -128,12 +134,14 @@ function onRowClick(row: RankingViewRow): void {
             >{{ metricLabel(key) }}</th>
             <th class="sticky top-0 z-10 whitespace-nowrap bg-slate-50 px-3 py-2.5 text-right font-medium">構成比</th>
             <th class="sticky top-0 z-10 whitespace-nowrap bg-slate-50 px-3 py-2.5 text-right font-medium">累積</th>
+            <!-- 店頭在庫数・直近在日は全集計軸で常時併記する。 -->
+            <th class="sticky top-0 z-10 whitespace-nowrap bg-slate-50 px-3 py-2.5 text-right font-medium">店頭在庫数</th>
+            <th class="sticky top-0 z-10 whitespace-nowrap bg-slate-50 px-3 py-2.5 text-right font-medium">直近在日</th>
             <template v-if="showComparison">
               <th class="sticky top-0 z-10 whitespace-nowrap bg-slate-50 px-3 py-2.5 text-center font-medium">前順位</th>
               <th class="sticky top-0 z-10 whitespace-nowrap bg-slate-50 px-3 py-2.5 text-center font-medium">変動</th>
-              <!-- 残在庫列は「変動の直右」に配置（比較なしのときは行末に表示） -->
+              <!-- 残在庫金額は「変動の直右」に配置（比較なしのときは行末に表示） -->
               <template v-if="showStockColumns">
-                <th class="sticky top-0 z-10 whitespace-nowrap bg-slate-50 px-3 py-2.5 text-right font-medium">残在庫数</th>
                 <th class="sticky top-0 z-10 whitespace-nowrap bg-slate-50 px-3 py-2.5 text-right font-medium">残在庫金額</th>
               </template>
               <th class="sticky top-0 z-10 whitespace-nowrap bg-slate-50 px-3 py-2.5 text-right font-medium">
@@ -141,7 +149,6 @@ function onRowClick(row: RankingViewRow): void {
               </th>
             </template>
             <template v-else-if="showStockColumns">
-              <th class="sticky top-0 z-10 whitespace-nowrap bg-slate-50 px-3 py-2.5 text-right font-medium">残在庫数</th>
               <th class="sticky top-0 z-10 whitespace-nowrap bg-slate-50 px-3 py-2.5 text-right font-medium">残在庫金額</th>
             </template>
           </tr>
@@ -196,6 +203,8 @@ function onRowClick(row: RankingViewRow): void {
             <td class="whitespace-nowrap px-3 py-2 text-right tabular-nums text-slate-500">
               {{ formatPercent(row.cumulative) }}
             </td>
+            <td class="whitespace-nowrap px-3 py-2 text-right tabular-nums text-slate-600">{{ stockText(row) }}</td>
+            <td class="whitespace-nowrap px-3 py-2 text-right tabular-nums text-slate-600">{{ daysOfSupplyText(row) }}</td>
             <template v-if="showComparison">
               <td class="whitespace-nowrap px-3 py-2 text-center tabular-nums text-slate-500">
                 {{ row.prevRank ?? '—' }}
@@ -207,7 +216,6 @@ function onRowClick(row: RankingViewRow): void {
                 >{{ deltaText(row) }}</span>
               </td>
               <template v-if="showStockColumns">
-                <td class="whitespace-nowrap px-3 py-2 text-right tabular-nums text-slate-600">{{ stockText(row) }}</td>
                 <td class="whitespace-nowrap px-3 py-2 text-right tabular-nums text-slate-600">{{ stockValueText(row) }}</td>
               </template>
               <td
@@ -216,7 +224,6 @@ function onRowClick(row: RankingViewRow): void {
               >{{ growthText(row) }}</td>
             </template>
             <template v-else-if="showStockColumns">
-              <td class="whitespace-nowrap px-3 py-2 text-right tabular-nums text-slate-600">{{ stockText(row) }}</td>
               <td class="whitespace-nowrap px-3 py-2 text-right tabular-nums text-slate-600">{{ stockValueText(row) }}</td>
             </template>
           </tr>
@@ -263,9 +270,13 @@ function onRowClick(row: RankingViewRow): void {
             <span class="text-slate-500">構成比 / 累積</span>
             <span class="tabular-nums text-slate-700">{{ formatPercent(row.share) }} / {{ formatPercent(row.cumulative) }}</span>
           </div>
-          <div v-if="showStockColumns" class="flex justify-between gap-2">
-            <span class="text-slate-500">残在庫数</span>
+          <div class="flex justify-between gap-2">
+            <span class="text-slate-500">店頭在庫数</span>
             <span class="tabular-nums text-slate-700">{{ stockText(row) }}</span>
+          </div>
+          <div class="flex justify-between gap-2">
+            <span class="text-slate-500">直近在日</span>
+            <span class="tabular-nums text-slate-700">{{ daysOfSupplyText(row) }}</span>
           </div>
           <div v-if="showStockColumns" class="flex justify-between gap-2">
             <span class="text-slate-500">残在庫金額</span>

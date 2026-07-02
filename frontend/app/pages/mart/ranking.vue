@@ -39,7 +39,7 @@ useHead({ title: 'ランキング分析 | UndeuxSales' })
 
 // mart 専用のフィルタスコープ。既存 sales 系（'sales-filter'）とは分離する。
 const MART_SCOPE = 'mart-filter'
-const { filter, loadOptions, years, toQuery, addToFilter } = useFilters(MART_SCOPE)
+const { filter, loadOptions, years, toQuery, addToFilter, options } = useFilters(MART_SCOPE)
 const { get } = useApi()
 const { isBuilt, refreshStatus } = useMart()
 
@@ -266,6 +266,18 @@ const comparisonRankMap = computed(() =>
   ),
 )
 
+/**
+ * 直近在日（在庫日数）算出用の期間週数。選択年度に属する取込週の数で近似する
+ * （年度未選択は全週数）。平均日販＝期間売数÷期間週数÷7 の分母に使う。
+ */
+const periodWeeks = computed<number>(() => {
+  const weeks = options.value?.weeks ?? []
+  const year = filter.value.year
+  if (year === null) return weeks.length
+  const prefix = `${year}-`
+  return weeks.filter((w) => w.startsWith(prefix)).length
+})
+
 /** 構成比・累積・ABC の基準指標（並び替えが合算可能指標ならそれ、率/複合は売上金額）。 */
 const contributionMetric = computed<RankingMetricKey>(() => {
   const key = sortKey.value
@@ -313,6 +325,7 @@ const allViewRows = computed<RankingViewRow[]>(() => {
       growth: hasComparison
         ? growthPercent(metricRawValue(row.current, gm), metricRawValue(row.comparison, gm))
         : null,
+      daysOfSupply: estimateStockDaysOfSupply(row.current.stock, row.current.quantity, periodWeeks.value),
     })
   }
   rows.sort((a, b) => a.rank - b.rank)
@@ -646,7 +659,7 @@ onMounted(async () => {
             <RankingMoversChart v-if="comparisonActive" :items="moverItems" />
           </div>
 
-          <!-- ランキング表（商品記号別は残在庫数・残在庫金額を変動列の直右に併記。比較なし時は行末） -->
+          <!-- ランキング表（店頭在庫数・直近在日は全軸で常時併記。商品記号別は残在庫金額も併記） -->
           <RankingTable
             :rows="displayRows"
             :dimension-label="rankingDimensionLabel(dimensionKey)"

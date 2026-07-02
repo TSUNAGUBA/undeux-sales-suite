@@ -32,8 +32,10 @@ const props = withDefaults(
     ySuffix?: string
     /** 軸を 0 起点にするか（既定 false=データ範囲に自動フィット）。 */
     beginAtZero?: boolean
+    /** 凡例（データセット一覧）を非表示にするか。系列が多い場合に邪魔なので隠す用途。 */
+    hideLegend?: boolean
   }>(),
-  { xSuffix: '', ySuffix: '', beginAtZero: false },
+  { xSuffix: '', ySuffix: '', beginAtZero: false, hideLegend: false },
 )
 
 const chartData = computed<ChartData<'scatter'>>(() => ({
@@ -55,7 +57,7 @@ const chartOptions = computed<ChartOptions<'scatter'>>(() => ({
   responsive: true,
   maintainAspectRatio: false,
   plugins: {
-    legend: { display: true, position: 'top', labels: { boxWidth: 12 } },
+    legend: { display: !props.hideLegend, position: 'top', labels: { boxWidth: 12 } },
     tooltip: {
       callbacks: {
         label: (ctx) => {

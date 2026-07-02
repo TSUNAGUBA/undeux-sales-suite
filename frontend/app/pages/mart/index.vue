@@ -41,7 +41,7 @@ import type {
   MartSummaryResponse,
   TrendPoint,
 } from '~/types/api'
-import type { ExecutiveSummary } from '~/utils/executiveSummary'
+import type { ExecutiveSummary, MonthlyComparison, YoYPair } from '~/utils/executiveSummary'
 
 useHead({ title: '全社サマリー（月次） | UndeuxSales' })
 
@@ -122,43 +122,108 @@ function onDepartmentsChange(codes: string[]): void {
 }
 
 // ---------------------------------------------------------------
-// KPI（前年同期比つき）
+// 前年同月比（締まった直近月 vs 前年同月）
+// 期間（年度）で見ると当年トレンドに未来（データ無し）月度が混じり、期間全体どうしの
+// 前年同期比は当年が過小に見える。そこで「締まった直近月」を1つ選び前年同月と比較する。
 // ---------------------------------------------------------------
 const DELTA_DISPLAY_EPSILON = 0.05
 
-/** 前年比（相対%）。前年が無い／0 なら表示しない。 */
-function yoyText(cur: number, prev: number | undefined | null): string | undefined {
-  if (prev === undefined || prev === null || prev === 0) return undefined
-  const pct = ((cur - prev) / Math.abs(prev)) * 100
-  if (Math.abs(pct) < DELTA_DISPLAY_EPSILON) return '前年比 ±0.0%'
-  return `前年比 ${pct > 0 ? '+' : '−'}${Math.abs(pct).toFixed(1)}%`
+interface MonthlyTotal {
+  amount: number
+  quantity: number
+  grossProfit: number
+}
+
+/** 週次トレンドを月別合計（12要素・金額/数量/粗利）へ集計する。 */
+function monthlyTotals(trend: TrendPoint[] | undefined): MonthlyTotal[] {
+  const arr: MonthlyTotal[] = Array.from({ length: 12 }, () => ({ amount: 0, quantity: 0, grossProfit: 0 }))
+  for (const p of trend ?? []) {
+    const m = Number.parseInt(p.date.slice(5, 7), 10)
+    if (m >= 1 && m <= 12) {
+      const t = arr[m - 1]!
+      t.amount += p.amount
+      t.quantity += p.quantity
+      t.grossProfit += p.grossProfit
+    }
+  }
+  return arr
+}
+
+/** トレンドに含まれる最新のデータ月（0始まり）。データ無しは -1。 */
+function latestDataMonthIndex(trend: TrendPoint[] | undefined): number {
+  let max = -1
+  for (const p of trend ?? []) {
+    const m = Number.parseInt(p.date.slice(5, 7), 10)
+    if (m >= 1 && m <= 12 && m - 1 > max) max = m - 1
+  }
+  return max
+}
+
+/**
+ * 締まった直近月（0始まり）。最新データ月は取込途中で不完全になり得るため、その1つ前
+ * （＝確実に締まった前月）を比較対象にする。最新データ月が1月なら締まった前月は無い（-1）。
+ */
+const closedMonthIndex = computed<number>(() => latestDataMonthIndex(summary.value?.weeklyTrend) - 1)
+
+/** 締まった直近月の当年・前年 KPI ペア（前年トレンドが揃う年度選択時のみ）。 */
+const monthlyYoY = computed<{ monthLabel: string; amount: YoYPair; quantity: YoYPair; grossProfit: YoYPair } | null>(() => {
+  const idx = closedMonthIndex.value
+  if (idx < 0 || filter.value.year === null || !summaryPrev.value) return null
+  const cur = monthlyTotals(summary.value?.weeklyTrend)[idx]
+  const prev = monthlyTotals(summaryPrev.value.weeklyTrend)[idx]
+  // 締まった直近月に当年売上が無い（データ欠損の月間ギャップ等）場合は、−100% の誤表示を避けるため
+  // 比較不能として null にする（当月の売上が真に 0 のときも比較を出さない方が誤解を招かない）。
+  if (!cur || !prev || cur.amount <= 0) return null
+  // 前年が 0（＝前年同月にデータ無し）の指標は比較不能として previous=null にする。
+  const pair = (c: number, p: number): YoYPair => ({ current: c, previous: p || null })
+  return {
+    monthLabel: MONTH_LABELS[idx] ?? `${idx + 1}月`,
+    amount: pair(cur.amount, prev.amount),
+    quantity: pair(cur.quantity, prev.quantity),
+    grossProfit: pair(cur.grossProfit, prev.grossProfit),
+  }
+})
+
+/** エグゼクティブサマリーへ渡す前年同月比素材（金額・粗利）。 */
+const monthlyComparison = computed<MonthlyComparison | null>(() => {
+  const my = monthlyYoY.value
+  if (!my) return null
+  return { monthLabel: my.monthLabel, amount: my.amount, grossProfit: my.grossProfit }
+})
+
+/** 前年同月比（相対%）の表示テキスト。前年データが無い／0 なら表示しない。 */
+function monthlyYoYText(pair: YoYPair, monthLabel: string): string | undefined {
+  if (pair.previous === null || pair.previous === 0) return undefined
+  const pct = ((pair.current - pair.previous) / Math.abs(pair.previous)) * 100
+  if (Math.abs(pct) < DELTA_DISPLAY_EPSILON) return `${monthLabel}度 前年同月比 ±0.0%`
+  return `${monthLabel}度 前年同月比 ${pct > 0 ? '+' : '−'}${Math.abs(pct).toFixed(1)}%`
 }
 
 const kpiItems = computed<KpiCardItem[]>(() => {
   const kpi = summary.value?.kpi
   if (!kpi) return []
-  const prev = summaryPrev.value?.kpi
+  const my = monthlyYoY.value
   return [
     {
       label: '売上金額',
       value: formatCurrency(kpi.amount),
       icon: CircleDollarSign,
       accentClass: 'bg-indigo-50 text-indigo-600',
-      sub: yoyText(kpi.amount, prev?.amount),
+      sub: my ? monthlyYoYText(my.amount, my.monthLabel) : undefined,
     },
     {
       label: '売上数量',
       value: `${formatNumber(kpi.quantity)} 点`,
       icon: ShoppingCart,
       accentClass: 'bg-sky-50 text-sky-600',
-      sub: yoyText(kpi.quantity, prev?.quantity),
+      sub: my ? monthlyYoYText(my.quantity, my.monthLabel) : undefined,
     },
     {
       label: '粗利',
       value: formatCurrency(kpi.grossProfit),
       icon: TrendingUp,
       accentClass: 'bg-emerald-50 text-emerald-600',
-      sub: yoyText(kpi.grossProfit, prev?.grossProfit),
+      sub: my ? monthlyYoYText(my.grossProfit, my.monthLabel) : undefined,
     },
     {
       label: '粗利率',
@@ -202,6 +267,7 @@ const execSummary = computed<ExecutiveSummary | null>(() => {
   return buildExecutiveSummary({
     kpi: s.kpi,
     previousKpi: summaryPrev.value?.kpi ?? null,
+    monthlyComparison: monthlyComparison.value,
     trend: s.weeklyTrend,
     breakdown: breakdown.value?.rows ?? [],
     breakdownDimensionLabel: dimensionLabel.value,

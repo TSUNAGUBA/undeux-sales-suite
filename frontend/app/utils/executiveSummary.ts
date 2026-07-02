@@ -1,7 +1,7 @@
 /**
  * 全社サマリー（AIレポート風）の所見をルールベースで生成する純粋ロジック。
  *
- * undeux のバックエンドに LLM 基盤が無いため、主要指標（KPI・前年同期比・週次モメンタム・
+ * undeux のバックエンドに LLM 基盤が無いため、主要指標（KPI・前年同月比／前年同期比・週次モメンタム・
  * 内訳の集中度）から定型の所見（エグゼクティブサマリー＋強み/弱み/機会/リスク）を機械的に
  * 組み立てる。Vue 非依存の純粋関数のみで構成する（テスト容易性・再利用性。utils/ranking と同じ思想）。
  *
@@ -28,11 +28,36 @@ export interface ExecutiveSummary {
   swot: ExecutiveSwot
 }
 
+/** 前年同月比の1指標の当年・前年ペア（前年データなしは previous=null）。 */
+export interface YoYPair {
+  current: number
+  previous: number | null
+}
+
+/**
+ * 締まった直近月（前月）と前年同月の比較素材。
+ *
+ * 年度を選んで全社サマリーを見るとき、当年トレンドには未来（＝データのない）月度が含まれるため、
+ * 期間全体どうしの前年同期比は当年が過小に見える（例: 5ヶ月ぶんしか無いのに通年比較で −59%）。
+ * これを避けるため、当年で「締まった直近月」を1つ選び、その月と前年の同月だけを比較する。
+ */
+export interface MonthlyComparison {
+  /** 比較対象月のラベル（例: 「5月」）。 */
+  monthLabel: string
+  amount: YoYPair
+  grossProfit: YoYPair
+}
+
 /** エグゼクティブサマリー生成の入力。 */
 export interface ExecutiveSummaryInput {
   kpi: MartKpi
   /** 前年同期の KPI（YoY 算出用。無ければ null）。 */
   previousKpi: MartKpi | null
+  /**
+   * 締まった直近月 vs 前年同月の比較素材（前年同月比）。指定時は前年同期比より優先し、
+   * 未来月度の混入で比較が歪む問題を避ける。未指定（null）時は previousKpi ベースの前年同期比に縮退する。
+   */
+  monthlyComparison?: MonthlyComparison | null
   /** 週次トレンド（直近モメンタム算出用）。 */
   trend: TrendPoint[]
   /** 集計軸別の内訳（最大構成・集中度算出用）。 */
@@ -79,10 +104,20 @@ function trendMomentum(trend: TrendPoint[]): number | null {
  * 各観点は該当シグナルが無ければ中立のフォールバック文を1件入れ、UI が空にならないようにする。
  */
 export function buildExecutiveSummary(input: ExecutiveSummaryInput): ExecutiveSummary {
-  const { kpi, previousKpi, trend, breakdown, breakdownDimensionLabel } = input
+  const { kpi, previousKpi, monthlyComparison, trend, breakdown, breakdownDimensionLabel } = input
 
-  const growth = relativeGrowth(kpi.amount, previousKpi?.amount ?? null)
-  const grossGrowth = relativeGrowth(kpi.grossProfit, previousKpi?.grossProfit ?? null)
+  // 前年同月比（締まった直近月）を優先し、無ければ前年同期比（期間全体）に縮退する。
+  const yoy = monthlyComparison ?? null
+  const growth = yoy
+    ? relativeGrowth(yoy.amount.current, yoy.amount.previous)
+    : relativeGrowth(kpi.amount, previousKpi?.amount ?? null)
+  const grossGrowth = yoy
+    ? relativeGrowth(yoy.grossProfit.current, yoy.grossProfit.previous)
+    : relativeGrowth(kpi.grossProfit, previousKpi?.grossProfit ?? null)
+  /** YoY の表記ラベル（前年同月比＝月度つき／前年同期比）。 */
+  const yoyLabel = yoy ? `${yoy.monthLabel}度の前年同月比` : '前年同期比'
+  /** YoY データが無いときの注記。 */
+  const yoyMissingNote = yoy ? '（前年同月データなし）' : '（前年同期データなし）'
   const momentum = trendMomentum(trend)
 
   // 最大構成区分と集中度（売上金額ベース）。
@@ -93,7 +128,7 @@ export function buildExecutiveSummary(input: ExecutiveSummaryInput): ExecutiveSu
 
   // ---- ボトムライン（1文の結論） ----
   const bottomLineParts: string[] = [`売上 ${formatCurrency(kpi.amount)}`]
-  if (growth !== null) bottomLineParts.push(`前年同期比 ${signedPercent(growth)}`)
+  if (growth !== null) bottomLineParts.push(`${yoyLabel} ${signedPercent(growth)}`)
   bottomLineParts.push(`粗利率 ${formatRatioAsPercent(kpi.grossProfitRate)}`)
   bottomLineParts.push(`消化率 ${formatRatioAsPercent(kpi.sellThroughRate)}`)
   const bottomLine = `${bottomLineParts.join(' ／ ')}。`
@@ -101,10 +136,10 @@ export function buildExecutiveSummary(input: ExecutiveSummaryInput): ExecutiveSu
   // ---- ハイライト（要点） ----
   const highlights: string[] = []
   highlights.push(
-    `売上金額は ${formatCurrency(kpi.amount)}${growth !== null ? `（前年同期比 ${signedPercent(growth)}）` : '（前年同期データなし）'}。`,
+    `売上金額は ${formatCurrency(kpi.amount)}${growth !== null ? `（${yoyLabel} ${signedPercent(growth)}）` : yoyMissingNote}。`,
   )
   highlights.push(
-    `粗利は ${formatCurrency(kpi.grossProfit)}（粗利率 ${formatRatioAsPercent(kpi.grossProfitRate)}）${grossGrowth !== null ? `、前年同期比 ${signedPercent(grossGrowth)}` : ''}。`,
+    `粗利は ${formatCurrency(kpi.grossProfit)}（粗利率 ${formatRatioAsPercent(kpi.grossProfitRate)}）${grossGrowth !== null ? `、${yoyLabel} ${signedPercent(grossGrowth)}` : ''}。`,
   )
   highlights.push(
     `消化率は ${formatRatioAsPercent(kpi.sellThroughRate)}、在庫数は ${formatNumber(kpi.currentStock)} 点。`,
@@ -141,12 +176,12 @@ export function buildExecutiveSummary(input: ExecutiveSummaryInput): ExecutiveSu
     threats.push('低消化は値下げ・滞留在庫の増加につながるリスク。')
   }
 
-  // 前年比成長
+  // 前年比成長（前年同月比を優先。無ければ前年同期比）
   if (growth !== null) {
     if (growth > 0) {
-      strengths.push(`前年同期比プラス成長（${signedPercent(growth)}）。`)
+      strengths.push(`${yoyLabel}プラス成長（${signedPercent(growth)}）。`)
     } else if (growth < 0) {
-      weaknesses.push(`前年同期比マイナス（${signedPercent(growth)}）。要因分析が必要。`)
+      weaknesses.push(`${yoyLabel}マイナス（${signedPercent(growth)}）。要因分析が必要。`)
       threats.push('前年割れの継続は売上基盤の縮小リスク。')
     }
   }

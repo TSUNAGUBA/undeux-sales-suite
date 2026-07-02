@@ -32,6 +32,12 @@ export interface ItemDetailViewRow {
   key: string
   gyotaiCode: string
   shohinKigou: string
+  /**
+   * 棚割1／棚割2。sales_weekly には存在するが item-detail レスポンスでは未提供のため、
+   * 現状は自然キーから決定的に生成したモック値（実データ接続時はレスポンスの値へ置換する）。
+   */
+  tanawari1: string
+  tanawari2: string
   hinbanCode: string
   tanpinCode: string
   hinmei: string
@@ -70,6 +76,31 @@ export function stockDaysColorClass(days: number | null | undefined): string {
 /** ItemDetailRow の自然キー（業態×記号×品番×単品）。 */
 function rowKey(row: ItemDetailRow): string {
   return `${row.gyotaiCode}|${row.shohinKigou}|${row.hinbanCode}|${row.tanpinCode}`
+}
+
+/** 決定的ハッシュ（文字列→32bit 符号なし整数）。モック値の安定生成に使う。 */
+function hashString(value: string): number {
+  let h = 2166136261
+  for (let i = 0; i < value.length; i++) {
+    h ^= value.charCodeAt(i)
+    h = Math.imul(h, 16777619)
+  }
+  return h >>> 0
+}
+
+const TANAWARI1_POOL = ['A01', 'A02', 'A03', 'B01', 'B02', 'C01', 'C02', 'D01']
+const TANAWARI2_POOL = ['L1', 'L2', 'M1', 'M2', 'R1', 'R2']
+
+/**
+ * 棚割1／棚割2 のモック値（品番3桁単位で決定的）。
+ * item-detail レスポンスに棚割が無いため、自然キーから安定生成する。実データ接続時は置換する。
+ */
+function mockTanawari(row: ItemDetailRow): { tanawari1: string; tanawari2: string } {
+  const seed = hashString(`${row.gyotaiCode}|${row.shohinKigou}|${row.hinbanCode}`)
+  return {
+    tanawari1: TANAWARI1_POOL[seed % TANAWARI1_POOL.length]!,
+    tanawari2: TANAWARI2_POOL[(seed >>> 5) % TANAWARI2_POOL.length]!,
+  }
 }
 
 /**
@@ -127,10 +158,14 @@ function buildViewRow(row: ItemDetailRow): ItemDetailViewRow {
     }
   }
 
+  const tanawari = mockTanawari(row)
+
   return {
     key: rowKey(row),
     gyotaiCode: row.gyotaiCode,
     shohinKigou: row.shohinKigou,
+    tanawari1: tanawari.tanawari1,
+    tanawari2: tanawari.tanawari2,
     hinbanCode: row.hinbanCode,
     tanpinCode: row.tanpinCode,
     hinmei: row.hinmei,
@@ -223,6 +258,101 @@ export function computeItemDetailSummary(rows: readonly ItemDetailViewRow[]): It
 }
 
 // ============================================================
+// 週別マトリクスの行区分（売数・在庫数・在日・販売価格・気温）
+// 気温は全SKU共通の週次値（東京/札幌/沖縄）。表示/非表示は呼び出し側（localStorage 保存）で管理する。
+// ============================================================
+
+/** 週別マトリクスの行区分キー。 */
+export type ItemDetailRowCategory =
+  | 'quantity'
+  | 'stock'
+  | 'stockDays'
+  | 'salePrice'
+  | 'tempTokyo'
+  | 'tempSapporo'
+  | 'tempOkinawa'
+
+/** 行区分のカタログ情報。 */
+export interface ItemDetailRowCategoryInfo {
+  key: ItemDetailRowCategory
+  label: string
+  /** 気温行（全SKU共通の週次気温。SKU 明細に依存しない）か。 */
+  isTemperature: boolean
+}
+
+/** 行区分カタログ（SoT・表示順）。デフォルトは全表示。 */
+export const ITEM_DETAIL_ROW_CATEGORIES: readonly ItemDetailRowCategoryInfo[] = [
+  { key: 'quantity', label: '売数', isTemperature: false },
+  { key: 'stock', label: '在庫数', isTemperature: false },
+  { key: 'stockDays', label: '在日', isTemperature: false },
+  { key: 'salePrice', label: '販売価格', isTemperature: false },
+  { key: 'tempTokyo', label: '気温(東京)', isTemperature: true },
+  { key: 'tempSapporo', label: '気温(札幌)', isTemperature: true },
+  { key: 'tempOkinawa', label: '気温(沖縄)', isTemperature: true },
+]
+
+type TempCity = 'tokyo' | 'sapporo' | 'okinawa'
+
+// 各都市の月別平年気温（1〜12月・℃）。気温行のモック生成に使う。
+const MONTHLY_TEMP: Record<TempCity, number[]> = {
+  tokyo: [5.2, 5.7, 8.7, 13.9, 18.2, 21.4, 25.0, 26.4, 22.8, 17.5, 12.1, 7.6],
+  sapporo: [-3.6, -3.1, 0.6, 7.1, 12.4, 16.7, 20.5, 22.3, 18.1, 11.8, 4.9, -0.9],
+  okinawa: [17.0, 17.1, 18.9, 21.4, 24.0, 26.8, 28.9, 28.7, 27.6, 25.2, 22.1, 18.7],
+}
+
+const TEMP_CITY_BY_CATEGORY: Partial<Record<ItemDetailRowCategory, TempCity>> = {
+  tempTokyo: 'tokyo',
+  tempSapporo: 'sapporo',
+  tempOkinawa: 'okinawa',
+}
+
+/**
+ * 週（yyyy-MM-dd）の都市別モック気温（℃・小数1桁）。
+ * 月内は当月→翌月の平年値を日付で線形補間し、隣接週が滑らかに変化するようにする。
+ * item-detail レスポンスに気温が無いためのモック（実測 dim_climate 接続時は置換する）。
+ */
+export function mockWeeklyTemperature(week: string, city: TempCity): number {
+  const parts = week.split('-')
+  const m = Number.parseInt(parts[1] ?? '1', 10)
+  const d = Number.parseInt(parts[2] ?? '1', 10)
+  const months = MONTHLY_TEMP[city]
+  const idx = ((m - 1) % 12 + 12) % 12
+  const base = months[idx] ?? 0
+  const next = months[m % 12] ?? base
+  const frac = Math.min(1, Math.max(0, (d - 1) / 31))
+  return Math.round((base + (next - base) * frac) * 10) / 10
+}
+
+/**
+ * 行区分×SKU×週のセル表示文字列。気温は週共通、それ以外は該当週の点（無ければ空欄）。
+ * 表示・クリップボードの双方から使い、表現の一貫性を保つ。
+ */
+export function itemDetailCellText(
+  category: ItemDetailRowCategory,
+  row: ItemDetailViewRow,
+  week: string,
+): string {
+  const city = TEMP_CITY_BY_CATEGORY[category]
+  if (city) {
+    return formatDecimal(mockWeeklyTemperature(week, city), 1)
+  }
+  const p = row.pointByWeek.get(week)
+  if (!p) return ''
+  switch (category) {
+    case 'quantity':
+      return formatNumber(p.quantity)
+    case 'stock':
+      return formatNumber(p.stock)
+    case 'stockDays':
+      return p.stockDays > 0 ? formatDecimal(p.stockDays, 1) : ''
+    case 'salePrice':
+      return p.salePrice > 0 ? formatCurrency(p.salePrice) : ''
+    default:
+      return ''
+  }
+}
+
+// ============================================================
 // クリップボード（Excel 貼り付け）用の TSV / HTML 生成
 // utils/clipboard.ts の copyHtmlToClipboard に渡す。HTML は自前でエスケープする（契約）。
 // ============================================================
@@ -247,13 +377,27 @@ function stockDaysHtmlColor(days: number): string {
 const TD = 'border:1px solid #e2e8f0;padding:2px 6px'
 const TH = `${TD};background-color:#f1f5f9;font-weight:600`
 
-/** 週別マトリクスの TSV / HTML を生成する（SKU ごとに 売数/在庫数/在日 の 3 行）。 */
+const CATEGORY_INFO_BY_KEY: ReadonlyMap<ItemDetailRowCategory, ItemDetailRowCategoryInfo> = new Map(
+  ITEM_DETAIL_ROW_CATEGORIES.map((c) => [c.key, c]),
+)
+
+/** 行区分キーの表示ラベル（未知キーはそのまま返す）。 */
+export function itemDetailRowCategoryLabel(key: ItemDetailRowCategory): string {
+  return CATEGORY_INFO_BY_KEY.get(key)?.label ?? key
+}
+
+/**
+ * 週別マトリクスの TSV / HTML を生成する（SKU ごとに、表示中の行区分ぶんの行）。
+ * メタ列は 商品記号／棚割1／棚割2 を含む。表示中の行区分（categories）は画面と一致させる。
+ */
 export function buildWeeklyClipboard(
   weeks: readonly string[],
   rows: readonly ItemDetailViewRow[],
+  categories: readonly ItemDetailRowCategory[],
 ): { html: string; text: string } {
-  const metaHeaders = ['品番', '単品', '品名', 'カラー', 'サイズ', '上代', '区分']
-  const headerCells = [...metaHeaders, ...weeks]
+  const cats = categories.length > 0 ? categories : ITEM_DETAIL_ROW_CATEGORIES.map((c) => c.key)
+  const metaHeaders = ['品番', '単品', '商品記号', '棚割1', '棚割2', '品名', 'カラー', 'サイズ', '上代']
+  const headerCells = [...metaHeaders, '区分', ...weeks]
 
   const textLines: string[] = [headerCells.join('\t')]
   const htmlRows: string[] = [
@@ -264,44 +408,30 @@ export function buildWeeklyClipboard(
     const meta = [
       row.hinbanCode,
       row.tanpinCode,
+      row.shohinKigou,
+      row.tanawari1,
+      row.tanawari2,
       row.hinmei,
       row.colorName,
       row.sizeName,
       String(row.listPrice),
     ]
-    const kinds: { label: string; value: (w: string) => { text: string; color?: string; markdown?: boolean } }[] = [
-      {
-        label: '売数',
-        value: (w) => {
-          const p = row.pointByWeek.get(w)
-          return { text: p ? String(p.quantity) : '', markdown: p?.isMarkdown }
-        },
-      },
-      {
-        label: '在庫数',
-        value: (w) => {
-          const p = row.pointByWeek.get(w)
-          return { text: p ? String(p.stock) : '' }
-        },
-      },
-      {
-        label: '在日',
-        value: (w) => {
-          const p = row.pointByWeek.get(w)
-          return p && p.stockDays > 0
-            ? { text: formatDecimal(p.stockDays, 1), color: stockDaysHtmlColor(p.stockDays) }
-            : { text: '' }
-        },
-      },
-    ]
-    for (let i = 0; i < kinds.length; i++) {
-      const kind = kinds[i]!
-      // メタ列は 1 行目のみ値、2・3 行目は空欄にして Excel の縦連結を模す。
+    for (let i = 0; i < cats.length; i++) {
+      const cat = cats[i]!
+      // メタ列は 1 行目のみ値、2 行目以降は空欄にして Excel の縦連結を模す。
       const metaCells = i === 0 ? meta : meta.map(() => '')
-      const weekCells = weeks.map((w) => kind.value(w))
-      textLines.push([...metaCells, kind.label, ...weekCells.map((c) => c.text)].join('\t'))
+      const weekCells = weeks.map((w) => {
+        const p = row.pointByWeek.get(w)
+        const text = itemDetailCellText(cat, row, w)
+        let color: string | undefined
+        let markdown = false
+        if (cat === 'stockDays' && p && p.stockDays > 0) color = stockDaysHtmlColor(p.stockDays)
+        else if (cat === 'quantity' && p?.isMarkdown) markdown = true
+        return { text, color, markdown }
+      })
+      textLines.push([...metaCells, itemDetailRowCategoryLabel(cat), ...weekCells.map((c) => c.text)].join('\t'))
       const htmlMeta = metaCells.map((m) => `<td style="${TD}">${escapeHtml(m)}</td>`).join('')
-      const htmlKind = `<td style="${TH}">${escapeHtml(kind.label)}</td>`
+      const htmlKind = `<td style="${TH}">${escapeHtml(itemDetailRowCategoryLabel(cat))}</td>`
       const htmlWeeks = weekCells
         .map((c) => {
           let style = `${TD};text-align:right`
