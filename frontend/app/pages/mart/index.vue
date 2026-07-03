@@ -202,17 +202,13 @@ function monthlyYoYText(pair: YoYPair, monthLabel: string): string | undefined {
 // ---------------------------------------------------------------
 // 同月まで累計（当期 vs 前期）
 // 当期と前期それぞれの「1月〜締まった直近月」の累計（数量・金額）を並べて比較する。
-// 単月 YoY と同じく締まった直近月を基準にし、当年の未確定月（取込途中）を含めない。
-// 締まった直近月が無い（1月データのみ）場合は最新データ月を基準にフォールバックする。
+// 単月 YoY（monthlyYoY）と同じく締まった直近月（closedMonthIndex）を基準にし、当年の未確定月
+// （取込途中）を含めない。締まった直近月が無い（1月データのみ等）場合は、部分月 vs 満了月の
+// 不公平な比較（−100% 近傍の誤表示）を避けるため、単月 YoY と同様に比較を出さない（null）。
 // ---------------------------------------------------------------
-const cumulativeReferenceMonthIndex = computed<number>(() => {
-  const closed = closedMonthIndex.value
-  return closed >= 0 ? closed : latestDataMonthIndex(summary.value?.weeklyTrend)
-})
-
-/** 当期・前期の同月まで累計（数量・金額）。年度選択かつ前年トレンドが揃うときのみ。 */
+/** 当期・前期の同月まで累計（数量・金額）。年度選択かつ前年トレンドが揃い、締まった直近月があるときのみ。 */
 const cumulativeYoY = computed<{ monthLabel: string; amount: YoYPair; quantity: YoYPair } | null>(() => {
-  const idx = cumulativeReferenceMonthIndex.value
+  const idx = closedMonthIndex.value
   if (idx < 0 || filter.value.year === null || !summaryPrev.value) return null
   const cur = monthlyTotals(summary.value?.weeklyTrend)
   const prev = monthlyTotals(summaryPrev.value.weeklyTrend)
