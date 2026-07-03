@@ -59,8 +59,9 @@ const footerFields = computed(() => photobookFooterFields())
       </div>
     </div>
 
-    <!-- 画像 -->
-    <div class="aspect-square w-full bg-slate-100">
+    <!-- 画像（全カード同一の固定高さ＋object-cover で高さを統一する。aspect-square はカード幅に
+         依存し高さが不揃いになるため固定高さにする） -->
+    <div class="h-56 w-full bg-slate-100">
       <ProductImage :src="product.primaryImageUrl" :alt="product.productName" icon-class="h-10 w-10" :show-label="false" />
     </div>
 

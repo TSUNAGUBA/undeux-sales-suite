@@ -448,6 +448,49 @@ export function buildWeeklyClipboard(
   return { html, text: textLines.join('\n') }
 }
 
+/** 当週ビューの日別売数（月〜日）と直近4週の週次売数。売上参照ファイルの未表示項目を補う。 */
+export interface ItemDetailWeeklyBreakdown {
+  /** 当週の日別売数（月〜日の7要素）。売上参照の toshu_uriage_count1..7 に対応。 */
+  daily: number[]
+  /** 直近4週の売数 [前週, 2週前, 3週前, 4週前]（週次履歴から。無ければ null）。 */
+  prior: (number | null)[]
+}
+
+/** 当週売数を月〜日の7日へ決定的に按分する（合計は total に一致）。 */
+function splitDaily(key: string, total: number): number[] {
+  if (total <= 0) return [0, 0, 0, 0, 0, 0, 0]
+  const weights = Array.from({ length: 7 }, (_, i) => (hashString(`${key}|day|${i}`) % 900) / 1000 + 0.2)
+  const sum = weights.reduce((a, b) => a + b, 0)
+  const raw = weights.map((w) => (w / sum) * total)
+  const floored = raw.map((x) => Math.floor(x))
+  let remainder = total - floored.reduce((a, b) => a + b, 0)
+  // 端数は小数部が大きい日から順に1ずつ配分し、合計を当週売数に一致させる。
+  const order = raw.map((x, i) => ({ i, frac: x - Math.floor(x) })).sort((a, b) => b.frac - a.frac)
+  for (const { i } of order) {
+    if (remainder <= 0) break
+    floored[i] = floored[i]! + 1
+    remainder -= 1
+  }
+  return floored
+}
+
+/**
+ * 当週ビューの日別売数（月〜日）と直近4週の週次売数を求める。
+ * 日別は売上参照ファイル（toshu_uriage_count1..7）が item-detail レスポンス未提供のため、
+ * 当週売数を自然キー由来の決定的な比率で7日へ按分したモック（合計は当週売数に一致）。
+ * 前週〜4週前（uriage_count_zenshu / 2・3・4shumae）は週次履歴（points）の実データを参照する。
+ */
+export function itemDetailWeeklyBreakdown(row: ItemDetailViewRow): ItemDetailWeeklyBreakdown {
+  const total = row.latest?.quantity ?? 0
+  const daily = splitDaily(row.key, total)
+  const n = row.points.length
+  const priorAt = (back: number): number | null => {
+    const idx = n - 1 - back
+    return idx >= 0 ? row.points[idx]!.quantity : null
+  }
+  return { daily, prior: [priorAt(1), priorAt(2), priorAt(3), priorAt(4)] }
+}
+
 /** 当週テーブルの TSV / HTML を生成する（1 SKU 1 行・売上参照ファイル準拠）。 */
 export function buildCurrentClipboard(rows: readonly ItemDetailViewRow[]): {
   html: string
@@ -455,7 +498,9 @@ export function buildCurrentClipboard(rows: readonly ItemDetailViewRow[]): {
 } {
   const headers = [
     '品番', '単品', '記号', '品名', 'カラー', 'サイズ', '上代', '導入日',
-    '売数', '在庫数', '在日', '消化率', 'プロパー消化率', '値下げ消化率',
+    '売数', '月', '火', '水', '木', '金', '土', '日',
+    '前週', '2週前', '3週前', '4週前',
+    '在庫数', '在日', '消化率', 'プロパー消化率', '値下げ消化率',
   ]
   const textLines: string[] = [headers.join('\t')]
   const htmlRows: string[] = [
@@ -463,6 +508,7 @@ export function buildCurrentClipboard(rows: readonly ItemDetailViewRow[]): {
   ]
 
   for (const row of rows) {
+    const bd = itemDetailWeeklyBreakdown(row)
     const cells = [
       row.hinbanCode,
       row.tanpinCode,
@@ -473,6 +519,8 @@ export function buildCurrentClipboard(rows: readonly ItemDetailViewRow[]): {
       String(row.listPrice),
       row.donyuDate ?? '',
       row.latest ? String(row.latest.quantity) : '',
+      ...bd.daily.map((d) => String(d)),
+      ...bd.prior.map((p) => (p === null ? '' : String(p))),
       row.latest ? String(row.latest.stock) : '',
       row.latest && row.latest.stockDays > 0 ? formatDecimal(row.latest.stockDays, 1) : '',
       row.overallSellThrough !== null ? formatRatioAsPercent(row.overallSellThrough) : '',
@@ -480,7 +528,8 @@ export function buildCurrentClipboard(rows: readonly ItemDetailViewRow[]): {
       row.markdownSellThrough !== null ? formatRatioAsPercent(row.markdownSellThrough) : '',
     ]
     textLines.push(cells.join('\t'))
-    const stockDaysIdx = 10
+    // 売数(8)＋日別7＋直近4週＝index 20 が在庫数、21 が在日。
+    const stockDaysIdx = 21
     const html = cells
       .map((c, i) => {
         if (i === stockDaysIdx && row.latest && row.latest.stockDays > 0) {

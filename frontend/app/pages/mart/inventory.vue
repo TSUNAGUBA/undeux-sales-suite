@@ -60,11 +60,11 @@ const TABS: ReadonlyArray<{ key: TabKey; label: string; icon: Component }> = [
   { key: 'stagnant', label: '滞留在庫', icon: AlertOctagon },
   { key: 'dormant', label: '不動在庫', icon: Snowflake },
   { key: 'warehouse', label: '残在庫', icon: Warehouse },
-  { key: 'orderClass', label: '発注区分', icon: ArrowLeftRight },
+  { key: 'orderClass', label: '帳票区分', icon: ArrowLeftRight },
   { key: 'flags', label: '対応リスト', icon: ClipboardList },
 ]
 type TabKey = 'dashboard' | 'items' | 'stagnant' | 'dormant' | 'warehouse' | 'orderClass' | 'flags'
-/** サーバ API（/inventory/items）を使う明細タブ。残在庫・発注区分はモックのため含めない。 */
+/** サーバ API（/inventory/items）を使う明細タブ。残在庫・帳票区分はモックのため含めない。 */
 type ListTabKey = 'items' | 'stagnant' | 'dormant' | 'flags'
 /** 行選択（フラグ一括登録）を提供するタブ。対応リストは状態変更のみのため対象外。 */
 type SelectableTabKey = Exclude<ListTabKey, 'flags'>
@@ -78,7 +78,7 @@ function parseTab(value: unknown): TabKey {
     : 'dashboard'
 }
 
-/** 発注区分の履歴生成に使う直近週（昇順・最大12週）。 */
+/** 帳票区分の履歴生成に使う直近週（昇順・最大12週）。 */
 const recentWeeks = computed<string[]>(() => (options.value?.weeks ?? []).slice(-12))
 
 /** URL がタブ状態の SoT（直リンク・戻る/進むに追従）。 */
@@ -153,10 +153,23 @@ async function loadActions(): Promise<void> {
 }
 
 // ---- 商品記号ポジショニング ----
-// byShohinKigo は API 未提供のため、品番3桁別の健全性（byHinban・includeHinban=true）から
-// 商品記号へ決定的に展開したモックで表現する。フィルターで部門等を絞ると byHinban 経由で反映される。
+// byShohinKigo は API 未提供。品番3桁別（byHinban）から按分するとラベルが品番ベースの疑似コードに
+// なり「商品記号」にならないため、残在庫・帳票区分タブと同一体系の商品記号（LG{部門}{nnn}）を単位に
+// 消化率×在庫日数×在庫数を決定的にモック生成する。業態・部門は上部フィルターの選択で絞る（未選択は全）。
 // 系列（商品記号）が多く凡例は邪魔になるため非表示にし、マウスオーバーで商品記号を表示する。
-const positioningRows = computed(() => mockShohinKigoPositioning(actions.value?.byHinban ?? []))
+const positioningBusinessTypes = computed(() =>
+  filter.value.businessTypes.length > 0
+    ? filter.value.businessTypes
+    : (options.value?.businessTypes ?? []).map((b) => b.code),
+)
+const positioningDepartments = computed(() =>
+  filter.value.departments.length > 0
+    ? filter.value.departments
+    : (options.value?.departments ?? []).map((d) => d.code),
+)
+const positioningRows = computed(() =>
+  buildShohinKigoPositioningMock(positioningBusinessTypes.value, positioningDepartments.value),
+)
 
 // ---- 明細タブ群（/api/mart/inventory/items 共用） ----
 
@@ -273,7 +286,7 @@ async function ensureTabLoaded(tab: TabKey): Promise<void> {
     if (!actionsLoaded.value && !actionsLoading.value) await loadActions()
     return
   }
-  // 残在庫・発注区分はモック（クライアント側 computed）で描画するため、サーバ取得は不要。
+  // 残在庫・帳票区分はモック（クライアント側 computed）で描画するため、サーバ取得は不要。
   if (tab === 'warehouse' || tab === 'orderClass') return
   if (tab === 'flags' && !flagsSummaryLoaded.value) {
     void loadFlagsSummary()
@@ -459,7 +472,7 @@ async function refreshAfterFlagMutation(): Promise<void> {
 
   // 絞込中の最終ページで最後の行が絞込対象外になると、現在ページが範囲外になり
   // 空表示に取り残される。その場合は最終ページへ丸めて再取得する。
-  // 対象は明細タブ（listStates を持つタブ）のみ。残在庫・発注区分・ダッシュボードは除外。
+  // 対象は明細タブ（listStates を持つタブ）のみ。残在庫・帳票区分・ダッシュボードは除外。
   const tab = activeTab.value
   if (tab !== 'dashboard' && tab !== 'warehouse' && tab !== 'orderClass') {
     const state = listStates[tab]
@@ -888,8 +901,8 @@ onMounted(async () => {
           />
         </section>
 
-        <!-- ============ 発注区分（売発注／情報発注・モック） ============ -->
-        <section v-else-if="activeTab === 'orderClass'" aria-label="発注区分">
+        <!-- ============ 帳票区分（売発注／情報発注／無・モック） ============ -->
+        <section v-else-if="activeTab === 'orderClass'" aria-label="帳票区分">
           <InventoryOrderClassTab
             :business-type-options="options?.businessTypes ?? []"
             :department-options="options?.departments ?? []"

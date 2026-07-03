@@ -143,6 +143,132 @@ function zipStore(files: readonly { name: string; data: Uint8Array }[]): Uint8Ar
 }
 
 // ============================================================
+// 画像の埋め込み（xl/media + xl/drawings）。ライブラリ非依存で PNG/JPEG を貼り付ける。
+// ============================================================
+
+/** 埋め込む画像1件（どのブロックか・拡張子・バイト列・元寸法[px]）。 */
+export interface EmbeddedImage {
+  block: number
+  ext: 'png' | 'jpeg'
+  data: Uint8Array
+  width: number
+  height: number
+}
+
+/**
+ * PNG/JPEG のバイト列から拡張子と寸法（px）を判定する。判別不能・未対応形式は null。
+ * PNG は IHDR（16..23）、JPEG は SOF マーカーから幅・高さを読む。
+ */
+function parseImage(bytes: Uint8Array): { ext: 'png' | 'jpeg'; width: number; height: number } | null {
+  // PNG（署名 89 50 4E 47 0D 0A 1A 0A ＋ IHDR）。
+  if (
+    bytes.length > 24 && bytes[0] === 0x89 && bytes[1] === 0x50 && bytes[2] === 0x4e && bytes[3] === 0x47
+  ) {
+    const width = ((bytes[16]! << 24) | (bytes[17]! << 16) | (bytes[18]! << 8) | bytes[19]!) >>> 0
+    const height = ((bytes[20]! << 24) | (bytes[21]! << 16) | (bytes[22]! << 8) | bytes[23]!) >>> 0
+    return width > 0 && height > 0 ? { ext: 'png', width, height } : null
+  }
+  // JPEG（署名 FF D8）。SOF0-3/5-7/9-11/13-15 の直後に高さ・幅（各2バイト）。
+  if (bytes.length > 4 && bytes[0] === 0xff && bytes[1] === 0xd8) {
+    let offset = 2
+    while (offset + 9 < bytes.length) {
+      if (bytes[offset] !== 0xff) { offset++; continue }
+      const marker = bytes[offset + 1]!
+      const isSof =
+        (marker >= 0xc0 && marker <= 0xc3)
+        || (marker >= 0xc5 && marker <= 0xc7)
+        || (marker >= 0xc9 && marker <= 0xcb)
+        || (marker >= 0xcd && marker <= 0xcf)
+      if (isSof) {
+        const height = (bytes[offset + 5]! << 8) | bytes[offset + 6]!
+        const width = (bytes[offset + 7]! << 8) | bytes[offset + 8]!
+        return width > 0 && height > 0 ? { ext: 'jpeg', width, height } : null
+      }
+      // スタンドアロンマーカー（SOI/EOI/RSTn）は 2 バイト、その他は長さフィールドぶんスキップ。
+      if (marker === 0xd8 || marker === 0xd9 || (marker >= 0xd0 && marker <= 0xd7)) {
+        offset += 2
+      } else {
+        offset += 2 + ((bytes[offset + 2]! << 8) | bytes[offset + 3]!)
+      }
+    }
+    return null
+  }
+  return null
+}
+
+/**
+ * 選択商品（最大4件）の主画像を取得し、埋め込み用に整える（クライアント専用・非ブロッキング）。
+ * CORS・ネットワーク失敗や未対応形式はその商品だけ画像なしにフォールバックする（原則4）。
+ */
+export async function loadPhotobookImages(
+  products: readonly MasterProductSummary[],
+): Promise<EmbeddedImage[]> {
+  if (import.meta.server) return []
+  const blocks = Math.max(1, Math.min(4, products.length))
+  const out: EmbeddedImage[] = []
+  for (let b = 0; b < blocks; b++) {
+    const url = products[b]?.primaryImageUrl
+    if (!url) continue
+    try {
+      const res = await fetch(url)
+      if (!res.ok) continue
+      const buf = new Uint8Array(await res.arrayBuffer())
+      const info = parseImage(buf)
+      if (!info) continue
+      out.push({ block: b, ext: info.ext, data: buf, width: info.width, height: info.height })
+    } catch {
+      // 画像は補助。取得失敗はその商品を画像なしで出力し、Excel 生成全体は止めない。
+    }
+  }
+  return out
+}
+
+// 画像枠の実効サイズ（px）。画像行 7..21（15行×20pt）＝300pt≒400px、
+// 1ブロック7列（列幅9・保守的に 7px/文字＝63px/列）＝441px。枠内に収まるよう保守的に見積もる。
+const IMAGE_FRAME_W_PX = 441
+const IMAGE_FRAME_H_PX = 400
+const EMU_PER_PX = 9525
+
+/** 画像埋め込みの drawing パーツ（drawing1.xml・その rels・media バイト列）を生成する。 */
+function buildDrawingParts(images: readonly EmbeddedImage[]): {
+  drawingXml: string
+  drawingRels: string
+  media: { name: string; data: Uint8Array }[]
+} {
+  const anchors: string[] = []
+  const rels: string[] = []
+  const media: { name: string; data: Uint8Array }[] = []
+  images.forEach((img, i) => {
+    const n = i + 1
+    const rid = `rId${n}`
+    // 枠内に収まるよう高さ優先で拡縮（高さ基準・幅超過時は幅で抑える＝contain）。
+    const scale = Math.min(IMAGE_FRAME_H_PX / img.height, IMAGE_FRAME_W_PX / img.width)
+    const cx = Math.round(img.width * scale * EMU_PER_PX)
+    const cy = Math.round(img.height * scale * EMU_PER_PX)
+    const col = img.block * BLOCK_COLS
+    anchors.push(
+      '<xdr:oneCellAnchor>'
+      + `<xdr:from><xdr:col>${col}</xdr:col><xdr:colOff>0</xdr:colOff><xdr:row>7</xdr:row><xdr:rowOff>0</xdr:rowOff></xdr:from>`
+      + `<xdr:ext cx="${cx}" cy="${cy}"/>`
+      + '<xdr:pic>'
+      + `<xdr:nvPicPr><xdr:cNvPr id="${n}" name="商品画像${n}" descr=""/><xdr:cNvPicPr><a:picLocks noChangeAspect="1"/></xdr:cNvPicPr></xdr:nvPicPr>`
+      + `<xdr:blipFill><a:blip r:embed="${rid}"/><a:stretch><a:fillRect/></a:stretch></xdr:blipFill>`
+      + `<xdr:spPr><a:xfrm><a:off x="0" y="0"/><a:ext cx="${cx}" cy="${cy}"/></a:xfrm><a:prstGeom prst="rect"><a:avLst/></a:prstGeom></xdr:spPr>`
+      + '</xdr:pic>'
+      + '<xdr:clientData/>'
+      + '</xdr:oneCellAnchor>',
+    )
+    rels.push(
+      `<Relationship Id="${rid}" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/image" Target="../media/image${n}.${img.ext}"/>`,
+    )
+    media.push({ name: `xl/media/image${n}.${img.ext}`, data: img.data })
+  })
+  const drawingXml = `<?xml version="1.0" encoding="UTF-8" standalone="yes"?>\n<xdr:wsDr xmlns:xdr="http://schemas.openxmlformats.org/drawingml/2006/spreadsheetDrawing" xmlns:a="http://schemas.openxmlformats.org/drawingml/2006/main" xmlns:r="http://schemas.openxmlformats.org/officeDocument/2006/relationships">${anchors.join('')}</xdr:wsDr>`
+  const drawingRels = `<?xml version="1.0" encoding="UTF-8" standalone="yes"?>\n<Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships">${rels.join('')}</Relationships>`
+  return { drawingXml, drawingRels, media }
+}
+
+// ============================================================
 // 投入企画書レイアウトの xlsx 生成（結合セル・罫線・SUM 数式対応）
 // 参照レイアウト（Miro の投入企画書）に合わせ、同一構造の縦ブロックを横に最大4つ並べる。
 // 1ブロック=7列（ブロック1:A-G / 2:H-N / 3:O-U / 4:V-AB）。1行目はタイトルを全ブロックで結合。
@@ -171,7 +297,10 @@ const BLOCK_COLS = 7
  * 選択商品（1〜4件）から投入企画書レイアウトの xlsx バイト列を生成する（追加ライブラリ不要）。
  * すべての値はインライン文字列、「計」は SUM 数式（Excel が開封時に再計算）。
  */
-export function buildPhotobookWorkbook(products: readonly MasterProductSummary[]): Uint8Array<ArrayBuffer> {
+export function buildPhotobookWorkbook(
+  products: readonly MasterProductSummary[],
+  images: readonly EmbeddedImage[] = [],
+): Uint8Array<ArrayBuffer> {
   const enc = new TextEncoder()
   const blocks = Math.max(1, Math.min(4, products.length))
   const lastCol = blocks * BLOCK_COLS - 1
@@ -190,6 +319,8 @@ export function buildPhotobookWorkbook(products: readonly MasterProductSummary[]
   // タイトル（全ブロックを跨いで結合。編集可能な状態）。
   mergeRange(0, 0, 0, lastCol, { value: '写真帳', fontId: 2, align: 'center' })
   rowHeights.set(1, 28) // 品名の折返し用に少し高く
+  // 画像枠（行 7..21）は固定高さにして、貼付画像の枠サイズ（IMAGE_FRAME_H_PX）と一致させる。
+  for (let r = 7; r <= 21; r++) rowHeights.set(r, 20)
 
   for (let b = 0; b < blocks; b++) {
     const p = products[b]!
@@ -310,35 +441,63 @@ export function buildPhotobookWorkbook(products: readonly MasterProductSummary[]
 
   const mergeXml = `<mergeCells count="${merges.length}">${merges.map((mc) => `<mergeCell ref="${mc}"/>`).join('')}</mergeCells>`
   const colsXml = `<cols><col min="1" max="${lastCol + 1}" width="9" customWidth="1"/></cols>`
-  const sheetXml = `<?xml version="1.0" encoding="UTF-8" standalone="yes"?>\n<worksheet xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main"><dimension ref="A1:${cellRef(LAST_ROW, lastCol)}"/>${colsXml}<sheetData>${sheetData}</sheetData>${mergeXml}</worksheet>`
+  // 画像がある場合のみ drawing 参照（と r 名前空間）を worksheet に追加する（順序: mergeCells の後）。
+  const hasImages = images.length > 0
+  const rNs = hasImages ? ' xmlns:r="http://schemas.openxmlformats.org/officeDocument/2006/relationships"' : ''
+  const drawingTag = hasImages ? '<drawing r:id="rId1"/>' : ''
+  const sheetXml = `<?xml version="1.0" encoding="UTF-8" standalone="yes"?>\n<worksheet xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main"${rNs}><dimension ref="A1:${cellRef(LAST_ROW, lastCol)}"/>${colsXml}<sheetData>${sheetData}</sheetData>${mergeXml}${drawingTag}</worksheet>`
 
   // ゴシック体（Meiryo・charset=128・family=3=modern）。0=標準/1=太字/2=タイトル。
   const fontXml = (bold: boolean, size: number): string =>
     `<font>${bold ? '<b/>' : ''}<sz val="${size}"/><color rgb="FF000000"/><name val="Meiryo"/><family val="3"/><charset val="128"/></font>`
   const stylesXml = `<?xml version="1.0" encoding="UTF-8" standalone="yes"?>\n<styleSheet xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main"><fonts count="3">${fontXml(false, 11)}${fontXml(true, 11)}${fontXml(true, 14)}</fonts><fills count="2"><fill><patternFill patternType="none"/></fill><fill><patternFill patternType="gray125"/></fill></fills><borders count="${borders.length}">${borders.join('')}</borders><cellStyleXfs count="1"><xf numFmtId="0" fontId="0" fillId="0" borderId="0"/></cellStyleXfs><cellXfs count="${xfs.length}">${xfs.join('')}</cellXfs><cellStyles count="1"><cellStyle name="Normal" xfId="0" builtinId="0"/></cellStyles></styleSheet>`
 
-  const contentTypes = `<?xml version="1.0" encoding="UTF-8" standalone="yes"?>\n<Types xmlns="http://schemas.openxmlformats.org/package/2006/content-types"><Default Extension="rels" ContentType="application/vnd.openxmlformats-package.relationships+xml"/><Default Extension="xml" ContentType="application/xml"/><Override PartName="/xl/workbook.xml" ContentType="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet.main+xml"/><Override PartName="/xl/worksheets/sheet1.xml" ContentType="application/vnd.openxmlformats-officedocument.spreadsheetml.worksheet+xml"/><Override PartName="/xl/styles.xml" ContentType="application/vnd.openxmlformats-officedocument.spreadsheetml.styles+xml"/></Types>`
+  // 画像がある場合、拡張子ごとの Default と drawing の Override、シートの rels を足す。
+  const imageExts = [...new Set(images.map((i) => i.ext))]
+  const imageDefaults = imageExts
+    .map((e) => `<Default Extension="${e}" ContentType="image/${e}"/>`)
+    .join('')
+  const drawingOverride = hasImages
+    ? '<Override PartName="/xl/drawings/drawing1.xml" ContentType="application/vnd.openxmlformats-officedocument.drawing+xml"/>'
+    : ''
+  const contentTypes = `<?xml version="1.0" encoding="UTF-8" standalone="yes"?>\n<Types xmlns="http://schemas.openxmlformats.org/package/2006/content-types"><Default Extension="rels" ContentType="application/vnd.openxmlformats-package.relationships+xml"/><Default Extension="xml" ContentType="application/xml"/>${imageDefaults}<Override PartName="/xl/workbook.xml" ContentType="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet.main+xml"/><Override PartName="/xl/worksheets/sheet1.xml" ContentType="application/vnd.openxmlformats-officedocument.spreadsheetml.worksheet+xml"/><Override PartName="/xl/styles.xml" ContentType="application/vnd.openxmlformats-officedocument.spreadsheetml.styles+xml"/>${drawingOverride}</Types>`
   const rootRels = `<?xml version="1.0" encoding="UTF-8" standalone="yes"?>\n<Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships"><Relationship Id="rId1" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/officeDocument" Target="xl/workbook.xml"/></Relationships>`
   // fullCalcOnLoad=1 で開封時に SUM を再計算させる。
   const workbook = `<?xml version="1.0" encoding="UTF-8" standalone="yes"?>\n<workbook xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main" xmlns:r="http://schemas.openxmlformats.org/officeDocument/2006/relationships"><sheets><sheet name="写真帳" sheetId="1" r:id="rId1"/></sheets><calcPr calcId="0" fullCalcOnLoad="1"/></workbook>`
   const workbookRels = `<?xml version="1.0" encoding="UTF-8" standalone="yes"?>\n<Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships"><Relationship Id="rId1" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/worksheet" Target="worksheets/sheet1.xml"/><Relationship Id="rId2" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/styles" Target="styles.xml"/></Relationships>`
 
-  return zipStore([
+  const parts: { name: string; data: Uint8Array }[] = [
     { name: '[Content_Types].xml', data: enc.encode(contentTypes) },
     { name: '_rels/.rels', data: enc.encode(rootRels) },
     { name: 'xl/workbook.xml', data: enc.encode(workbook) },
     { name: 'xl/_rels/workbook.xml.rels', data: enc.encode(workbookRels) },
     { name: 'xl/styles.xml', data: enc.encode(stylesXml) },
     { name: 'xl/worksheets/sheet1.xml', data: enc.encode(sheetXml) },
-  ])
+  ]
+  if (hasImages) {
+    const { drawingXml, drawingRels, media } = buildDrawingParts(images)
+    const sheetRels = `<?xml version="1.0" encoding="UTF-8" standalone="yes"?>\n<Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships"><Relationship Id="rId1" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/drawing" Target="../drawings/drawing1.xml"/></Relationships>`
+    parts.push(
+      { name: 'xl/worksheets/_rels/sheet1.xml.rels', data: enc.encode(sheetRels) },
+      { name: 'xl/drawings/drawing1.xml', data: enc.encode(drawingXml) },
+      { name: 'xl/drawings/_rels/drawing1.xml.rels', data: enc.encode(drawingRels) },
+      ...media,
+    )
+  }
+  return zipStore(parts)
 }
 
 /**
  * 選択商品を投入企画書レイアウトの xlsx ファイルとしてダウンロードする（追加ライブラリ不要）。クライアント専用。
+ * 主画像は非同期取得して画像枠（高さ優先で contain）に貼り付ける。取得失敗時は画像なしで出力する。
  */
-export function downloadPhotobookExcel(products: readonly MasterProductSummary[], fileName: string): void {
+export async function downloadPhotobookExcel(
+  products: readonly MasterProductSummary[],
+  fileName: string,
+): Promise<void> {
   if (import.meta.server || products.length === 0) return
-  const bytes = buildPhotobookWorkbook(products)
+  const images = await loadPhotobookImages(products)
+  const bytes = buildPhotobookWorkbook(products, images)
   const blob = new Blob([bytes], {
     type: 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
   })

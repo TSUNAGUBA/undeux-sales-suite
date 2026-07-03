@@ -384,6 +384,8 @@ export interface RankingViewRow {
   growth: number | null
   /** 直近在日（在庫日数＝days of supply の近似。算出不能は null）。 */
   daysOfSupply: number | null
+  /** 残在庫数（倉庫在庫。データ未提供のため決定的モック。商品記号別ランキングで併記する）。 */
+  warehouseStock: number | null
 }
 
 /** パレート図の1棒（基準指標値 + 累積構成比 + ABC ランク）。 */

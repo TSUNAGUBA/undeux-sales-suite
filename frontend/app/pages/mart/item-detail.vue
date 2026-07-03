@@ -20,7 +20,7 @@
  */
 import { Check, ClipboardCopy, RotateCcw, Search } from 'lucide-vue-next'
 import type { ItemDetailResponse } from '~/types/api'
-import type { ItemDetailRowCategory } from '~/utils/itemDetail'
+import type { ItemDetailRowCategory, ItemDetailWeeklyBreakdown } from '~/utils/itemDetail'
 
 useHead({ title: '商品詳細分析 | UndeuxSales' })
 
@@ -80,6 +80,15 @@ const view = computed(() => {
 })
 const summary = computed(() => computeItemDetailSummary(view.value?.rows ?? []))
 const summaryFmt = computed(() => formatSummary(summary.value))
+
+// 当週ビューの日別売数（月〜日）・直近4週売数。行キーで一度だけ算出し各セルから参照する。
+const weeklyBreakdowns = computed<Map<string, ItemDetailWeeklyBreakdown>>(
+  () => new Map((view.value?.rows ?? []).map((r) => [r.key, itemDetailWeeklyBreakdown(r)])),
+)
+const EMPTY_BREAKDOWN: ItemDetailWeeklyBreakdown = { daily: [0, 0, 0, 0, 0, 0, 0], prior: [null, null, null, null] }
+function breakdownOf(key: string): ItemDetailWeeklyBreakdown {
+  return weeklyBreakdowns.value.get(key) ?? EMPTY_BREAKDOWN
+}
 
 function buildQuery(): Record<string, unknown> {
   // 週別マトリクスの DOM を抑えるため既定 100 SKU（フィルタで絞り込む運用）。
@@ -487,7 +496,16 @@ onMounted(async () => {
                 <th class="whitespace-nowrap bg-slate-50 px-3 py-2 text-right font-medium">上代</th>
                 <th class="whitespace-nowrap bg-slate-50 px-3 py-2 text-left font-medium">導入日</th>
                 <th class="whitespace-nowrap bg-slate-50 px-3 py-2 text-right font-medium">売数</th>
-                <th class="whitespace-nowrap bg-slate-50 px-3 py-2 text-right font-medium">在庫数</th>
+                <th
+                  v-for="d in ['月', '火', '水', '木', '金', '土', '日']"
+                  :key="`dh-${d}`"
+                  class="whitespace-nowrap border-l border-slate-100 bg-emerald-50 px-2 py-2 text-right font-medium text-emerald-700"
+                >{{ d }}</th>
+                <th class="whitespace-nowrap border-l border-slate-200 bg-slate-50 px-3 py-2 text-right font-medium">前週</th>
+                <th class="whitespace-nowrap bg-slate-50 px-3 py-2 text-right font-medium">2週前</th>
+                <th class="whitespace-nowrap bg-slate-50 px-3 py-2 text-right font-medium">3週前</th>
+                <th class="whitespace-nowrap bg-slate-50 px-3 py-2 text-right font-medium">4週前</th>
+                <th class="whitespace-nowrap border-l border-slate-200 bg-slate-50 px-3 py-2 text-right font-medium">在庫数</th>
                 <th class="whitespace-nowrap bg-slate-50 px-3 py-2 text-right font-medium">在日</th>
                 <th class="whitespace-nowrap bg-slate-50 px-3 py-2 text-right font-medium">消化率</th>
                 <th class="whitespace-nowrap bg-slate-50 px-3 py-2 text-right font-medium">プロパー消化率</th>
@@ -507,7 +525,24 @@ onMounted(async () => {
                 <td class="whitespace-nowrap px-3 py-2 text-right tabular-nums text-slate-700">
                   {{ row.latest ? formatNumber(row.latest.quantity) : '—' }}
                 </td>
-                <td class="whitespace-nowrap px-3 py-2 text-right tabular-nums text-slate-700">
+                <td
+                  v-for="(d, di) in breakdownOf(row.key).daily"
+                  :key="`d-${di}`"
+                  class="whitespace-nowrap border-l border-slate-100 bg-emerald-50/40 px-2 py-2 text-right tabular-nums text-slate-600"
+                >{{ formatNumber(d) }}</td>
+                <td class="whitespace-nowrap border-l border-slate-200 px-3 py-2 text-right tabular-nums text-slate-600">
+                  {{ breakdownOf(row.key).prior[0] === null ? '—' : formatNumber(breakdownOf(row.key).prior[0]!) }}
+                </td>
+                <td class="whitespace-nowrap px-3 py-2 text-right tabular-nums text-slate-600">
+                  {{ breakdownOf(row.key).prior[1] === null ? '—' : formatNumber(breakdownOf(row.key).prior[1]!) }}
+                </td>
+                <td class="whitespace-nowrap px-3 py-2 text-right tabular-nums text-slate-600">
+                  {{ breakdownOf(row.key).prior[2] === null ? '—' : formatNumber(breakdownOf(row.key).prior[2]!) }}
+                </td>
+                <td class="whitespace-nowrap px-3 py-2 text-right tabular-nums text-slate-600">
+                  {{ breakdownOf(row.key).prior[3] === null ? '—' : formatNumber(breakdownOf(row.key).prior[3]!) }}
+                </td>
+                <td class="whitespace-nowrap border-l border-slate-200 px-3 py-2 text-right tabular-nums text-slate-700">
                   {{ row.latest ? formatNumber(row.latest.stock) : '—' }}
                 </td>
                 <td
@@ -531,6 +566,8 @@ onMounted(async () => {
         </div>
 
         <p class="text-xs text-slate-400">
+          月〜日は当週売数の日別内訳（売上参照ファイルの当週日別が item-detail レスポンス未提供のため、
+          当週売数を決定的に按分したモック。合計は売数に一致）。前週〜4週前は週次履歴の実売数です。
           在日は最新週基準の平均。消化率は累計売上数÷累計納品数。プロパー／値下げ消化率は初回値下げ週の
           前後で売れた数量比により累計消化率を按分した近似値です。チラシ連動は現状データに無いため未実装です。
         </p>
