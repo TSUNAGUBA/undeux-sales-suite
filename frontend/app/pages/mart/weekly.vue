@@ -181,7 +181,7 @@ function wowCell(v: number | null): string {
 }
 
 const weeklyColumns = [
-  { key: 'week', label: '週（月曜）' },
+  { key: 'week', label: '週（月曜）', frozen: true },
   { key: 'amount', label: '売上金額', align: 'right' as const, format: (r: WeeklyRow) => formatCurrency(r.amount) },
   { key: 'amountWow', label: '売上 前週比', align: 'right' as const, format: (r: WeeklyRow) => wowCell(r.amountWow) },
   { key: 'quantity', label: '売上数量', align: 'right' as const, format: (r: WeeklyRow) => formatNumber(r.quantity) },

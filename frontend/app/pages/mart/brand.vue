@@ -109,7 +109,7 @@ const barLabels = computed(() => chartRows.value.map((r) => r.label || '(未設�
 const barData = computed(() => chartRows.value.map(metricValue))
 
 const tableColumns = [
-  { key: 'label', label: axisLabel.value },
+  { key: 'label', label: axisLabel.value, frozen: true },
   { key: 'quantity', label: '売上数量', align: 'right' as const, format: (r: AxisRow) => formatNumber(r.quantity) },
   { key: 'amount', label: '売上金額', align: 'right' as const, format: (r: AxisRow) => formatCurrency(r.amount) },
   { key: 'grossProfit', label: '粗利', align: 'right' as const, format: (r: AxisRow) => formatCurrency(r.grossProfit) },

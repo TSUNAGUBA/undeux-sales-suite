@@ -62,6 +62,23 @@ function chohyoBadgeClass(cls: OrderClass): string {
   return 'bg-slate-100 text-slate-500'
 }
 
+// 横スクロール時に左固定する識別列（商品6列＋帳票区分）の幅と左オフセット（px、累積）。
+// z-index 規約: 固定ヘッダ z-30 ＞ 固定ボディ z-10 ＞ 通常 0。商品グループ見出しは 0..460、帳票区分は 460。
+const FROZEN = {
+  gyotai: { left: 0, width: 72 },
+  dept: { left: 72, width: 72 },
+  kigo: { left: 144, width: 84 },
+  hinban: { left: 228, width: 56 },
+  tanpin: { left: 284, width: 56 },
+  hinmei: { left: 340, width: 120 },
+  chohyo: { left: 460, width: 76 },
+} as const
+/** 固定列セルの寸法・位置スタイル。 */
+function fz(col: keyof typeof FROZEN): Record<string, string> {
+  const c = FROZEN[col]
+  return { left: `${c.left}px`, width: `${c.width}px`, minWidth: `${c.width}px`, maxWidth: `${c.width}px` }
+}
+
 const allRows = computed<WarehouseRow[]>(() =>
   buildWarehouseMock(targetBusinessTypes.value, targetDepartments.value),
 )
@@ -156,21 +173,21 @@ function resetKigou(): void {
       <table class="w-full text-xs">
         <thead>
           <tr class="text-slate-500">
-            <th colspan="6" class="border-b border-slate-200 bg-slate-50 px-2 py-1.5 text-left font-semibold">商品</th>
-            <th colspan="1" class="border-b border-l border-slate-200 bg-rose-50 px-2 py-1.5 text-center font-semibold text-rose-700">帳票区分</th>
+            <th colspan="6" class="sticky z-30 border-b border-slate-200 bg-slate-50 px-2 py-1.5 text-left font-semibold" :style="{ left: '0px' }">商品</th>
+            <th colspan="1" class="sticky z-30 border-b border-l border-r border-slate-200 bg-rose-50 px-2 py-1.5 text-center font-semibold text-rose-700" :style="{ left: '460px' }">帳票区分</th>
             <th colspan="5" class="border-b border-l border-slate-200 bg-emerald-50 px-2 py-1.5 text-center font-semibold text-emerald-700">売上参照</th>
             <th colspan="1" class="border-b border-l border-slate-200 bg-violet-50 px-2 py-1.5 text-center font-semibold text-violet-700">算出</th>
             <th colspan="2" class="border-b border-l border-slate-200 bg-amber-50 px-2 py-1.5 text-center font-semibold text-amber-700">WMS</th>
             <th colspan="5" class="border-b border-l border-slate-200 bg-violet-50 px-2 py-1.5 text-center font-semibold text-violet-700">算出</th>
           </tr>
           <tr class="text-slate-500">
-            <th class="whitespace-nowrap bg-slate-50 px-2 py-2 text-left font-medium">業態</th>
-            <th class="whitespace-nowrap bg-slate-50 px-2 py-2 text-left font-medium">部門</th>
-            <th class="whitespace-nowrap bg-slate-50 px-2 py-2 text-left font-medium">商品記号</th>
-            <th class="whitespace-nowrap bg-slate-50 px-2 py-2 text-left font-medium">品番</th>
-            <th class="whitespace-nowrap bg-slate-50 px-2 py-2 text-left font-medium">単品</th>
-            <th class="whitespace-nowrap bg-slate-50 px-2 py-2 text-left font-medium">品名</th>
-            <th class="whitespace-nowrap border-l border-slate-200 bg-slate-50 px-2 py-2 text-center font-medium">帳票区分</th>
+            <th class="sticky z-30 whitespace-nowrap bg-slate-50 px-2 py-2 text-left font-medium" :style="fz('gyotai')">業態</th>
+            <th class="sticky z-30 whitespace-nowrap bg-slate-50 px-2 py-2 text-left font-medium" :style="fz('dept')">部門</th>
+            <th class="sticky z-30 whitespace-nowrap bg-slate-50 px-2 py-2 text-left font-medium" :style="fz('kigo')">商品記号</th>
+            <th class="sticky z-30 whitespace-nowrap bg-slate-50 px-2 py-2 text-left font-medium" :style="fz('hinban')">品番</th>
+            <th class="sticky z-30 whitespace-nowrap bg-slate-50 px-2 py-2 text-left font-medium" :style="fz('tanpin')">単品</th>
+            <th class="sticky z-30 whitespace-nowrap bg-slate-50 px-2 py-2 text-left font-medium" :style="fz('hinmei')">品名</th>
+            <th class="sticky z-30 whitespace-nowrap border-l border-r border-slate-200 bg-slate-50 px-2 py-2 text-center font-medium" :style="fz('chohyo')">帳票区分</th>
             <th class="whitespace-nowrap border-l border-slate-200 bg-slate-50 px-2 py-2 text-right font-medium">①先付数</th>
             <th class="whitespace-nowrap bg-slate-50 px-2 py-2 text-right font-medium">②発注数</th>
             <th class="whitespace-nowrap bg-slate-50 px-2 py-2 text-right font-medium">③納品数</th>
@@ -188,13 +205,13 @@ function resetKigou(): void {
         </thead>
         <tbody class="divide-y divide-slate-100">
           <tr v-for="row in rows" :key="row.key" class="hover:bg-slate-50">
-            <td class="whitespace-nowrap px-2 py-1.5 text-slate-600">{{ businessTypeName(row.businessTypeCode) }}</td>
-            <td class="whitespace-nowrap px-2 py-1.5 text-slate-600">{{ departmentName(row.departmentCode) }}</td>
-            <td class="whitespace-nowrap px-2 py-1.5 font-mono text-slate-600">{{ row.shohinKigou }}</td>
-            <td class="whitespace-nowrap px-2 py-1.5 font-mono text-slate-600">{{ row.hinbanCode }}</td>
-            <td class="whitespace-nowrap px-2 py-1.5 font-mono text-slate-600">{{ row.tanpinCode }}</td>
-            <td class="whitespace-nowrap px-2 py-1.5 text-slate-700">{{ row.hinmei }}</td>
-            <td class="whitespace-nowrap border-l border-slate-100 px-2 py-1.5 text-center">
+            <td class="sticky z-10 truncate bg-white px-2 py-1.5 text-slate-600" :style="fz('gyotai')">{{ businessTypeName(row.businessTypeCode) }}</td>
+            <td class="sticky z-10 truncate bg-white px-2 py-1.5 text-slate-600" :style="fz('dept')">{{ departmentName(row.departmentCode) }}</td>
+            <td class="sticky z-10 truncate bg-white px-2 py-1.5 font-mono text-slate-600" :style="fz('kigo')">{{ row.shohinKigou }}</td>
+            <td class="sticky z-10 truncate bg-white px-2 py-1.5 font-mono text-slate-600" :style="fz('hinban')">{{ row.hinbanCode }}</td>
+            <td class="sticky z-10 truncate bg-white px-2 py-1.5 font-mono text-slate-600" :style="fz('tanpin')">{{ row.tanpinCode }}</td>
+            <td class="sticky z-10 truncate bg-white px-2 py-1.5 text-slate-700" :style="fz('hinmei')" :title="row.hinmei">{{ row.hinmei }}</td>
+            <td class="sticky z-10 whitespace-nowrap border-l border-r border-slate-200 bg-white px-2 py-1.5 text-center" :style="fz('chohyo')">
               <span class="inline-block rounded px-1.5 py-0.5 font-medium" :class="chohyoBadgeClass(row.chohyoKubun)">
                 {{ ORDER_CLASS_LABEL[row.chohyoKubun] }}
               </span>

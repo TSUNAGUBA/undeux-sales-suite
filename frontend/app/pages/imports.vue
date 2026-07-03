@@ -39,7 +39,7 @@ const sourceLabels: Record<string, string> = {
 }
 
 const columns = [
-  { key: 'id', label: 'ID', format: (row: ImportBatchInfo) => String(row.id) },
+  { key: 'id', label: 'ID', format: (row: ImportBatchInfo) => String(row.id), frozen: true },
   {
     key: 'sourceType',
     label: '種別',

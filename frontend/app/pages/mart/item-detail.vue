@@ -90,6 +90,20 @@ function breakdownOf(key: string): ItemDetailWeeklyBreakdown {
   return weeklyBreakdowns.value.get(key) ?? EMPTY_BREAKDOWN
 }
 
+// 当週テーブルの横スクロール時に左固定する識別列（品番CD〜品名）の幅・左オフセット（px、累積）。
+// z-index 規約: 固定ヘッダ z-30 ＞ 固定ボディ z-10 ＞ 通常 0。
+const FROZEN_CW = {
+  hinban: { left: 0, width: 72 },
+  tanpin: { left: 72, width: 72 },
+  kigo: { left: 144, width: 72 },
+  hinmei: { left: 216, width: 140 },
+} as const
+/** 当週テーブルの固定列セルの寸法・位置スタイル。 */
+function fzCw(col: keyof typeof FROZEN_CW): Record<string, string> {
+  const c = FROZEN_CW[col]
+  return { left: `${c.left}px`, width: `${c.width}px`, minWidth: `${c.width}px`, maxWidth: `${c.width}px` }
+}
+
 function buildQuery(): Record<string, unknown> {
   // 週別マトリクスの DOM を抑えるため既定 100 SKU（フィルタで絞り込む運用）。
   const query: Record<string, unknown> = { limit: 100 }
@@ -487,10 +501,10 @@ onMounted(async () => {
           <table class="w-full text-sm">
             <thead class="text-slate-500">
               <tr>
-                <th class="whitespace-nowrap bg-slate-50 px-3 py-2 text-left font-medium">品番CD</th>
-                <th class="whitespace-nowrap bg-slate-50 px-3 py-2 text-left font-medium">単品CD</th>
-                <th class="whitespace-nowrap bg-slate-50 px-3 py-2 text-left font-medium">記号</th>
-                <th class="whitespace-nowrap bg-slate-50 px-3 py-2 text-left font-medium">品名</th>
+                <th class="sticky z-30 whitespace-nowrap bg-slate-50 px-3 py-2 text-left font-medium" :style="fzCw('hinban')">品番CD</th>
+                <th class="sticky z-30 whitespace-nowrap bg-slate-50 px-3 py-2 text-left font-medium" :style="fzCw('tanpin')">単品CD</th>
+                <th class="sticky z-30 whitespace-nowrap bg-slate-50 px-3 py-2 text-left font-medium" :style="fzCw('kigo')">記号</th>
+                <th class="sticky z-30 whitespace-nowrap border-r border-slate-200 bg-slate-50 px-3 py-2 text-left font-medium" :style="fzCw('hinmei')">品名</th>
                 <th class="whitespace-nowrap bg-slate-50 px-3 py-2 text-left font-medium">カラー</th>
                 <th class="whitespace-nowrap bg-slate-50 px-3 py-2 text-left font-medium">サイズ</th>
                 <th class="whitespace-nowrap bg-slate-50 px-3 py-2 text-right font-medium">上代</th>
@@ -514,10 +528,10 @@ onMounted(async () => {
             </thead>
             <tbody class="divide-y divide-slate-100">
               <tr v-for="row in view!.rows" :key="row.key" class="hover:bg-slate-50">
-                <td class="whitespace-nowrap px-3 py-2 font-mono text-slate-700">{{ row.hinbanCode }}</td>
-                <td class="whitespace-nowrap px-3 py-2 font-mono text-slate-700">{{ row.tanpinCode }}</td>
-                <td class="whitespace-nowrap px-3 py-2 font-mono text-slate-500">{{ row.shohinKigou }}</td>
-                <td class="max-w-[200px] truncate px-3 py-2 text-slate-700" :title="row.hinmei">{{ row.hinmei || '—' }}</td>
+                <td class="sticky z-10 truncate bg-white px-3 py-2 font-mono text-slate-700" :style="fzCw('hinban')">{{ row.hinbanCode }}</td>
+                <td class="sticky z-10 truncate bg-white px-3 py-2 font-mono text-slate-700" :style="fzCw('tanpin')">{{ row.tanpinCode }}</td>
+                <td class="sticky z-10 truncate bg-white px-3 py-2 font-mono text-slate-500" :style="fzCw('kigo')">{{ row.shohinKigou }}</td>
+                <td class="sticky z-10 truncate border-r border-slate-200 bg-white px-3 py-2 text-slate-700" :style="fzCw('hinmei')" :title="row.hinmei">{{ row.hinmei || '—' }}</td>
                 <td class="whitespace-nowrap px-3 py-2 text-slate-600">{{ row.colorName || '—' }}</td>
                 <td class="whitespace-nowrap px-3 py-2 text-slate-600">{{ row.sizeName || '—' }}</td>
                 <td class="whitespace-nowrap px-3 py-2 text-right tabular-nums text-slate-600">{{ formatCurrency(row.listPrice) }}</td>

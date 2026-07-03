@@ -353,8 +353,8 @@ const skuRows = computed<SkuInfoRow[]>(() => {
 })
 
 const skuColumns = [
-  { key: 'thumbnail', label: '画像', format: (_row: SkuInfoRow) => '' },
-  { key: 'unitCd', label: '単品CD' },
+  { key: 'thumbnail', label: '画像', format: (_row: SkuInfoRow) => '', frozen: true, width: 56 },
+  { key: 'unitCd', label: '単品CD', frozen: true },
   { key: 'colorName', label: 'カラー' },
   { key: 'sizeName', label: 'サイズ' },
   {

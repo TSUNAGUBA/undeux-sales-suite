@@ -176,8 +176,8 @@ const emptyWithDonyuFilter = computed(
 )
 
 const columns = [
-  { key: 'thumbnail', label: '画像', format: (_row: MartIntroductionRow) => '' },
-  { key: 'productCode', label: '品番CD（服種）' },
+  { key: 'thumbnail', label: '画像', format: (_row: MartIntroductionRow) => '', frozen: true, width: 56 },
+  { key: 'productCode', label: '品番CD（服種）', frozen: true },
   {
     key: 'productName',
     label: '商品名',

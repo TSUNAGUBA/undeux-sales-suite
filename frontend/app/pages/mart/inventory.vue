@@ -564,9 +564,12 @@ function isFlagOutOfScope(flag: InventoryItemFlag, row: InventoryItemRow): boole
 
 // ---- 明細テーブル ----
 
-const selectColumn = { key: 'select', label: '' } as const
-const productColumn = { key: 'product', label: '品番 / 単品' } as const
+// 横スクロール時、選択・品番/単品（＋在庫一覧タブでは状態）を左固定する（DataTable の frozen 対応）。
+const selectColumn = { key: 'select', label: '', frozen: true, width: 44 } as const
+const productColumn = { key: 'product', label: '品番 / 単品', frozen: true, width: 160 } as const
 const statusColumn = { key: 'status', label: '状態' } as const
+/** 在庫一覧タブ用: 状態列も左固定する（select→product→status が左端で連続するタブのみ）。 */
+const statusColumnFrozen = { ...statusColumn, frozen: true, width: 76 } as const
 const recommendedColumn = { key: 'recommendedAction', label: '推奨アクション' } as const
 const flagsColumn = { key: 'flags', label: 'フラグ / 対応状況' } as const
 
@@ -593,7 +596,7 @@ const listColumns = computed(() => {
   if (activeTab.value === 'flags') {
     return [productColumn, flagsColumn, statusColumn, stockColumn, stockDaysColumn, sellThroughColumn]
   }
-  return [selectColumn, productColumn, statusColumn, stockColumn, stockValueColumn, sellThroughColumn, stockDaysColumn, recommendedColumn]
+  return [selectColumn, productColumn, statusColumnFrozen, stockColumn, stockValueColumn, sellThroughColumn, stockDaysColumn, recommendedColumn]
 })
 
 function rowKey(row: InventoryItemRow): string {

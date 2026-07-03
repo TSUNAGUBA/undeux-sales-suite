@@ -41,6 +41,17 @@ const TIER_BADGE: Record<AbcTier, string> = {
   C: 'bg-slate-100 text-slate-600',
 }
 
+// 横スクロール時に左固定する識別列（順位・名称）の幅と左オフセット（px、累積）。
+// z-index 規約: 固定ヘッダ z-30 ＞ 上部固定ヘッダ z-20 ＞ 固定ボディ z-10 ＞ 通常 0。
+const FROZEN_COLS = {
+  rank: { left: 0, width: 56 },
+  name: { left: 56, width: 180 },
+} as const
+function frozenStyle(col: keyof typeof FROZEN_COLS): Record<string, string> {
+  const c = FROZEN_COLS[col]
+  return { left: `${c.left}px`, width: `${c.width}px`, minWidth: `${c.width}px`, maxWidth: `${c.width}px` }
+}
+
 function metricLabel(key: RankingMetricKey): string {
   return rankingMetricInfo(key).label
 }
@@ -124,39 +135,39 @@ function onRowClick(row: RankingViewRow): void {
       <table class="w-full text-sm">
         <thead class="text-slate-500">
           <tr>
-            <th class="sticky top-0 z-10 whitespace-nowrap bg-slate-50 px-3 py-2.5 text-center font-medium">順位</th>
-            <th class="sticky top-0 z-10 whitespace-nowrap bg-slate-50 px-3 py-2.5 text-left font-medium">
+            <th class="sticky top-0 z-30 whitespace-nowrap border-r border-slate-200 bg-slate-50 px-3 py-2.5 text-center font-medium" :style="frozenStyle('rank')">順位</th>
+            <th class="sticky top-0 z-30 whitespace-nowrap border-r border-slate-200 bg-slate-50 px-3 py-2.5 text-left font-medium" :style="frozenStyle('name')">
               {{ dimensionLabel }}
             </th>
             <th
               v-if="showComposite"
-              class="sticky top-0 z-10 whitespace-nowrap bg-slate-50 px-3 py-2.5 text-right font-medium"
+              class="sticky top-0 z-20 whitespace-nowrap bg-slate-50 px-3 py-2.5 text-right font-medium"
             >複合スコア</th>
             <th
               v-for="key in metricColumns"
               :key="key"
-              class="sticky top-0 z-10 whitespace-nowrap bg-slate-50 px-3 py-2.5 text-right font-medium"
+              class="sticky top-0 z-20 whitespace-nowrap bg-slate-50 px-3 py-2.5 text-right font-medium"
             >{{ metricLabel(key) }}</th>
-            <th class="sticky top-0 z-10 whitespace-nowrap bg-slate-50 px-3 py-2.5 text-right font-medium">構成比</th>
-            <th class="sticky top-0 z-10 whitespace-nowrap bg-slate-50 px-3 py-2.5 text-right font-medium">累積</th>
+            <th class="sticky top-0 z-20 whitespace-nowrap bg-slate-50 px-3 py-2.5 text-right font-medium">構成比</th>
+            <th class="sticky top-0 z-20 whitespace-nowrap bg-slate-50 px-3 py-2.5 text-right font-medium">累積</th>
             <!-- 店頭在庫数・直近在日は全集計軸で常時併記する。 -->
-            <th class="sticky top-0 z-10 whitespace-nowrap bg-slate-50 px-3 py-2.5 text-right font-medium">店頭在庫数</th>
-            <th class="sticky top-0 z-10 whitespace-nowrap bg-slate-50 px-3 py-2.5 text-right font-medium">直近在日</th>
+            <th class="sticky top-0 z-20 whitespace-nowrap bg-slate-50 px-3 py-2.5 text-right font-medium">店頭在庫数</th>
+            <th class="sticky top-0 z-20 whitespace-nowrap bg-slate-50 px-3 py-2.5 text-right font-medium">直近在日</th>
             <template v-if="showComparison">
-              <th class="sticky top-0 z-10 whitespace-nowrap bg-slate-50 px-3 py-2.5 text-center font-medium">前順位</th>
-              <th class="sticky top-0 z-10 whitespace-nowrap bg-slate-50 px-3 py-2.5 text-center font-medium">変動</th>
+              <th class="sticky top-0 z-20 whitespace-nowrap bg-slate-50 px-3 py-2.5 text-center font-medium">前順位</th>
+              <th class="sticky top-0 z-20 whitespace-nowrap bg-slate-50 px-3 py-2.5 text-center font-medium">変動</th>
               <!-- 残在庫数（倉庫）→残在庫金額は「変動の直右」に配置（比較なしのときは行末に表示） -->
               <template v-if="showStockColumns">
-                <th class="sticky top-0 z-10 whitespace-nowrap bg-slate-50 px-3 py-2.5 text-right font-medium">残在庫数</th>
-                <th class="sticky top-0 z-10 whitespace-nowrap bg-slate-50 px-3 py-2.5 text-right font-medium">残在庫金額</th>
+                <th class="sticky top-0 z-20 whitespace-nowrap bg-slate-50 px-3 py-2.5 text-right font-medium">残在庫数</th>
+                <th class="sticky top-0 z-20 whitespace-nowrap bg-slate-50 px-3 py-2.5 text-right font-medium">残在庫金額</th>
               </template>
-              <th class="sticky top-0 z-10 whitespace-nowrap bg-slate-50 px-3 py-2.5 text-right font-medium">
+              <th class="sticky top-0 z-20 whitespace-nowrap bg-slate-50 px-3 py-2.5 text-right font-medium">
                 成長率<span class="text-xs text-slate-400">（{{ growthLabel }}）</span>
               </th>
             </template>
             <template v-else-if="showStockColumns">
-              <th class="sticky top-0 z-10 whitespace-nowrap bg-slate-50 px-3 py-2.5 text-right font-medium">残在庫数</th>
-              <th class="sticky top-0 z-10 whitespace-nowrap bg-slate-50 px-3 py-2.5 text-right font-medium">残在庫金額</th>
+              <th class="sticky top-0 z-20 whitespace-nowrap bg-slate-50 px-3 py-2.5 text-right font-medium">残在庫数</th>
+              <th class="sticky top-0 z-20 whitespace-nowrap bg-slate-50 px-3 py-2.5 text-right font-medium">残在庫金額</th>
             </template>
           </tr>
         </thead>
@@ -168,20 +179,20 @@ function onRowClick(row: RankingViewRow): void {
             :class="clickable ? 'cursor-pointer' : ''"
             @click="onRowClick(row)"
           >
-            <td class="whitespace-nowrap px-3 py-2 text-center">
+            <td class="sticky z-10 whitespace-nowrap border-r border-slate-200 bg-white px-3 py-2 text-center" :style="frozenStyle('rank')">
               <span
                 class="inline-flex h-6 min-w-6 items-center justify-center rounded-full px-1.5 text-xs font-bold tabular-nums"
                 :class="rankBadgeClass(row.rank)"
               >{{ row.rank }}</span>
             </td>
-            <td class="px-3 py-2 text-left text-slate-700">
+            <td class="sticky z-10 overflow-hidden border-r border-slate-200 bg-white px-3 py-2 text-left text-slate-700" :style="frozenStyle('name')">
               <div class="flex items-center gap-2">
                 <span
                   class="inline-flex h-5 w-5 shrink-0 items-center justify-center rounded text-xs font-bold"
                   :class="TIER_BADGE[row.tier]"
                   :title="`ABC ランク ${row.tier}`"
                 >{{ row.tier }}</span>
-                <span class="truncate font-medium" :title="row.label">{{ row.label }}</span>
+                <span class="min-w-0 truncate font-medium" :title="row.label">{{ row.label }}</span>
               </div>
             </td>
             <td v-if="showComposite" class="whitespace-nowrap px-3 py-2 text-right">
