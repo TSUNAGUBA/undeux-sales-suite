@@ -294,6 +294,16 @@ const abc = computed(() =>
   computeAbc(currentPeriodRows.value, contributionMetric.value, thresholdA, thresholdB),
 )
 
+/**
+ * 残在庫数（倉庫在庫）のモック。倉庫在庫はスナップショットに無いため、行キーから決定的に生成する。
+ * 店頭在庫があればその 0.6〜2.6 倍程度、無ければハッシュ由来の基準値を用いる（商品記号別で併記）。
+ */
+function mockWarehouseStock(key: string, storeStock: number | null): number {
+  const seed = hashString(`whrank|${key}`)
+  const base = storeStock !== null && storeStock > 0 ? storeStock : 100 + (seed % 400)
+  return Math.round(base * (0.6 + seededUnit(seed) * 2))
+}
+
 /** 当期に存在する全行を集約し、今期順位で昇順整列する。 */
 const allViewRows = computed<RankingViewRow[]>(() => {
   const rankMap = currentRankMap.value
@@ -326,6 +336,7 @@ const allViewRows = computed<RankingViewRow[]>(() => {
         ? growthPercent(metricRawValue(row.current, gm), metricRawValue(row.comparison, gm))
         : null,
       daysOfSupply: estimateStockDaysOfSupply(row.current.stock, row.current.quantity, periodWeeks.value),
+      warehouseStock: mockWarehouseStock(row.key, row.current.stock),
     })
   }
   rows.sort((a, b) => a.rank - b.rank)

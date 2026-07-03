@@ -65,9 +65,18 @@ function clearSelection(): void {
   selectedMap.value = new Map()
 }
 
-function exportExcel(): void {
-  if (selectedProducts.value.length === 0) return
-  downloadPhotobookExcel(selectedProducts.value, '写真帳.xlsx')
+// Excel 出力中フラグ（主画像の非同期取得ぶん待つため、多重クリックを防ぐ）。
+const exportingExcel = ref(false)
+async function exportExcel(): Promise<void> {
+  if (selectedProducts.value.length === 0 || exportingExcel.value) return
+  exportingExcel.value = true
+  try {
+    await downloadPhotobookExcel(selectedProducts.value, '写真帳.xlsx')
+  } catch (error) {
+    console.error('[photobook] Excel 出力に失敗しました:', error)
+  } finally {
+    exportingExcel.value = false
+  }
 }
 
 function buildQuery(): Record<string, unknown> {
@@ -237,11 +246,11 @@ onMounted(async () => {
         <button
           type="button"
           class="inline-flex items-center gap-1.5 rounded-lg bg-emerald-600 px-3 py-1.5 text-sm font-medium text-white transition-colors hover:bg-emerald-500 disabled:cursor-not-allowed disabled:opacity-40"
-          :disabled="selectedProducts.length === 0"
+          :disabled="selectedProducts.length === 0 || exportingExcel"
           @click="exportExcel"
         >
           <Download class="h-4 w-4" />
-          Excel 出力
+          {{ exportingExcel ? '出力中…' : 'Excel 出力' }}
         </button>
       </div>
     </div>

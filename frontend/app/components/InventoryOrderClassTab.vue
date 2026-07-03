@@ -22,7 +22,36 @@ const props = defineProps<{
 
 const shohinKigou = ref('')
 const appliedKigou = ref('')
-const changedOnly = ref(false)
+
+// ---- 変化種別フィルター（前週→当週の帳票区分変化） ----
+/** 変化なしの行を表すフィルターキー。 */
+const TRANSITION_NONE = '変化なし'
+/** 行の変化種別キー（例: 「売→情」。変化なしは TRANSITION_NONE）。 */
+function transitionKey(row: OrderClassRow): string {
+  return orderClassTransitionLabel(row.previous, row.current) ?? TRANSITION_NONE
+}
+/** データ中に存在する変化種別（変化ありを先頭に安定ソート、変化なしを末尾）。 */
+const transitionOptions = computed<string[]>(() => {
+  const seen = new Set<string>()
+  for (const r of allRows.value) seen.add(transitionKey(r))
+  const changes = [...seen].filter((k) => k !== TRANSITION_NONE).sort()
+  return seen.has(TRANSITION_NONE) ? [...changes, TRANSITION_NONE] : changes
+})
+// null = 全選択（デフォルト全表示）。1つでも外すと明示的な選択集合に確定する。
+const selectedTransitions = ref<string[] | null>(null)
+function isTransitionChecked(key: string): boolean {
+  return selectedTransitions.value === null || selectedTransitions.value.includes(key)
+}
+function toggleTransition(key: string): void {
+  const base = selectedTransitions.value ?? transitionOptions.value
+  const set = new Set(base)
+  if (set.has(key)) set.delete(key)
+  else set.add(key)
+  selectedTransitions.value = [...set]
+}
+function resetTransitions(): void {
+  selectedTransitions.value = null
+}
 
 const targetBusinessTypes = computed(() =>
   props.selectedBusinessTypes.length > 0
@@ -48,12 +77,20 @@ const allRows = computed<OrderClassRow[]>(() =>
 
 const rows = computed<OrderClassRow[]>(() => {
   const kigo = appliedKigou.value.trim()
+  const sel = selectedTransitions.value
   return allRows.value.filter(
-    (r) => (!kigo || r.shohinKigou.includes(kigo)) && (!changedOnly.value || r.changed),
+    (r) =>
+      (!kigo || r.shohinKigou.includes(kigo))
+      && (sel === null || sel.includes(transitionKey(r))),
   )
 })
 
 const changedCount = computed(() => allRows.value.filter((r) => r.changed).length)
+
+/** 変化列の略記（例: 「売→情」）。変化なしは null。 */
+function transitionDisplay(row: OrderClassRow): string | null {
+  return orderClassTransitionLabel(row.previous, row.current)
+}
 
 function applyKigou(): void {
   appliedKigou.value = shohinKigou.value
@@ -104,7 +141,8 @@ function isChangePoint(row: OrderClassRow, index: number): boolean {
 <template>
   <div class="space-y-3">
     <p class="rounded-lg bg-amber-50 px-3 py-2 text-xs text-amber-700">
-      発注区分（売発注／情報発注）はスタースキーマに無いため、SKU 週次の区分をモックで表現しています。
+      帳票区分（売発注／情報発注／無）はスタースキーマに無いため、SKU 週次の区分をモックで表現しています。
+      変化列は前週→当週の区分変化を略記（売＝売発注／情＝情報発注／無＝発注なし）で表示します。
       業態・部門は上部フィルターを引き継ぎ、商品記号は下記の部分一致で絞り込みます。
     </p>
 
@@ -135,13 +173,34 @@ function isChangePoint(row: OrderClassRow, index: number): boolean {
         <RotateCcw class="h-4 w-4" />
         クリア
       </button>
-      <label class="ml-1 inline-flex cursor-pointer items-center gap-1.5 text-xs text-slate-600">
-        <input v-model="changedOnly" type="checkbox" class="accent-indigo-600">
-        変化があったSKUのみ
-      </label>
       <span class="ml-auto text-xs text-slate-400">
         当週変化 {{ formatNumber(changedCount) }} 件 / {{ formatNumber(allRows.length) }} 件
       </span>
+    </div>
+
+    <!-- 変化種別フィルター（複数選択・デフォルト全表示）。 -->
+    <div v-if="transitionOptions.length > 0" class="flex flex-wrap items-center gap-x-3 gap-y-1.5 rounded-lg bg-slate-50 px-3 py-2">
+      <span class="text-xs font-medium text-slate-500">変化種別</span>
+      <label
+        v-for="key in transitionOptions"
+        :key="key"
+        class="inline-flex cursor-pointer items-center gap-1.5 text-xs text-slate-600"
+      >
+        <input
+          type="checkbox"
+          class="accent-indigo-600"
+          :checked="isTransitionChecked(key)"
+          @change="toggleTransition(key)"
+        >
+        {{ key }}
+      </label>
+      <button
+        type="button"
+        class="ml-1 rounded-md border border-slate-300 px-2 py-0.5 text-xs text-slate-500 hover:bg-white"
+        @click="resetTransitions"
+      >
+        すべて表示
+      </button>
     </div>
 
     <div
@@ -189,9 +248,9 @@ function isChangePoint(row: OrderClassRow, index: number): boolean {
             </td>
             <td class="whitespace-nowrap px-2 py-1.5 text-center">
               <span
-                v-if="row.changed"
+                v-if="transitionDisplay(row)"
                 class="inline-block rounded bg-rose-50 px-1.5 py-0.5 font-semibold text-rose-700"
-              >変更</span>
+              >{{ transitionDisplay(row) }}</span>
               <span v-else class="text-slate-400">変化なし</span>
             </td>
             <td class="whitespace-nowrap px-2 py-1.5 text-right tabular-nums text-slate-500">{{ formatNumber(row.changeCount) }}</td>
@@ -227,7 +286,7 @@ function isChangePoint(row: OrderClassRow, index: number): boolean {
           <span class="rounded px-1.5 py-0.5 font-medium" :class="classBadge(row.previous)">{{ classLabel(row.previous) }}</span>
           <span class="text-slate-400">→</span>
           <span class="rounded px-1.5 py-0.5 font-medium" :class="classBadge(row.current)">{{ classLabel(row.current) }}</span>
-          <span v-if="row.changed" class="ml-1 rounded bg-rose-50 px-1.5 py-0.5 font-semibold text-rose-700">変更</span>
+          <span v-if="transitionDisplay(row)" class="ml-1 rounded bg-rose-50 px-1.5 py-0.5 font-semibold text-rose-700">{{ transitionDisplay(row) }}</span>
           <span v-else class="ml-1 text-slate-400">変化なし</span>
         </div>
       </div>
@@ -244,7 +303,7 @@ function isChangePoint(row: OrderClassRow, index: number): boolean {
       <div class="w-full max-w-lg rounded-xl border border-slate-200 bg-white shadow-xl">
         <div class="flex items-center justify-between gap-2 border-b border-slate-200 px-4 py-3">
           <div>
-            <h3 class="text-sm font-bold text-slate-800">発注区分の変化履歴</h3>
+            <h3 class="text-sm font-bold text-slate-800">帳票区分の変化履歴</h3>
             <p class="text-xs text-slate-500">
               {{ historyRow.shohinKigou }} / {{ historyRow.hinbanCode }}-{{ historyRow.tanpinCode }}・{{ historyRow.hinmei }}
             </p>

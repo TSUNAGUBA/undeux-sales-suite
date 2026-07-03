@@ -199,6 +199,72 @@ function monthlyYoYText(pair: YoYPair, monthLabel: string): string | undefined {
   return `${monthLabel}度 前年同月比 ${pct > 0 ? '+' : '−'}${Math.abs(pct).toFixed(1)}%`
 }
 
+// ---------------------------------------------------------------
+// 同月まで累計（当期 vs 前期）
+// 当期と前期それぞれの「1月〜締まった直近月」の累計（数量・金額）を並べて比較する。
+// 単月 YoY（monthlyYoY）と同じく締まった直近月（closedMonthIndex）を基準にし、当年の未確定月
+// （取込途中）を含めない。締まった直近月が無い（1月データのみ等）場合は、部分月 vs 満了月の
+// 不公平な比較（−100% 近傍の誤表示）を避けるため、単月 YoY と同様に比較を出さない（null）。
+// ---------------------------------------------------------------
+/** 当期・前期の同月まで累計（数量・金額）。年度選択かつ前年トレンドが揃い、締まった直近月があるときのみ。 */
+const cumulativeYoY = computed<{ monthLabel: string; amount: YoYPair; quantity: YoYPair } | null>(() => {
+  const idx = closedMonthIndex.value
+  if (idx < 0 || filter.value.year === null || !summaryPrev.value) return null
+  const cur = monthlyTotals(summary.value?.weeklyTrend)
+  const prev = monthlyTotals(summaryPrev.value.weeklyTrend)
+  let curAmt = 0, curQty = 0, prevAmt = 0, prevQty = 0
+  for (let m = 0; m <= idx; m++) {
+    curAmt += cur[m]!.amount
+    curQty += cur[m]!.quantity
+    prevAmt += prev[m]!.amount
+    prevQty += prev[m]!.quantity
+  }
+  // 当期累計が 0（データ欠損）なら −100% の誤表示を避けるため比較を出さない。
+  if (curAmt <= 0) return null
+  const pair = (c: number, p: number): YoYPair => ({ current: c, previous: p || null })
+  return {
+    monthLabel: MONTH_LABELS[idx] ?? `${idx + 1}月`,
+    amount: pair(curAmt, prevAmt),
+    quantity: pair(curQty, prevQty),
+  }
+})
+
+/** 同月まで累計カードの表示行（金額・数量。当期/前期のバー幅と前年比を持つ）。 */
+const cumulativeRows = computed(() => {
+  const c = cumulativeYoY.value
+  if (!c) return []
+  const build = (label: string, pair: YoYPair, fmt: (n: number) => string) => {
+    const prev = pair.previous ?? 0
+    const max = Math.max(pair.current, prev, 1)
+    const pct = pair.previous && pair.previous !== 0
+      ? ((pair.current - pair.previous) / Math.abs(pair.previous)) * 100
+      : null
+    let yoyText: string | undefined
+    let yoyClass = 'text-slate-400'
+    if (pct !== null) {
+      if (Math.abs(pct) < DELTA_DISPLAY_EPSILON) {
+        yoyText = '前年比 ±0.0%'
+      } else {
+        yoyText = `前年比 ${pct > 0 ? '+' : '−'}${Math.abs(pct).toFixed(1)}%`
+        yoyClass = pct > 0 ? 'text-emerald-600' : 'text-rose-600'
+      }
+    }
+    return {
+      label,
+      currentText: fmt(pair.current),
+      previousText: pair.previous === null ? '—' : fmt(pair.previous),
+      currentPct: (pair.current / max) * 100,
+      previousPct: (prev / max) * 100,
+      yoyText,
+      yoyClass,
+    }
+  }
+  return [
+    build('売上金額', c.amount, formatCurrency),
+    build('売上数量', c.quantity, (n) => `${formatNumber(n)} 点`),
+  ]
+})
+
 const kpiItems = computed<KpiCardItem[]>(() => {
   const kpi = summary.value?.kpi
   if (!kpi) return []
@@ -609,6 +675,41 @@ onMounted(async () => {
         <p v-else-if="inventoryActionsFailed" class="text-xs text-slate-400">
           在庫アクションの取得に失敗しました（サマリーの表示には影響ありません）。
         </p>
+
+        <!-- 同月まで累計売上（当期 vs 前期）。数量・金額を当期/前期のバーで比較する。 -->
+        <div v-if="cumulativeYoY" class="rounded-xl border border-slate-200 bg-white p-4">
+          <div class="mb-3 flex items-baseline justify-between gap-2">
+            <h2 class="text-sm font-bold text-slate-800">同月まで累計売上（当期 vs 前期）</h2>
+            <span class="text-xs text-slate-400">1月〜{{ cumulativeYoY.monthLabel }} 累計</span>
+          </div>
+          <div class="space-y-3">
+            <div v-for="row in cumulativeRows" :key="row.label">
+              <div class="mb-1 flex items-baseline justify-between gap-2">
+                <span class="text-xs font-medium text-slate-500">{{ row.label }}</span>
+                <span v-if="row.yoyText" class="text-xs font-semibold" :class="row.yoyClass">
+                  {{ row.yoyText }}
+                </span>
+              </div>
+              <div class="flex items-center gap-2">
+                <span class="w-8 shrink-0 text-[10px] text-slate-400">当期</span>
+                <div class="h-4 flex-1 overflow-hidden rounded bg-slate-100">
+                  <div class="h-4 rounded bg-indigo-500" :style="{ width: `${row.currentPct}%` }" />
+                </div>
+                <span class="w-32 shrink-0 text-right text-xs font-semibold tabular-nums text-slate-700">{{ row.currentText }}</span>
+              </div>
+              <div class="mt-1 flex items-center gap-2">
+                <span class="w-8 shrink-0 text-[10px] text-slate-400">前期</span>
+                <div class="h-4 flex-1 overflow-hidden rounded bg-slate-100">
+                  <div class="h-4 rounded bg-slate-400" :style="{ width: `${row.previousPct}%` }" />
+                </div>
+                <span class="w-32 shrink-0 text-right text-xs tabular-nums text-slate-500">{{ row.previousText }}</span>
+              </div>
+            </div>
+          </div>
+          <p class="mt-2 text-xs text-slate-400">
+            期間（年度）選択時に、当期と前期それぞれの1月から締まった直近月までの累計売上（数量・金額）を比較します。
+          </p>
+        </div>
 
         <!-- 月次売上推移（本年度 vs 前年度・前年同月比） -->
         <LineChartCard
