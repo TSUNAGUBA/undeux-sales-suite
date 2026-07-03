@@ -834,8 +834,9 @@ const showNoSalesNotice = computed(() => analyticsNoData.value || (analytics.val
             <table class="w-full text-sm">
               <thead class="bg-slate-50 text-xs text-slate-500">
                 <tr>
-                  <th class="px-3 py-2 text-left">画像</th>
-                  <th class="px-3 py-2 text-left">単品コード</th>
+                  <!-- 横スクロール時に 画像・単品コード を左固定（z: 固定ヘッダ z-30 ＞ 固定ボディ z-10 ＞ 通常 0）。 -->
+                  <th class="sticky z-30 bg-slate-50 px-3 py-2 text-left" :style="{ left: '0px', width: '56px', minWidth: '56px', maxWidth: '56px' }">画像</th>
+                  <th class="sticky z-30 border-r border-slate-200 bg-slate-50 px-3 py-2 text-left" :style="{ left: '56px', width: '96px', minWidth: '96px', maxWidth: '96px' }">単品コード</th>
                   <th class="px-3 py-2 text-left">カラー</th>
                   <th class="px-3 py-2 text-left">サイズ</th>
                   <th class="px-3 py-2 text-right">売価</th>
@@ -869,7 +870,7 @@ const showNoSalesNotice = computed(() => analyticsNoData.value || (analytics.val
                   @keydown.enter.prevent="selectSkuFromRow(row)"
                   @keydown.space.prevent="selectSkuFromRow(row)"
                 >
-                  <td class="px-3 py-2">
+                  <td class="sticky z-10 bg-white px-3 py-2" :style="{ left: '0px', width: '56px', minWidth: '56px', maxWidth: '56px' }">
                     <div class="h-10 w-10 overflow-hidden rounded">
                       <ProductImage
                         :src="row.primaryImageUrl ?? row.master?.images[0]?.imageUrl ?? null"
@@ -879,7 +880,7 @@ const showNoSalesNotice = computed(() => analyticsNoData.value || (analytics.val
                       />
                     </div>
                   </td>
-                  <td class="px-3 py-2 font-mono text-xs text-slate-500">{{ row.unitCd }}</td>
+                  <td class="sticky z-10 truncate border-r border-slate-200 bg-white px-3 py-2 font-mono text-xs text-slate-500" :style="{ left: '56px', width: '96px', minWidth: '96px', maxWidth: '96px' }">{{ row.unitCd }}</td>
                   <td class="px-3 py-2 text-slate-700">{{ row.colorName || '—' }}</td>
                   <td class="px-3 py-2 text-slate-700">{{ row.sizeName || '—' }}</td>
                   <td class="px-3 py-2 text-right tabular-nums text-slate-700">
@@ -1030,8 +1031,9 @@ const showNoSalesNotice = computed(() => analyticsNoData.value || (analytics.val
             <table class="w-full text-sm">
               <thead class="bg-slate-50 text-xs text-slate-500">
                 <tr>
-                  <th class="px-3 py-2 text-left">画像</th>
-                  <th class="px-3 py-2 text-left">単品コード</th>
+                  <!-- 横スクロール時に 画像・単品コード を左固定（z: 固定ヘッダ z-30 ＞ 固定ボディ z-10 ＞ 通常 0）。 -->
+                  <th class="sticky z-30 bg-slate-50 px-3 py-2 text-left" :style="{ left: '0px', width: '56px', minWidth: '56px', maxWidth: '56px' }">画像</th>
+                  <th class="sticky z-30 border-r border-slate-200 bg-slate-50 px-3 py-2 text-left" :style="{ left: '56px', width: '96px', minWidth: '96px', maxWidth: '96px' }">単品コード</th>
                   <th class="px-3 py-2 text-left">カラー</th>
                   <th class="px-3 py-2 text-left">サイズ</th>
                   <th class="px-3 py-2 text-right">売価</th>
@@ -1047,7 +1049,7 @@ const showNoSalesNotice = computed(() => analyticsNoData.value || (analytics.val
                   :class="selectedSku?.skuItemId === sku.skuItemId ? 'bg-indigo-50' : ''"
                   @click="selectMasterSku(sku)"
                 >
-                  <td class="px-3 py-2">
+                  <td class="sticky z-10 bg-white px-3 py-2" :style="{ left: '0px', width: '56px', minWidth: '56px', maxWidth: '56px' }">
                     <div class="h-10 w-10 overflow-hidden rounded">
                       <ProductImage
                         :src="sku.images[0]?.imageUrl ?? null"
@@ -1057,7 +1059,7 @@ const showNoSalesNotice = computed(() => analyticsNoData.value || (analytics.val
                       />
                     </div>
                   </td>
-                  <td class="px-3 py-2 font-mono text-xs text-slate-500">{{ sku.unitCd }}</td>
+                  <td class="sticky z-10 truncate border-r border-slate-200 bg-white px-3 py-2 font-mono text-xs text-slate-500" :style="{ left: '56px', width: '96px', minWidth: '96px', maxWidth: '96px' }">{{ sku.unitCd }}</td>
                   <td class="px-3 py-2 text-slate-700">{{ sku.colorName || '—' }}</td>
                   <td class="px-3 py-2 text-slate-700">{{ sku.sizeName || '—' }}</td>
                   <td class="px-3 py-2 text-right tabular-nums text-slate-700">

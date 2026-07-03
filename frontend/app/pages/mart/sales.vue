@@ -131,7 +131,7 @@ const trendAxes: ComboChartAxis[] = [
 // ---------------------------------------------------------------
 
 const weeklyColumns = computed(() => [
-  { key: 'week', label: '週（月曜）' },
+  { key: 'week', label: '週（月曜）', frozen: true },
   {
     key: 'quantity',
     label: '売上数量',

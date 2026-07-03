@@ -227,8 +227,9 @@ function productLabel(p: MockStoreProduct): string {
       <table class="w-full text-sm">
         <thead class="text-slate-500">
           <tr>
-            <th class="whitespace-nowrap bg-slate-50 px-3 py-2.5 text-center font-medium">順位</th>
-            <th class="whitespace-nowrap bg-slate-50 px-3 py-2.5 text-left font-medium">商品名</th>
+            <!-- 横スクロール時に 順位・商品名 を左固定（z: 固定ヘッダ z-30 ＞ 固定ボディ z-10 ＞ 通常 0）。 -->
+            <th class="sticky z-30 whitespace-nowrap bg-slate-50 px-3 py-2.5 text-center font-medium" :style="{ left: '0px', width: '56px', minWidth: '56px', maxWidth: '56px' }">順位</th>
+            <th class="sticky z-30 whitespace-nowrap border-r border-slate-200 bg-slate-50 px-3 py-2.5 text-left font-medium" :style="{ left: '56px', width: '180px', minWidth: '180px', maxWidth: '180px' }">商品名</th>
             <th class="whitespace-nowrap bg-slate-50 px-3 py-2.5 text-left font-medium">部門 / 服種</th>
             <th class="whitespace-nowrap bg-slate-50 px-3 py-2.5 text-left font-medium">発注タイプ</th>
             <th class="whitespace-nowrap bg-slate-50 px-3 py-2.5 text-right font-medium">売上数量</th>
@@ -240,13 +241,13 @@ function productLabel(p: MockStoreProduct): string {
         </thead>
         <tbody class="divide-y divide-slate-100">
           <tr v-for="row in rows" :key="row.product.key" class="hover:bg-slate-50">
-            <td class="whitespace-nowrap px-3 py-2 text-center">
+            <td class="sticky z-10 whitespace-nowrap bg-white px-3 py-2 text-center" :style="{ left: '0px', width: '56px', minWidth: '56px', maxWidth: '56px' }">
               <span
                 class="inline-flex h-6 min-w-6 items-center justify-center rounded-full px-1.5 text-xs font-bold tabular-nums"
                 :class="rankBadgeClass(row.rank)"
               >{{ row.rank }}</span>
             </td>
-            <td class="px-3 py-2 font-medium text-slate-700">{{ row.product.name }}</td>
+            <td class="sticky z-10 truncate border-r border-slate-200 bg-white px-3 py-2 font-medium text-slate-700" :style="{ left: '56px', width: '180px', minWidth: '180px', maxWidth: '180px' }" :title="row.product.name">{{ row.product.name }}</td>
             <td class="whitespace-nowrap px-3 py-2 text-slate-500">
               {{ row.product.departmentName }}
               <span class="text-slate-300">/</span>

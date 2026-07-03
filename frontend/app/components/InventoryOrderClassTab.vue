@@ -100,6 +100,21 @@ function resetKigou(): void {
   appliedKigou.value = ''
 }
 
+// 横スクロール時に左固定する識別列（業態〜品名）の幅と左オフセット（px、累積）。
+// z-index 規約: 固定ヘッダ z-30 ＞ 固定ボディ z-10 ＞ 通常 0。
+const FROZEN = {
+  gyotai: { left: 0, width: 72 },
+  dept: { left: 72, width: 72 },
+  kigo: { left: 144, width: 84 },
+  hinban: { left: 228, width: 96 },
+  hinmei: { left: 324, width: 120 },
+} as const
+/** 固定列セルの寸法・位置スタイル。 */
+function fz(col: keyof typeof FROZEN): Record<string, string> {
+  const c = FROZEN[col]
+  return { left: `${c.left}px`, width: `${c.width}px`, minWidth: `${c.width}px`, maxWidth: `${c.width}px` }
+}
+
 /** 区分バッジの配色。 */
 function classBadge(cls: OrderClass | null): string {
   if (cls === 'sales') return 'bg-indigo-100 text-indigo-700'
@@ -221,11 +236,11 @@ function isChangePoint(row: OrderClassRow, index: number): boolean {
       <table class="w-full text-xs">
         <thead class="text-slate-500">
           <tr>
-            <th class="whitespace-nowrap bg-slate-50 px-2 py-2 text-left font-medium">業態</th>
-            <th class="whitespace-nowrap bg-slate-50 px-2 py-2 text-left font-medium">部門</th>
-            <th class="whitespace-nowrap bg-slate-50 px-2 py-2 text-left font-medium">商品記号</th>
-            <th class="whitespace-nowrap bg-slate-50 px-2 py-2 text-left font-medium">品番/単品</th>
-            <th class="whitespace-nowrap bg-slate-50 px-2 py-2 text-left font-medium">品名</th>
+            <th class="sticky z-30 whitespace-nowrap bg-slate-50 px-2 py-2 text-left font-medium" :style="fz('gyotai')">業態</th>
+            <th class="sticky z-30 whitespace-nowrap bg-slate-50 px-2 py-2 text-left font-medium" :style="fz('dept')">部門</th>
+            <th class="sticky z-30 whitespace-nowrap bg-slate-50 px-2 py-2 text-left font-medium" :style="fz('kigo')">商品記号</th>
+            <th class="sticky z-30 whitespace-nowrap bg-slate-50 px-2 py-2 text-left font-medium" :style="fz('hinban')">品番/単品</th>
+            <th class="sticky z-30 whitespace-nowrap border-r border-slate-200 bg-slate-50 px-2 py-2 text-left font-medium" :style="fz('hinmei')">品名</th>
             <th class="whitespace-nowrap bg-slate-50 px-2 py-2 text-center font-medium">前週</th>
             <th class="whitespace-nowrap bg-slate-50 px-2 py-2 text-center font-medium">当週</th>
             <th class="whitespace-nowrap bg-slate-50 px-2 py-2 text-center font-medium">変化</th>
@@ -235,11 +250,11 @@ function isChangePoint(row: OrderClassRow, index: number): boolean {
         </thead>
         <tbody class="divide-y divide-slate-100">
           <tr v-for="row in rows" :key="row.key" class="hover:bg-slate-50">
-            <td class="whitespace-nowrap px-2 py-1.5 text-slate-600">{{ businessTypeName(row.businessTypeCode) }}</td>
-            <td class="whitespace-nowrap px-2 py-1.5 text-slate-600">{{ departmentName(row.departmentCode) }}</td>
-            <td class="whitespace-nowrap px-2 py-1.5 font-mono text-slate-600">{{ row.shohinKigou }}</td>
-            <td class="whitespace-nowrap px-2 py-1.5 font-mono text-slate-600">{{ row.hinbanCode }}-{{ row.tanpinCode }}</td>
-            <td class="whitespace-nowrap px-2 py-1.5 text-slate-700">{{ row.hinmei }}</td>
+            <td class="sticky z-10 truncate bg-white px-2 py-1.5 text-slate-600" :style="fz('gyotai')">{{ businessTypeName(row.businessTypeCode) }}</td>
+            <td class="sticky z-10 truncate bg-white px-2 py-1.5 text-slate-600" :style="fz('dept')">{{ departmentName(row.departmentCode) }}</td>
+            <td class="sticky z-10 truncate bg-white px-2 py-1.5 font-mono text-slate-600" :style="fz('kigo')">{{ row.shohinKigou }}</td>
+            <td class="sticky z-10 truncate bg-white px-2 py-1.5 font-mono text-slate-600" :style="fz('hinban')">{{ row.hinbanCode }}-{{ row.tanpinCode }}</td>
+            <td class="sticky z-10 truncate border-r border-slate-200 bg-white px-2 py-1.5 text-slate-700" :style="fz('hinmei')" :title="row.hinmei">{{ row.hinmei }}</td>
             <td class="whitespace-nowrap px-2 py-1.5 text-center">
               <span class="inline-block rounded px-1.5 py-0.5 font-medium" :class="classBadge(row.previous)">{{ classLabel(row.previous) }}</span>
             </td>

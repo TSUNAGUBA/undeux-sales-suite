@@ -403,7 +403,7 @@ const breakdownLabels = computed(() => (breakdown.value?.rows ?? []).map((r) => 
 const breakdownData = computed(() => (breakdown.value?.rows ?? []).map(metricValue))
 
 const tableColumns = [
-  { key: 'label', label: '区分' },
+  { key: 'label', label: '区分', frozen: true },
   { key: 'quantity', label: '数量', align: 'right' as const, format: (row: BreakdownRow) => formatNumber(row.quantity) },
   { key: 'amount', label: '売上金額', align: 'right' as const, format: (row: BreakdownRow) => formatCurrency(row.amount) },
   { key: 'grossProfit', label: '粗利', align: 'right' as const, format: (row: BreakdownRow) => formatCurrency(row.grossProfit) },

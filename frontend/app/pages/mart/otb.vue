@@ -234,7 +234,7 @@ const rankedCategories = computed(() =>
 )
 
 const categoryColumns = [
-  { key: 'name', label: 'カテゴリ' },
+  { key: 'name', label: 'カテゴリ', frozen: true },
   { key: 'otb', label: 'OTB', align: 'right' as const, format: (r: OtbCategory) => formatCurrency(r.otb) },
   { key: 'otbUsageRate', label: 'OTB利用率', align: 'right' as const, format: (r: OtbCategory) => formatRatioAsPercent(r.otbUsageRate) },
   { key: 'wos', label: 'WOS', align: 'right' as const, format: (r: OtbCategory) => `${formatDecimal(r.wos, 1)}週` },

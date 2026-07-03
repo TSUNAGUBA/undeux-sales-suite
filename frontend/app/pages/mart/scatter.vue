@@ -231,7 +231,7 @@ const quadrantGuide = [
 // 型番別テーブル（散布図の点の明細）。倉庫在庫はデータソース（売上参照DB）に
 // 存在しないため対象外（店頭在庫のみ）。
 const markdownColumns = [
-  { key: 'label', label: '品番CD（服種）' },
+  { key: 'label', label: '品番CD（服種）', frozen: true },
   { key: 'businessType', label: '業態' },
   { key: 'kisetsu', label: '季節', format: (row: MarkdownScatterPoint) => row.season ?? '-' },
   {

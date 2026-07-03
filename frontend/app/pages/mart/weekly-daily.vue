@@ -134,7 +134,7 @@ const trendAxes: ComboChartAxis[] = [
 
 // ---- 日次明細（平均気温(東京)列を追加） ----
 const dailyColumns = [
-  { key: 'date', label: '日付' },
+  { key: 'date', label: '日付', frozen: true },
   { key: 'amount', label: '売上金額', align: 'right' as const, format: (r: DailySeriesPoint) => formatCurrency(r.amount) },
   { key: 'quantity', label: '売上数量', align: 'right' as const, format: (r: DailySeriesPoint) => formatNumber(r.quantity) },
   { key: 'grossProfit', label: '粗利', align: 'right' as const, format: (r: DailySeriesPoint) => formatCurrency(r.grossProfit) },
@@ -179,7 +179,7 @@ function kubunDisplay(value: string): string {
 }
 
 const transitionColumns = [
-  { key: 'hinbanCode', label: '品番3桁' },
+  { key: 'hinbanCode', label: '品番3桁', frozen: true },
   { key: 'tanpinCode', label: '単品4桁' },
   { key: 'hinmei', label: '品名' },
   { key: 'previousKubun', label: '前週帳票区分', format: (r: ChohyoTransitionRow) => kubunDisplay(r.previousKubun) },
