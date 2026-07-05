@@ -12,7 +12,7 @@
 > - 認証/認可/テナント分離（本書の認可の物理の正）: [`./DD-06-security-authz-tenancy.md`](./DD-06-security-authz-tenancy.md)
 > - 上位: [`../basic-design/BD-02-domain-services.md`](../basic-design/BD-02-domain-services.md)、[`../basic-design/BD-06-non-functional.md`](../basic-design/BD-06-non-functional.md)
 > - 物理スキーマ: [`../database/DB-05-analytics-star-schema.md`](../database/DB-05-analytics-star-schema.md)、[`../database/DB-06-mapping-metadata-schema.md`](../database/DB-06-mapping-metadata-schema.md)
-> - 横断: [`../decision-log.md`](../decision-log.md)（ADR-001..015）、[`../glossary.md`](../glossary.md)
+> - 横断: [`../decision-log.md`](../decision-log.md)（ADR-001..017）、[`../glossary.md`](../glossary.md)
 > - 継承元（prior art）: [`../../design.md`](../../design.md)（現行アプリ API 仕様§6）、[`../../star-schema-design.md`](../../star-schema-design.md)
 
 ---
@@ -354,7 +354,7 @@ BackOffice（MOD-BACKOFFICE）の契約・稼働設定・使用量計測・請�
 
 ### 8.5 エラーレスポンスと UNDX-*
 
-全エラーは統一形状で返す。コードは `UNDX-{領域}-{連番}` 形式で一元管理（`shared.error_code`＋Core の `ErrorCodes` がコード SoT、ブループリント §9）。`GET /api/error-codes` で公開する。**エラーコードの連番割当（`UNDX-DQ-002` 等の具体番号と意味の対応）の SoT は本 `shared.error_code`／本節の表に一元化する（R8）。** 他ドキュメント（[BD-04](../basic-design/BD-04-integration-data-pipeline.md)・[DD-03](./DD-03-mapping-transform-engine.md)）の代表エラーコード表は本 SoT を参照する位置づけであり、同一番号を別意味に割当ててはならない（意味は本表に従う）。
+全エラーは統一形状で返す。コードは `UNDX-{領域}-{連番}` 形式で一元管理（`shared.error_code`＋Core の `ErrorCodes` がコード SoT、ブループリント §9）。`GET /api/error-codes` で公開する。**コードレジストリ（コードの存在・連番・メッセージ・`http_status`）の SoT は本 `shared.error_code`／本節の表**であり、各ドメインの想定エラーはここに登録して一意に採番する（R8）。一方、**ドメイン固有の「番号↔意味」の割当ては各ドメイン設計書が意味の SoT** となる（例: `MAP`／`DQ` の各番号の意味は [DD-03 §7](./DD-03-mapping-transform-engine.md) が SoT）。両者は補完関係にあり、[BD-04](../basic-design/BD-04-integration-data-pipeline.md)・[DD-03](./DD-03-mapping-transform-engine.md) の代表表は本レジストリに登録された同一番号を**同一意味で**引用する（同一番号を別意味に割当ててはならない）。
 
 ```json
 {

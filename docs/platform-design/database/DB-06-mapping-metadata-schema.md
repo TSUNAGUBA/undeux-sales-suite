@@ -365,13 +365,13 @@ flowchart LR
 ```mermaid
 stateDiagram-v2
     [*] --> draft: マッピング下書き作成
-    draft --> proposed: 提出（担当者）
-    proposed --> approved: 承認（レビュア）
-    proposed --> draft: 差戻し（UNDX-MAP-*）
+    draft --> review: 提出（担当者）
+    review --> approved: 承認（レビュア）
+    review --> draft: 差戻し（UNDX-MAP-*）
     approved --> active: 有効化（ジョブ適用対象）
     active --> deprecated: 廃止（新版へ移行）
     deprecated --> [*]
-    active --> proposed: 改訂（新 mapping_version を起票）
+    active --> review: 改訂（新 mapping_version を起票）
     note right of active
         active のみ job_run が参照。
         自社=auto は draft を経ず
@@ -379,7 +379,7 @@ stateDiagram-v2
     end note
 ```
 
-図の要点は、`active` の定義のみが `job_run` の変換対象になる点である。自社アプリ（`resolved_by='auto'`）は恒等マッピングのため `draft`/`proposed` を経ずに `approved`/`active` を自動付与し、人的承認をスキップする（ADR-002・グレースフルな運用簡略化）。差戻し・却下は `UNDX-MAP-*` を付与し理由を記録する。
+図の状態値は `field_mapping.status` の CHECK 許容値 `{draft, review, approved, active, deprecated}`（§4.1・§8）および DD-03 §2.3 の状態機械（状態機械の SoT）と一致させる。図の要点は、`active` の定義のみが `job_run` の変換対象になる点である。自社アプリ（`resolved_by='auto'`）は恒等マッピングのため `draft`/`review` を経ずに `approved`/`active` を自動付与し、人的承認をスキップする（ADR-002・グレースフルな運用簡略化）。差戻し・却下は `UNDX-MAP-*` を付与し理由を記録する。
 
 ### 7.2 バージョニングと承認記録（拡張提案）
 
