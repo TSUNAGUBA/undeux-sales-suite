@@ -1,0 +1,306 @@
+<!doctype html>
+<html lang="ja">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>意思決定オントロジー・ビュー（概念モック）</title>
+<style>
+  :root{
+    --bg:#f5f6f8; --card:#ffffff; --line:#e8ebef;
+    --shadow:0 1px 2px rgba(20,40,80,.04),0 2px 8px rgba(20,40,80,.05);
+    --primary:#6366f1; --ok:#16a34a; --warn:#f59e0b; --ng:#ef4444;
+    --text:#1f2328; --dim:#697079;
+    --mono:ui-monospace,"SFMono-Regular",Menlo,monospace;
+  }
+  *{box-sizing:border-box}
+  body{margin:0;background:var(--bg);color:var(--text);
+    font-family:system-ui,"Hiragino Kaku Gothic ProN",sans-serif;font-size:14px;line-height:1.5}
+  .wrap{max-width:1180px;margin:0 auto;padding:22px 20px 60px}
+  .num{font-family:var(--mono)}
+
+  /* ヘッダー */
+  header.top{display:flex;align-items:center;gap:14px;flex-wrap:wrap;margin-bottom:6px}
+  header.top h1{font-size:17px;margin:0;letter-spacing:.02em}
+  header.top .obj{font-family:var(--mono);color:var(--dim);font-size:13px}
+  .toggle{margin-left:auto;display:inline-flex;background:#eceef3;border-radius:10px;padding:3px}
+  .toggle button{border:0;background:transparent;color:var(--dim);font-weight:700;
+    padding:7px 16px;border-radius:8px;cursor:pointer;font-size:13px}
+  .toggle button.on{background:var(--primary);color:#fff}
+  .goal{color:var(--dim);font-size:12.5px;margin:2px 0 16px}
+  .goal b{color:var(--text)}
+
+  /* サマリー帯 */
+  .summary{display:flex;gap:22px;flex-wrap:wrap;align-items:center;
+    background:var(--card);border:1px solid var(--line);border-radius:12px;
+    box-shadow:var(--shadow);padding:12px 18px;margin-bottom:18px}
+  .summary .st{display:inline-flex;align-items:center;gap:7px;font-weight:700}
+  .dot{width:9px;height:9px;border-radius:50%;background:var(--warn);box-shadow:0 0 7px rgba(245,158,11,.6)}
+  .summary .kv{color:var(--dim);font-size:12.5px}
+  .summary .kv b{color:var(--text);font-family:var(--mono)}
+
+  /* 3次元グリッド */
+  .dims{display:grid;grid-template-columns:1fr 1fr 1.25fr;gap:14px}
+  .dim{background:var(--card);border:1px solid var(--line);border-radius:12px;box-shadow:var(--shadow);padding:16px}
+  .dim h2{font-size:13px;margin:0 0 12px;display:flex;align-items:center;gap:7px}
+  .dim h2 .tag{font-size:10.5px;color:var(--dim);font-weight:600}
+  .row{display:flex;justify-content:space-between;gap:10px;padding:5px 0;border-bottom:1px dashed #eef1f4}
+  .row:last-child{border-bottom:0}
+  .row .k{color:var(--dim);font-size:12.5px}
+  .row .v{font-family:var(--mono);font-size:12.5px}
+
+  /* ②関連 */
+  .link{width:100%;text-align:left;border:1px solid var(--line);background:#fbfbfd;border-radius:9px;
+    padding:8px 11px;margin:6px 0;cursor:pointer;display:flex;justify-content:space-between;align-items:center;font-size:12.5px}
+  .link:hover{border-color:var(--primary);background:#f3f3fe}
+  .link .arrow{color:var(--primary);font-weight:800}
+  .linkinfo{font-size:12px;color:var(--dim);background:#f3f3fe;border:1px dashed #c9caf5;
+    border-radius:8px;padding:7px 10px;margin:-2px 0 8px;display:none}
+  .linkinfo.show{display:block}
+
+  /* ③アクション＆制約 */
+  .act{display:flex;align-items:center;gap:10px;padding:9px 10px;border-radius:9px;margin:6px 0;border:1px solid var(--line)}
+  .act .name{font-weight:700;min-width:96px;font-size:13px}
+  .act .why{color:var(--dim);font-size:12px;flex:1}
+  .pill{font-size:11px;font-weight:800;border-radius:999px;padding:3px 9px;white-space:nowrap}
+  .pill.ok{background:#e7f6ec;color:var(--ok)}
+  .pill.warn{background:#fdf1dd;color:#b9770e}
+  .pill.ng{background:#fdeaea;color:var(--ng)}
+  .act.killed{opacity:.5;background:#f7f7f9}
+  .act.killed .name{text-decoration:line-through}
+  .promote{font-size:10.5px;font-weight:800;color:#fff;background:var(--ok);border-radius:6px;padding:2px 7px}
+  .act.warn-act .promote{background:var(--warn)}
+
+  /* 収束バンド */
+  .converge{text-align:center;color:var(--dim);font-weight:700;font-size:12.5px;margin:16px 0 4px}
+  .converge .a{display:inline-block;transform:translateY(2px);font-size:18px;color:var(--primary)}
+
+  /* 選択肢カード */
+  .options{background:var(--card);border:1px solid var(--line);border-radius:12px;box-shadow:var(--shadow);padding:16px 18px}
+  .options .issue{font-weight:800;margin:0 0 12px;font-size:14px}
+  .cards{display:grid;grid-template-columns:repeat(3,1fr);gap:12px}
+  .opt{border:1px solid var(--line);border-radius:11px;padding:13px;position:relative;background:#fcfcfe}
+  .opt.rec{border-color:var(--primary);box-shadow:0 0 0 2px rgba(99,102,241,.15)}
+  .opt .badge{display:inline-block;font-size:10.5px;font-weight:800;color:#fff;background:#8a90a6;border-radius:6px;padding:2px 8px;margin-bottom:7px}
+  .opt.rec .badge{background:var(--primary)}
+  .opt .rec-star{position:absolute;top:11px;right:12px;color:var(--primary);font-weight:800;font-size:11px}
+  .opt h3{font-size:13.5px;margin:0 0 9px}
+  .opt .pred{font-family:var(--mono);font-size:12px;color:var(--text);background:#f4f5f9;border-radius:8px;padding:8px 10px;margin-bottom:8px;white-space:pre-line}
+  .opt .basis{font-size:11.5px;color:var(--dim);margin-bottom:11px}
+  .opt .basis b{color:var(--text)}
+  .exec{width:100%;border:1px solid var(--primary);background:#fff;color:var(--primary);
+    font-weight:800;border-radius:8px;padding:8px;cursor:pointer;font-size:12.5px}
+  .opt.rec .exec{background:var(--primary);color:#fff}
+  .exec:hover{filter:brightness(.97)}
+  .why-rec{margin-top:12px;font-size:12.5px;color:var(--dim);background:#f4f5f9;border-radius:8px;padding:10px 12px}
+  .why-rec b{color:var(--text)}
+
+  /* トースト */
+  #toast{position:fixed;left:50%;bottom:26px;transform:translateX(-50%) translateY(20px);
+    background:#1f2328;color:#fff;font-weight:700;font-size:13px;padding:11px 18px;border-radius:11px;
+    box-shadow:0 8px 24px rgba(0,0,0,.28);opacity:0;pointer-events:none;transition:.25s}
+  #toast.show{opacity:1;transform:translateX(-50%) translateY(0)}
+
+  .note{color:var(--dim);font-size:11.5px;margin-top:26px;text-align:center}
+  @media(max-width:840px){.dims{grid-template-columns:1fr}.cards{grid-template-columns:1fr}}
+</style>
+</head>
+<body>
+<div class="wrap">
+
+  <header class="top">
+    <h1>🧭 意思決定オントロジー・ビュー</h1>
+    <span class="obj">対象オブジェクト: SKU「HE8800」</span>
+    <div class="toggle" id="toggle">
+      <button data-p="retail" class="on">小売</button>
+      <button data-p="maker">メーカー</button>
+    </div>
+  </header>
+  <div class="goal">
+    目的関数: <b id="objective">消化率 × 欠品回避</b>　—
+    <b>アクション＆制約</b> の「✗」で打ち手が潰れ、<b>○/△だけが選択肢カードへ昇格</b>する流れを見るモック（ダミーデータ）
+  </div>
+
+  <div class="summary">
+    <span class="st"><span class="dot"></span>状態: 滞留</span>
+    <span class="kv">消化率 <b>52.1%</b></span>
+    <span class="kv">在庫日数 <b>122日</b></span>
+    <span class="kv">在庫 <b>27,542点</b></span>
+    <span class="kv">在庫金額 <b>¥21,069,630</b></span>
+    <span class="kv">粗利率 <b>41.4%</b></span>
+  </div>
+
+  <div class="dims">
+    <!-- ①意味 -->
+    <section class="dim">
+      <h2>① 意味 <span class="tag">セマンティク／このオブジェクトが何か</span></h2>
+      <div class="row"><span class="k">品番3桁</span><span class="v">558</span></div>
+      <div class="row"><span class="k">季節区分</span><span class="v">通季</span></div>
+      <div class="row"><span class="k">カテゴリ</span><span class="v">靴</span></div>
+      <div class="row"><span class="k">原価</span><span class="v">¥765</span></div>
+      <div class="row"><span class="k">売価</span><span class="v">¥1,990</span></div>
+      <div class="row"><span class="k">粗利率</span><span class="v">41.4%</span></div>
+      <div class="row"><span class="k">消化率</span><span class="v">52.1%</span></div>
+      <div class="row"><span class="k">在庫日数</span><span class="v">122日</span></div>
+      <div class="row"><span class="k">状態</span><span class="v">滞留</span></div>
+    </section>
+
+    <!-- ②関連 -->
+    <section class="dim">
+      <h2>② 関連 <span class="tag">オントロジー・リンク／何と繋がるか</span></h2>
+      <div id="links"></div>
+    </section>
+
+    <!-- ③アクション＆制約 -->
+    <section class="dim">
+      <h2>③ アクション＆制約 <span class="tag">取りうる打ち手 ＋ 制約</span></h2>
+      <div id="actions"></div>
+    </section>
+  </div>
+
+  <div class="converge">制約を通った打ち手だけが昇格 <span class="a">↓</span></div>
+
+  <section class="options">
+    <p class="issue" id="issue"></p>
+    <div class="cards" id="cards"></div>
+    <div class="why-rec" id="whyrec"></div>
+  </section>
+
+  <p class="note">※ 概念モック・ダミーデータ。実データ接続／実行処理は本モックの対象外。</p>
+</div>
+
+<div id="toast"></div>
+
+<script>
+/* ---------- ②関連（共通・クリックでミニ情報） ---------- */
+var LINKS = [
+  { label:'ブランド',    to:'AKB靴楽',            info:'ブランド「AKB靴楽」。同ブランド内での位置づけで販促優先度が決まる' },
+  { label:'同シリーズ',  to:'HE8783・HE8784',     info:'同シリーズ2品番。後継があるため終売判断の余地がある' },
+  { label:'サプライヤー',to:'某製造',             info:'MOQ 500・LT 6週・契約に最低取引残あり（＝③の制約の出所）' },
+  { label:'販売店舗',    to:'店A / 店B',          info:'店A 消化率71% / 店B 消化率38%（＝店舗間移動の根拠）' },
+  { label:'代替SKU',     to:'WE8692',            info:'WE8692 は急上昇・好調。棚圧が無く配分変更の逃がし先になる' },
+  { label:'上位カテゴリ',to:'通季',               info:'通季カテゴリ。陳腐化が緩やかで「静観」も一応成り立つ' },
+];
+
+/* ---------- ③＋選択肢：ペルソナ別（小売／メーカー） ---------- */
+var DATA = {
+  retail: {
+    objective: '消化率 × 欠品回避',
+    issue: '論点: HE8800（滞留・在庫 ¥21.1M）をどうする',
+    actions: [
+      { name:'追加発注',   status:'ng', slot:null, why:'MOQ500・LT6週。滞留品に追加は非合理＋発注枠外' },
+      { name:'値下げ30%',  status:'ok', slot:'A',  why:'予算内・棚割影響なし' },
+      { name:'店舗間移動', status:'ok', slot:'B',  why:'物流枠あり（店B→店A）' },
+      { name:'終売',       status:'warn',slot:'C', why:'サプライヤー契約に最低取引残あり' },
+    ],
+    options: [
+      { slot:'A', rec:true,  title:'値下げ30%で消化',
+        pred:'予測 粗利 -¥1.1M\n     在庫金額 -¥8.6M\n     消化率 52 → 78%',
+        basis:'根拠: <b>消化率×在庫日数ポジショニング 右上</b>・価格弾力性1.0' },
+      { slot:'B', rec:false, title:'店舗間移動',
+        pred:'予測 粗利 ±0\n     消化の店舗偏り解消',
+        basis:'根拠: <b>店舗別消化率差</b>（店A71% / 店B38%）' },
+      { slot:'C', rec:false, title:'静観（次期繰越）',
+        pred:'予測 在庫金額 維持\n     陳腐化リスク ↑',
+        basis:'根拠: <b>通季品</b>で陳腐化は緩やか' },
+    ],
+    whyrec: 'AI推奨: <b>A 値下げ30%</b> — 粗利犠牲（-¥1.1M）より滞留 ¥21.1M の解消による回転改善が上回る。値下げは予算内で即実行可。'
+  },
+  maker: {
+    objective: '粗利 × ブランド維持',
+    issue: '論点: HE8800（滞留・在庫 ¥21.1M）をどうする',
+    actions: [
+      { name:'増産',            status:'ng', slot:null, why:'需要下降局面。生産キャパを好調SKUへ' },
+      { name:'販促投下',        status:'warn',slot:'C', why:'販促予算残少・費用対効果は限定的' },
+      { name:'チャネル配分変更',status:'ok', slot:'A',  why:'ECへ在庫寄せ可（自社Shopify枠あり）' },
+      { name:'終売判断(消化計画付)',status:'ok', slot:'B', why:'在庫消化計画を付ければ実行可' },
+    ],
+    options: [
+      { slot:'A', rec:true,  title:'チャネル配分変更（EC寄せ）',
+        pred:'予測 粗利 -¥0.3M\n     消化 +（EC回転）',
+        basis:'根拠: <b>自社EC枠</b>・代替SKU好調で棚圧なし' },
+      { slot:'B', rec:false, title:'終売判断（消化計画付）',
+        pred:'予測 在庫圧 解消\n     ブランド影響 小',
+        basis:'根拠: <b>通季・シリーズ内に後継</b>あり（HE8783/8784）' },
+      { slot:'C', rec:false, title:'販促投下',
+        pred:'予測 粗利 -¥0.6M\n     効果 不確実',
+        basis:'根拠: <b>販促予算残</b>・弾力性' },
+    ],
+    whyrec: 'AI推奨: <b>A チャネル配分変更</b> — 増産（✗）・販促（△）より、好調ECチャネルへの配分変更が粗利毀損最小で回転を作れる。'
+  }
+};
+
+var PILL = { ok:{cls:'ok',txt:'○'}, warn:{cls:'warn',txt:'△'}, ng:{cls:'ng',txt:'✗'} };
+
+/* ---------- 描画 ---------- */
+function renderLinks(){
+  var el = document.getElementById('links');
+  el.innerHTML = LINKS.map(function(l,i){
+    return '<button class="link" data-i="'+i+'"><span>'+l.label+' <span style="color:#9aa">'+l.to+'</span></span><span class="arrow">→</span></button>'
+         + '<div class="linkinfo" id="li'+i+'">'+l.info+'</div>';
+  }).join('');
+  el.querySelectorAll('.link').forEach(function(b){
+    b.addEventListener('click', function(){
+      var box = document.getElementById('li'+b.dataset.i);
+      box.classList.toggle('show');
+    });
+  });
+}
+
+function renderPersona(p){
+  var d = DATA[p];
+  document.getElementById('objective').textContent = d.objective;
+
+  // ③アクション＆制約
+  document.getElementById('actions').innerHTML = d.actions.map(function(a){
+    var pill = PILL[a.status];
+    var killed = a.status==='ng';
+    var promote = killed ? '' : '<span class="promote">→ 選択肢 '+a.slot+'</span>';
+    return '<div class="act '+(killed?'killed':'')+' '+(a.status==='warn'?'warn-act':'')+'">'
+      + '<span class="pill '+pill.cls+'">'+pill.txt+'</span>'
+      + '<span class="name">'+a.name+'</span>'
+      + '<span class="why">'+a.why+'</span>'
+      + promote
+      + '</div>';
+  }).join('');
+
+  // 選択肢カード
+  document.getElementById('issue').textContent = d.issue;
+  document.getElementById('cards').innerHTML = d.options.map(function(o){
+    return '<div class="opt '+(o.rec?'rec':'')+'">'
+      + (o.rec?'<span class="rec-star">★ AI推奨</span>':'')
+      + '<span class="badge">選択肢 '+o.slot+'</span>'
+      + '<h3>'+o.title+'</h3>'
+      + '<div class="pred">'+o.pred+'</div>'
+      + '<div class="basis">'+o.basis+'</div>'
+      + '<button class="exec" data-t="'+o.title+'">判断＆実行 ▷</button>'
+      + '</div>';
+  }).join('');
+  document.getElementById('whyrec').innerHTML = d.whyrec;
+
+  document.querySelectorAll('.exec').forEach(function(b){
+    b.addEventListener('click', function(){ toast('実行は次フェーズ（本モックの対象外）'); });
+  });
+}
+
+var toastTimer;
+function toast(msg){
+  var t = document.getElementById('toast');
+  t.textContent = msg; t.classList.add('show');
+  clearTimeout(toastTimer);
+  toastTimer = setTimeout(function(){ t.classList.remove('show'); }, 2200);
+}
+
+/* トグル */
+document.getElementById('toggle').querySelectorAll('button').forEach(function(b){
+  b.addEventListener('click', function(){
+    document.querySelectorAll('#toggle button').forEach(function(x){ x.classList.remove('on'); });
+    b.classList.add('on');
+    renderPersona(b.dataset.p);
+  });
+});
+
+renderLinks();
+renderPersona('retail');
+</script>
+</body>
+</html>
