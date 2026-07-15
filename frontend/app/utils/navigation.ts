@@ -20,6 +20,7 @@ import {
   Images,
   LayoutDashboard,
   LayoutGrid,
+  ListChecks,
   ListOrdered,
   Package,
   ScatterChart,
@@ -166,6 +167,7 @@ export const NAV_CATEGORIES: NavCategory[] = [
       { path: '/mart/ranking', label: 'ランキング分析', icon: ListOrdered },
       { path: '/mart/scatter', label: '散布図・回帰分析', icon: ScatterChart },
       { path: '/mart/simulation', label: '重回帰シミュレーター', icon: SlidersHorizontal },
+      { path: '/mart/decision', label: '意思決定オントロジー・ビュー', icon: ListChecks },
     ],
   },
 ]
