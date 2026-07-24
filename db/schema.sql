@@ -763,6 +763,16 @@ BEGIN
         ALTER TABLE m_section_department DROP CONSTRAINT m_section_department_buyer_section_id_fkey;
     END IF;
     IF NOT EXISTS (SELECT 1 FROM pg_constraint WHERE conname = 'fk_section_department_section') THEN
+        -- 旧構成下の同時編集等で越境参照が残っていた場合は、FK 付与前に所属のみ解除する
+        -- （ON DELETE SET NULL と同じ「所属解除・部門温存」の意味論。既存行検証での
+        --  移行失敗＝デプロイ停止を防ぐ。制約付与済みの環境では実行されない）。
+        UPDATE m_section_department d
+        SET buyer_section_id = NULL
+        WHERE d.buyer_section_id IS NOT NULL
+          AND NOT EXISTS (
+              SELECT 1 FROM m_buyer_section s
+              WHERE s.id = d.buyer_section_id
+                AND s.business_type_code = d.business_type_code);
         ALTER TABLE m_section_department
             ADD CONSTRAINT fk_section_department_section
             FOREIGN KEY (business_type_code, buyer_section_id)
