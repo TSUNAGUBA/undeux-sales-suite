@@ -38,4 +38,4 @@ TestResults/
 db/data/
 tools/_work/
 *.csv.gz
-!refference/*
+!reference/*
