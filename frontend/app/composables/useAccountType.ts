@@ -27,6 +27,13 @@ export function isAccountType(value: unknown): value is AccountType {
 export function useAccountType() {
   const accountType = useState<AccountType>('account-type', () => 'supplier')
 
+  /**
+   * 管理者（オーナー）かどうか。SoT は Firebase カスタムクレーム `role`（'admin' のみ true）。
+   * アカウント種別と異なり権限に直結するため、デモ用の localStorage 上書きは提供しない
+   * （表示だけ切り替えてもサーバ側 403 になるため。強制はサーバ側認可が SoT）。
+   */
+  const isOwner = useState<boolean>('account-owner', () => false)
+
   const isBuyer = computed(() => accountType.value === 'buyer')
   const isSupplier = computed(() => accountType.value === 'supplier')
   const meta = computed(() => ACCOUNT_TYPE_META[accountType.value])
@@ -69,5 +76,22 @@ export function useAccountType() {
     accountType.value = isAccountType(claim) ? claim : 'supplier'
   }
 
-  return { accountType, isBuyer, isSupplier, meta, setAccountType, applyFromClaim }
+  /**
+   * 管理者クレーム（`role`）を反映する。`plugins/firebase.client.ts` から認証状態確定時に呼ぶ。
+   * 'admin' 以外（未設定・不正値・未認証）は常に false。
+   */
+  function applyOwnerFromClaim(claim: unknown): void {
+    isOwner.value = claim === 'admin'
+  }
+
+  return {
+    accountType,
+    isBuyer,
+    isSupplier,
+    isOwner,
+    meta,
+    setAccountType,
+    applyFromClaim,
+    applyOwnerFromClaim,
+  }
 }

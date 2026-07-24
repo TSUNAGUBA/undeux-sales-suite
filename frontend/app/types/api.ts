@@ -945,6 +945,271 @@ export interface ItemDetailResponse {
   truncated: boolean
 }
 
+// ============================================================
+// 組織マスタ（業態・商品部・部門）と相談受付デスク
+// SoT はバックエンド DB。API 契約: GET/POST /api/org-master/*。
+// ============================================================
+
+/** 商品部（部署）1件。バイヤー側の組織単位（例: 商品1部（婦人））。 */
+export interface OrgSection {
+  id: number
+  name: string
+  categoryNote: string | null
+  phone: string | null
+  floor: string | null
+  displayOrder: number
+}
+
+/** 部門1件（例: 5A カットソー）。buyerSectionId は未割当時 null。 */
+export interface OrgDepartment {
+  id: number
+  deptCode: string
+  deptName: string
+  buyerSectionId: number | null
+  displayOrder: number
+}
+
+/** 業態1件（配下の商品部・部門ツリーを含む）。sections/departments が空の業態もあり得る。
+ * displayName/shortName は取込時に自動導出された業態では null（表示は code へフォールバック）。 */
+export interface OrgBusinessType {
+  code: string
+  displayName: string | null
+  shortName: string | null
+  sections: OrgSection[]
+  departments: OrgDepartment[]
+}
+
+/** GET /api/org-master のレスポンス。 */
+export interface OrgMasterResponse {
+  businessTypes: OrgBusinessType[]
+}
+
+/**
+ * 業務チャットのドメイン（相談受付デスクの担当部署タグ）。
+ * system=システム部 / quality=商品管理部 / logistics=物流部。表示ラベルは utils/ragCatalog.ts が SoT。
+ */
+export type ChatDomain = 'system' | 'quality' | 'logistics'
+
+/** 相談受付デスク1件。chatDomain が付くデスクは業務チャットの窓口になる。 */
+export interface ContactDesk {
+  id: number
+  topic: string
+  departmentName: string
+  phone: string | null
+  chatDomain: ChatDomain | null
+  displayOrder: number
+}
+
+/** GET /api/org-master/contact-desks のレスポンス。 */
+export interface ContactDesksResponse {
+  desks: ContactDesk[]
+}
+
+// リクエストボディの型は useApi の RequestBody（Record<string, unknown>）へそのまま渡せるよう
+// interface ではなく type エイリアスで定義する（type は暗黙のインデックスシグネチャを持つ）。
+
+/** POST /api/org-master/sections/save のリクエスト（id null = 新規作成）。 */
+export type OrgSectionSaveRequest = {
+  id: number | null
+  businessTypeCode: string
+  name: string
+  categoryNote: string | null
+  phone: string | null
+  floor: string | null
+  displayOrder: number
+}
+
+/** POST /api/org-master/departments/save のリクエスト（id null = 新規作成）。 */
+export type OrgDepartmentSaveRequest = {
+  id: number | null
+  businessTypeCode: string
+  deptCode: string
+  deptName: string
+  buyerSectionId: number | null
+  displayOrder: number
+}
+
+/** POST /api/org-master/contact-desks/save のリクエスト（id null = 新規作成）。 */
+export type ContactDeskSaveRequest = {
+  id: number | null
+  topic: string
+  departmentName: string
+  phone: string | null
+  chatDomain: ChatDomain | null
+  displayOrder: number
+}
+
+/** 削除系エンドポイント共通のリクエストボディ（{ id }）。 */
+export type IdRequest = {
+  id: number
+}
+
+// ============================================================
+// RAG ナレッジ（AIチャットの参照知識ベース）
+// scope: operator=運営者（書込は管理者のみ） / user=ユーザー（全認証ユーザー書込可）。
+// ============================================================
+
+/** ナレッジのスコープ。 */
+export type RagScope = 'operator' | 'user'
+
+/**
+ * ナレッジのカテゴリ。manual（マニュアル）は operator スコープ専用。
+ * business_type は businessTypeCode 必須、department は businessTypeCode + deptCode 必須。
+ */
+export type RagCategory = 'group' | 'business_type' | 'department' | 'basic' | 'manual'
+
+/** インデックス状態。failed は indexError にエラー内容が入る（再インデックスで回復を試みる）。 */
+export type RagIndexState = 'pending' | 'indexed' | 'failed'
+
+/** ナレッジの原本種別（text=自由入力 / file=ファイル）。 */
+export type RagSourceType = 'text' | 'file'
+
+/** スコープ×カテゴリ別の登録件数（RAG設定のステータスカード用）。 */
+export interface RagScopeCategoryCount {
+  scope: RagScope
+  category: RagCategory
+  count: number
+}
+
+/** GET /api/rag/status のレスポンス。aiConfigured=false のときチャット送信は無効化する。 */
+export interface RagStatus {
+  aiConfigured: boolean
+  chatModel: string | null
+  embeddingModel: string | null
+  /** 字句類似検索（pg_trgm）が有効か。false はベクトル検索のみに縮退（運用可視化用）。 */
+  lexicalSearchEnabled: boolean
+  counts: RagScopeCategoryCount[]
+}
+
+/** ナレッジ一覧の1件（file バイナリ・全文なし）。 */
+export interface KnowledgeItem {
+  id: string
+  scope: RagScope
+  category: RagCategory
+  businessTypeCode: string | null
+  deptCode: string | null
+  bizDomain: ChatDomain | null
+  title: string
+  sourceType: RagSourceType
+  fileName: string | null
+  fileSizeBytes: number | null
+  contentPreview: string
+  indexState: RagIndexState
+  indexError: string | null
+  chunkCount: number
+  isSeed: boolean
+  updatedAt: string
+  updatedBy: string
+}
+
+/** GET /api/rag/knowledge/{id} のレスポンス（一覧の1件 + 全文）。 */
+export interface KnowledgeDetail extends KnowledgeItem {
+  /** 全文（抽出テキスト or 自由入力）。 */
+  content: string
+}
+
+/** GET /api/rag/knowledge のレスポンス（ページング付き一覧）。 */
+export interface KnowledgeListResponse {
+  total: number
+  page: number
+  pageSize: number
+  items: KnowledgeItem[]
+}
+
+/** POST /api/rag/knowledge（自由入力・JSON）のリクエスト（type エイリアス: 上記コメント参照）。 */
+export type KnowledgeCreateTextRequest = {
+  scope: RagScope
+  category: RagCategory
+  businessTypeCode: string | null
+  deptCode: string | null
+  bizDomain: ChatDomain | null
+  title: string
+  content: string
+}
+
+/** POST /api/rag/knowledge/{id}/update のリクエスト（渡したフィールドのみ更新）。 */
+export type KnowledgeUpdateRequest = {
+  title?: string
+  content?: string
+  category?: RagCategory
+  businessTypeCode?: string | null
+  deptCode?: string | null
+  bizDomain?: ChatDomain | null
+}
+
+/** GET /api/rag/search の1件（ハイブリッド検索スコア付きチャンク）。 */
+export interface RagSearchResult {
+  chunkId: number
+  entryId: string
+  title: string
+  category: RagCategory
+  businessTypeCode: string | null
+  deptCode: string | null
+  seq: number
+  snippet: string
+  score: number
+  vectorScore: number
+  lexicalScore: number
+}
+
+/** GET /api/rag/search のレスポンス。 */
+export interface RagSearchResponse {
+  results: RagSearchResult[]
+}
+
+// ============================================================
+// AIチャット（SSE ストリーミング）
+// POST fetch + ReadableStream で受信する（Authorization ヘッダ必須のため EventSource 不可）。
+// ============================================================
+
+/** チャットメッセージのロール。 */
+export type ChatRole = 'user' | 'assistant'
+
+/** チャット API へ送る会話1件（古い順。最後は必ず user。1メッセージ最大 4000 文字）。 */
+export interface ChatMessagePayload {
+  role: ChatRole
+  content: string
+}
+
+/** POST /api/chat/business のリクエスト（type エイリアス: リクエストボディ型の方針参照）。 */
+export type BusinessChatRequest = {
+  domain: ChatDomain
+  messages: ChatMessagePayload[]
+}
+
+/** POST /api/chat/negotiation のリクエスト（type エイリアス: リクエストボディ型の方針参照）。 */
+export type NegotiationChatRequest = {
+  businessTypeCode: string
+  deptCode: string
+  messages: ChatMessagePayload[]
+}
+
+/** SSE `sources` イベントの参照ナレッジ1件。 */
+export interface ChatSource {
+  entryId: string
+  title: string
+  category: RagCategory
+  seq: number
+}
+
+/** SSE `sources` イベントのペイロード（delta 開始前に1回。0件時は sources: []）。 */
+export interface ChatSourcesEvent {
+  sources: ChatSource[]
+}
+
+/** SSE `delta` イベントのペイロード（応答テキスト断片）。 */
+export interface ChatDeltaEvent {
+  text: string
+}
+
+/** SSE `done` イベントのペイロード（トークン使用量）。 */
+export interface ChatDoneEvent {
+  inputTokens: number
+  outputTokens: number
+}
+
+// SSE `error` イベントのペイロードは ApiError と同形（errorCode / summary / remedy）。
+
 /** mart（スタースキーマ）の構築状態。フロントの鮮度表示・再構築UIに使う。 */
 export interface MartStatus {
   built: boolean

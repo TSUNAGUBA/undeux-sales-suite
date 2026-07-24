@@ -692,4 +692,307 @@ CREATE TABLE IF NOT EXISTS inventory_action_flag (
 CREATE UNIQUE INDEX IF NOT EXISTS ux_inventory_action_flag_key
     ON inventory_action_flag (gyotai_code, shohin_kigou, hinban_code, tanpin_code, flag_type);
 
+-- ============================================================
+--  しまむらグループ 組織マスタ（業態 × 商品部（部署） × 部門の相関）
+-- ------------------------------------------------------------
+--  SoT はしまむら提供資料「お取引の基準：総括編」（掲載の部門部連絡先表）。
+--  初期データは同資料 2025.3.10 版から投入し、以後は運用者がマスタメンテ画面
+--  （/org-master）で人的に修正する（修正後はアプリ側マスタが正）。
+--  業態マスタは既存 business_type を再利用する（原則3。コード 01-06 は
+--  上記でシード済み）。
+--  初期投入は「テーブルが空のときのみ」実行する（空テーブルガード）。
+--  ON CONFLICT DO NOTHING だけでは運用者による行削除・キー列（部署名/部門CD/
+--  相談内容）変更が schema.sql 再適用（デプロイ毎に DataLoader が実行）で
+--  巻き戻る（削除行の復活・旧行の再出現）ため、1行でも存在すれば再投入しない
+--  （原則2）。全行削除からの初期値復元は意図した回復パスとして機能する。
+-- ============================================================
+
+-- 商品部（部署）マスタ。業態ごとの「商品1部（婦人）」等と連絡先・フロア。
+CREATE TABLE IF NOT EXISTS m_buyer_section (
+    id                 bigint GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
+    business_type_code text NOT NULL REFERENCES business_type (code),
+    name               text NOT NULL,
+    category_note      text,
+    phone              text,
+    floor              text,
+    display_order      integer NOT NULL DEFAULT 0,
+    created_at         timestamptz NOT NULL DEFAULT now(),
+    updated_at         timestamptz NOT NULL DEFAULT now(),
+    UNIQUE (business_type_code, name)
+);
+COMMENT ON TABLE  m_buyer_section IS '商品部（部署）マスタ。業態ごとのバイヤー部署と連絡先（SoT: お取引の基準 総括編＋運用者修正）';
+COMMENT ON COLUMN m_buyer_section.name          IS '部署名（商品1部・事業部 等）';
+COMMENT ON COLUMN m_buyer_section.category_note IS '部署の取扱区分（婦人・紳士・メンズ 等）';
+COMMENT ON COLUMN m_buyer_section.floor         IS '本社フロア（2F/3F/4F）';
+
+-- 部門マスタ（業態×部門の相関）。部門コードは業態内で一意（業態が異なれば
+-- 同一コードでも別部門。例: しまむら 5A=カットソー / アベイル 5A=メンズ シューズ）。
+CREATE TABLE IF NOT EXISTS m_section_department (
+    id                 bigint GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
+    business_type_code text NOT NULL REFERENCES business_type (code),
+    dept_code          text NOT NULL,
+    dept_name          text NOT NULL,
+    buyer_section_id   bigint REFERENCES m_buyer_section (id) ON DELETE SET NULL,
+    display_order      integer NOT NULL DEFAULT 0,
+    created_at         timestamptz NOT NULL DEFAULT now(),
+    updated_at         timestamptz NOT NULL DEFAULT now(),
+    UNIQUE (business_type_code, dept_code)
+);
+COMMENT ON TABLE  m_section_department IS '部門マスタ（業態×部門の相関）。買付部門コードと名称・所属部署（SoT: お取引の基準 総括編＋運用者修正）';
+COMMENT ON COLUMN m_section_department.dept_code        IS '部門コード（5A 等。業態内で一意）';
+COMMENT ON COLUMN m_section_department.buyer_section_id IS '所属する商品部（部署）。部署削除時は NULL（部門は温存）';
+
+-- 相談受付デスクマスタ（お取引についての相談受付）。業務チャットの部署絞込にも使用。
+CREATE TABLE IF NOT EXISTS m_contact_desk (
+    id              bigint GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
+    topic           text NOT NULL,
+    department_name text NOT NULL,
+    phone           text,
+    chat_domain     text CHECK (chat_domain IN ('system', 'quality', 'logistics')),
+    display_order   integer NOT NULL DEFAULT 0,
+    created_at      timestamptz NOT NULL DEFAULT now(),
+    updated_at      timestamptz NOT NULL DEFAULT now(),
+    UNIQUE (topic)
+);
+COMMENT ON TABLE  m_contact_desk IS '相談受付デスクマスタ（お取引についての相談受付）。SoT: お取引の基準 総括編＋運用者修正';
+COMMENT ON COLUMN m_contact_desk.chat_domain IS '業務チャットの部署キー（system=システム部/quality=商品管理部/logistics=物流部。NULL=チャット対象外）';
+
+-- 初期データ: 商品部（部署）。総括編 2025.3.10 版の部門部連絡先表より。
+-- 空テーブル時のみ投入（運用者の削除・キー変更を再適用で巻き戻さない）。
+INSERT INTO m_buyer_section (business_type_code, name, category_note, phone, floor, display_order)
+SELECT v.*
+FROM (VALUES
+    ('01', '商品1部', '婦人',                     '048-631-2151', '2F', 1),
+    ('01', '商品2部', '婦人',                     '048-631-2152', '2F', 2),
+    ('01', '商品3部', '紳士',                     '048-631-2153', '2F', 3),
+    ('01', '商品4部', NULL,                       '048-631-2154', '2F', 4),
+    ('01', '商品5部', NULL,                       '048-631-2155', '3F', 5),
+    ('01', '商品6部', NULL,                       '048-631-2156', '3F', 6),
+    ('01', '商品7部', NULL,                       '048-631-2157', '3F', 7),
+    ('02', '商品1部', 'メンズ',                   '048-631-2161', '4F', 1),
+    ('02', '商品2部', 'レディース',               '048-631-2162', '4F', 2),
+    ('02', '商品3部', 'レディースシューズ・服飾他', '048-631-2163', '4F', 3),
+    ('02', '商品4部', 'メンズシューズ・服飾他',    '048-631-2163', '4F', 4),
+    ('04', '商品1部', NULL,                       '048-631-2171', '3F', 1),
+    ('04', '商品2部', NULL,                       '048-631-2172', '3F', 2),
+    ('04', '商品3部', NULL,                       '048-631-2173', '3F', 3),
+    ('05', '商品1部', NULL,                       '048-631-2177', '4F', 1),
+    ('05', '商品2部', NULL,                       '048-631-2127', '4F', 2),
+    ('06', '事業部',  NULL,                       '048-631-2179', '3F', 1)
+) AS v(business_type_code, name, category_note, phone, floor, display_order)
+WHERE NOT EXISTS (SELECT 1 FROM m_buyer_section)
+ON CONFLICT (business_type_code, name) DO NOTHING;
+
+-- 初期データ: 部門（業態×部門の相関）。所属部署は名前でルックアップして紐づける。
+-- 空テーブル時のみ投入（運用者の削除・キー変更を再適用で巻き戻さない）。
+INSERT INTO m_section_department (business_type_code, dept_code, dept_name, buyer_section_id, display_order)
+SELECT v.btc, v.code, v.name, bs.id, v.ord
+FROM (VALUES
+    -- しまむら（01）
+    ('01', '5A', 'カットソー',                         '商品1部',  1),
+    ('01', '5B', '布帛・ニット',                       '商品1部',  2),
+    ('01', '5D', 'ジャケット・スポーツ・フォーマル',   '商品1部',  3),
+    ('01', '5E', 'ボトムス',                           '商品1部',  4),
+    ('01', '5C', 'ティーンズ',                         '商品2部',  5),
+    ('01', '5F', 'ラージサイズ',                       '商品2部',  6),
+    ('01', '5G', 'ミセス・シルバー',                   '商品2部',  7),
+    ('01', '2A', 'アダルト・シニア',                   '商品3部',  8),
+    ('01', '2B', 'テイーンズ・ヤング・ラージサイズ',   '商品3部',  9),
+    ('01', '2C', 'スポーツ・リラクシング・ビジネス',   '商品3部', 10),
+    ('01', '2D', 'ラージサイズ・服飾雑貨',             '商品3部', 11),
+    ('01', '6A', 'ベビー用品・玩具',                   '商品4部', 12),
+    ('01', '7A', '男児',                               '商品4部', 13),
+    ('01', '7B', '女児',                               '商品4部', 14),
+    ('01', '3C', '婦人肌着',                           '商品5部', 15),
+    ('01', '4A', '紳士・子供肌着',                     '商品5部', 16),
+    ('01', '4B', '靴下',                               '商品5部', 17),
+    ('01', '1B', '靴',                                 '商品6部', 18),
+    ('01', '3A', '雑貨',                               '商品6部', 19),
+    ('01', '3B', 'バッグ・服飾小物',                   '商品6部', 20),
+    ('01', '1A', 'インテリア',                         '商品7部', 21),
+    ('01', '8A', '寝具',                               '商品7部', 22),
+    ('01', '8B', 'ナイティー',                         '商品7部', 23),
+    -- アベイル（02）
+    ('02', '1A', 'ヤング',                             '商品1部',  1),
+    ('02', '1C', 'アダルト',                           '商品1部',  2),
+    ('02', '2A', 'ティーンズ',                         '商品1部',  3),
+    ('02', '2D', 'ラージサイズ',                       '商品1部',  4),
+    ('02', '3A', 'ティーンズ',                         '商品2部',  5),
+    ('02', '3B', 'ノンエイジ',                         '商品2部',  6),
+    ('02', '4A', 'ヤング',                             '商品2部',  7),
+    ('02', '4C', 'アダルト',                           '商品2部',  8),
+    ('02', '4D', 'ラージサイズ',                       '商品2部',  9),
+    ('02', '5B', 'レディース シューズ',                '商品3部', 10),
+    ('02', '6B', 'レディース 服飾雑貨',                '商品3部', 11),
+    ('02', '6C', 'インテリア・寝具・生活雑貨',         '商品3部', 12),
+    ('02', '7B', 'レディース アンダーウエアー・ソックス', '商品3部', 13),
+    ('02', '5A', 'メンズ シューズ',                    '商品4部', 14),
+    ('02', '6A', 'メンズ 服飾雑貨',                    '商品4部', 15),
+    ('02', '7A', 'メンズアンダーウエアー・ソックス',   '商品4部', 16),
+    -- バースデイ（04）
+    ('04', '1A', 'ベビーアウター',                     '商品1部',  1),
+    ('04', '2A', 'トドラーアウター',                   '商品1部',  2),
+    ('04', '2B', 'ジュニアアウター',                   '商品1部',  3),
+    ('04', '3A', '服飾',                               '商品1部',  4),
+    ('04', '3B', '学用品雑貨',                         '商品2部',  5),
+    ('04', '5A', '新生児用品・ベビーインナー',         '商品2部',  6),
+    ('04', '5B', 'キッズインナー',                     '商品2部',  7),
+    ('04', '4A', 'マタニティ・大物育児用品',           '商品3部',  8),
+    ('04', '6A', '玩具',                               '商品3部',  9),
+    ('04', '7A', '家具・寝具',                         '商品3部', 10),
+    ('04', '8A', 'フード・衛生雑貨',                   '商品3部', 11),
+    -- シャンブル（05）
+    ('05', '5A', '婦人アウター・靴下',                 '商品1部',  1),
+    ('05', '6A', 'アクセサリー・服飾小物',             '商品1部',  2),
+    ('05', '6B', '靴・バッグ',                         '商品1部',  3),
+    ('05', '2A', 'インテリア・寝具',                   '商品2部',  4),
+    ('05', '3A', '収納・雑貨・バス',                   '商品2部',  5),
+    ('05', '4A', 'キッチン・ランチ用品',               '商品2部',  6),
+    ('05', '7A', 'コスメ・文具',                       '商品2部',  7),
+    -- ディバロ（06）
+    ('06', '1A', 'レディースミセス',                   '事業部',   1),
+    ('06', '1B', 'レディースヤング',                   '事業部',   2),
+    ('06', '2A', 'メンズ',                             '事業部',   3),
+    ('06', '3A', 'キッズ',                             '事業部',   4),
+    ('06', '4A', '服飾雑貨',                           '事業部',   5),
+    ('06', '5A', 'レディースアウター',                 '事業部',   6)
+) AS v(btc, code, name, section_name, ord)
+JOIN m_buyer_section bs
+  ON bs.business_type_code = v.btc AND bs.name = v.section_name
+WHERE NOT EXISTS (SELECT 1 FROM m_section_department)
+ON CONFLICT (business_type_code, dept_code) DO NOTHING;
+
+-- 初期データ: 相談受付デスク。空テーブル時のみ投入（運用者の削除・キー変更を再適用で巻き戻さない）。
+INSERT INTO m_contact_desk (topic, department_name, phone, chat_domain, display_order)
+SELECT v.*
+FROM (VALUES
+    ('お支払い関連',                    '経理部',     '048-631-2134', NULL,        1),
+    ('Web-EDI・受発注・システム関連',   'システム2部', '048-631-2136', 'system',    2),
+    ('直流・納品・物流',                '物流部',     '048-631-2144', 'logistics', 3),
+    ('消耗品',                          '総務部',     '048-631-2111', NULL,        4),
+    ('品質管理・品質規格',              '商品管理部', '048-631-2142', 'quality',   5),
+    ('EC関連',                          'ＥＣ事業部', '048-631-2145', NULL,        6)
+) AS v(topic, department_name, phone, chat_domain, display_order)
+WHERE NOT EXISTS (SELECT 1 FROM m_contact_desk)
+ON CONFLICT (topic) DO NOTHING;
+
+-- ============================================================
+--  ナレッジストア（RAG）: knowledge スキーマ
+-- ------------------------------------------------------------
+--  設計思想は docs/platform-design/detailed-design/DD-04（根拠必須・SoT→派生の
+--  一方向・グレースフルデグラデーション）を単一テナント構成へ簡素化して適用する。
+--  SoT: knowledge.entry（原本テキスト／原本ファイル bytea）。
+--  派生: knowledge.chunk（チャンク） / knowledge.chunk_embedding（ベクター）。
+--        派生は entry から常時再生成可能（再インデックス）。
+--  ベクターは外部埋め込み API に依存しない決定的なローカルモデル
+--  （文字 n-gram ハッシュベクトル。実装 SoT は backend Core の HashingVectorizer）
+--  を real[] で保持する。(chunk_id, model) キーにより将来の外部埋め込み
+--  モデル（pgvector 等）と共存・移行可能（DD-04 §3.3 の下位互換方針）。
+-- ============================================================
+
+-- 日本語の部分一致検索（word_similarity）用。contrib 標準の pg_trgm を使う。
+-- 権限等で作成できない環境でもスキーマ適用全体は失敗させない（原則4）。
+-- 拡張が無い場合、アプリ側は字句スコアを除外しベクトルスコアのみで検索する。
+DO $$
+BEGIN
+    CREATE EXTENSION IF NOT EXISTS pg_trgm;
+EXCEPTION WHEN OTHERS THEN
+    RAISE NOTICE 'pg_trgm 拡張を作成できませんでした（%）。字句類似検索なしで動作します。', SQLERRM;
+END
+$$;
+
+CREATE SCHEMA IF NOT EXISTS knowledge;
+
+-- ナレッジ原本（SoT）。自由入力テキストまたはアップロードファイル＋抽出テキスト。
+CREATE TABLE IF NOT EXISTS knowledge.entry (
+    id                 uuid PRIMARY KEY DEFAULT gen_random_uuid(),
+    scope              text NOT NULL CHECK (scope IN ('operator', 'user')),
+    category           text NOT NULL CHECK (category IN ('group', 'business_type', 'department', 'basic', 'manual')),
+    business_type_code text REFERENCES business_type (code),
+    dept_code          text,
+    biz_domain         text CHECK (biz_domain IN ('system', 'quality', 'logistics')),
+    title              text NOT NULL,
+    content            text NOT NULL DEFAULT '',
+    source_type        text NOT NULL DEFAULT 'text' CHECK (source_type IN ('text', 'file')),
+    file_name          text,
+    file_content_type  text,
+    file_size_bytes    bigint,
+    file_data          bytea,
+    index_state        text NOT NULL DEFAULT 'pending' CHECK (index_state IN ('pending', 'indexed', 'failed')),
+    index_error        text,
+    chunk_count        integer NOT NULL DEFAULT 0,
+    seed_slug          text UNIQUE,
+    status             text NOT NULL DEFAULT 'active' CHECK (status IN ('active', 'deleted')),
+    created_by         text NOT NULL,
+    created_at         timestamptz NOT NULL DEFAULT now(),
+    updated_by         text NOT NULL,
+    updated_at         timestamptz NOT NULL DEFAULT now(),
+    -- カテゴリ整合（原則6: 型・制約・SoT 宣言の同時更新）
+    CHECK (category <> 'business_type' OR business_type_code IS NOT NULL),
+    CHECK (category <> 'department' OR (business_type_code IS NOT NULL AND dept_code IS NOT NULL)),
+    CHECK (category <> 'manual' OR scope = 'operator'),
+    CHECK (source_type <> 'file' OR file_name IS NOT NULL)
+);
+COMMENT ON TABLE  knowledge.entry IS 'ナレッジ原本（SoT）。チャンク・ベクターは本テーブルから再生成可能な派生';
+COMMENT ON COLUMN knowledge.entry.scope       IS 'operator=運営者RAG設定 / user=ユーザーRAG設定';
+COMMENT ON COLUMN knowledge.entry.category    IS 'group=しまむらグループ / business_type=業態 / department=部門 / basic=基本情報 / manual=マニュアル（operator 専用）';
+COMMENT ON COLUMN knowledge.entry.biz_domain  IS '業務チャットの部署絞込タグ（system/quality/logistics。NULL=共通）';
+COMMENT ON COLUMN knowledge.entry.content     IS 'AI 参照用テキスト（自由入力 or ファイル抽出結果）。ファイルの原本は file_data に温存';
+COMMENT ON COLUMN knowledge.entry.seed_slug   IS '事前蓄積ナレッジの冪等キー。NULL=画面からの手動登録。シードは ON CONFLICT DO NOTHING で再投入されない';
+COMMENT ON COLUMN knowledge.entry.status      IS 'active/deleted。シード由来は論理削除（再起動時の再出現を防ぐ・原則2）';
+
+CREATE INDEX IF NOT EXISTS ix_knowledge_entry_scope_category
+    ON knowledge.entry (scope, category, status);
+CREATE INDEX IF NOT EXISTS ix_knowledge_entry_business_type
+    ON knowledge.entry (business_type_code) WHERE business_type_code IS NOT NULL;
+
+-- チャンク（派生。entry 削除で連鎖削除）
+CREATE TABLE IF NOT EXISTS knowledge.chunk (
+    id         bigint GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
+    entry_id   uuid NOT NULL REFERENCES knowledge.entry (id) ON DELETE CASCADE,
+    seq        integer NOT NULL,
+    content    text NOT NULL,
+    char_count integer NOT NULL,
+    UNIQUE (entry_id, seq)
+);
+COMMENT ON TABLE knowledge.chunk IS 'ナレッジチャンク（派生）。見出し・ページ境界を尊重した分割。SoT は knowledge.entry';
+
+-- 字句類似検索の索引（pg_trgm がある場合のみ）。
+DO $$
+BEGIN
+    IF EXISTS (SELECT 1 FROM pg_extension WHERE extname = 'pg_trgm') THEN
+        CREATE INDEX IF NOT EXISTS ix_knowledge_chunk_trgm
+            ON knowledge.chunk USING gin (content gin_trgm_ops);
+    END IF;
+END
+$$;
+
+-- チャンクベクター（派生）。model 列で埋め込みモデルの新旧共存・移行を可能にする。
+CREATE TABLE IF NOT EXISTS knowledge.chunk_embedding (
+    chunk_id bigint NOT NULL REFERENCES knowledge.chunk (id) ON DELETE CASCADE,
+    model    text NOT NULL,
+    dim      integer NOT NULL,
+    vector   real[] NOT NULL,
+    PRIMARY KEY (chunk_id, model)
+);
+COMMENT ON TABLE knowledge.chunk_embedding IS 'チャンク埋め込みベクトル（派生・L2正規化済み）。実装 SoT は Core の HashingVectorizer';
+
+-- コサイン類似度（ベクトルは書込時に L2 正規化済みのため実質は内積）。
+CREATE OR REPLACE FUNCTION knowledge.cosine_similarity(a real[], b real[])
+RETURNS double precision
+LANGUAGE sql IMMUTABLE PARALLEL SAFE AS $$
+    SELECT CASE
+        WHEN s.na = 0 OR s.nb = 0 THEN 0
+        ELSE s.dot / (sqrt(s.na) * sqrt(s.nb))
+    END
+    FROM (
+        SELECT COALESCE(sum(x * y), 0) AS dot,
+               COALESCE(sum(x * x), 0) AS na,
+               COALESCE(sum(y * y), 0) AS nb
+        FROM unnest(a, b) AS t(x, y)
+    ) s
+$$;
+COMMENT ON FUNCTION knowledge.cosine_similarity(real[], real[]) IS
+    'コサイン類似度。次元不一致時は unnest の NULL 補完により重なった次元だけの部分コサインになるため、呼出側で model・dim を揃えて使用すること（検索側は chunk_embedding.model と dim の両方で結合する）';
+
 COMMIT;

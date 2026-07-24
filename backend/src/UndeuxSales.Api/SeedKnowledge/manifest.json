@@ -1,0 +1,272 @@
+[
+  {
+    "slug": "seed-group-shimamura-overview",
+    "file": "seed-group-shimamura-overview.md",
+    "title": "しまむらグループの概要と取引の基本",
+    "category": "group",
+    "businessTypeCode": null,
+    "deptCode": null,
+    "bizDomain": null,
+    "sourceDocument": "お取引の基準_総括編250317.pdf"
+  },
+  {
+    "slug": "seed-biztype-01-shimamura",
+    "file": "seed-biztype-01-shimamura.md",
+    "title": "業態「しまむら」の概要と部門構成",
+    "category": "business_type",
+    "businessTypeCode": "01",
+    "deptCode": null,
+    "bizDomain": null,
+    "sourceDocument": "お取引の基準_総括編250317.pdf"
+  },
+  {
+    "slug": "seed-biztype-02-avail",
+    "file": "seed-biztype-02-avail.md",
+    "title": "業態「アベイル」の概要と部門構成",
+    "category": "business_type",
+    "businessTypeCode": "02",
+    "deptCode": null,
+    "bizDomain": null,
+    "sourceDocument": "お取引の基準_総括編250317.pdf"
+  },
+  {
+    "slug": "seed-biztype-04-birthday",
+    "file": "seed-biztype-04-birthday.md",
+    "title": "業態「バースデイ」の概要と部門構成",
+    "category": "business_type",
+    "businessTypeCode": "04",
+    "deptCode": null,
+    "bizDomain": null,
+    "sourceDocument": "お取引の基準_総括編250317.pdf"
+  },
+  {
+    "slug": "seed-biztype-05-chambre",
+    "file": "seed-biztype-05-chambre.md",
+    "title": "業態「シャンブル」の概要と部門構成",
+    "category": "business_type",
+    "businessTypeCode": "05",
+    "deptCode": null,
+    "bizDomain": null,
+    "sourceDocument": "お取引の基準_総括編250317.pdf"
+  },
+  {
+    "slug": "seed-biztype-06-divalo",
+    "file": "seed-biztype-06-divalo.md",
+    "title": "業態「ディバロ」の概要と部門構成",
+    "category": "business_type",
+    "businessTypeCode": "06",
+    "deptCode": null,
+    "bizDomain": null,
+    "sourceDocument": "お取引の基準_総括編250317.pdf"
+  },
+  {
+    "slug": "seed-basic-apparel-inventory-health",
+    "file": "seed-basic-apparel-inventory-health.md",
+    "title": "アパレル在庫健全性の業務知識",
+    "category": "basic",
+    "businessTypeCode": null,
+    "deptCode": null,
+    "bizDomain": null,
+    "sourceDocument": null
+  },
+  {
+    "slug": "seed-basic-supplier-workflow",
+    "file": "seed-basic-supplier-workflow.md",
+    "title": "サプライヤー取引業務の基礎（受発注から支払まで）",
+    "category": "basic",
+    "businessTypeCode": null,
+    "deptCode": null,
+    "bizDomain": null,
+    "sourceDocument": null
+  },
+  {
+    "slug": "seed-manual-web-edi-unyo",
+    "file": "seed-manual-web-edi-unyo.md",
+    "title": "Web-EDIの運用",
+    "category": "manual",
+    "businessTypeCode": null,
+    "deptCode": null,
+    "bizDomain": "system",
+    "sourceDocument": "Web-EDIの運用250317.pdf"
+  },
+  {
+    "slug": "seed-manual-web-edi-browser-tejunsho",
+    "file": "seed-manual-web-edi-browser-tejunsho.md",
+    "title": "Web-EDI ブラウザ版運用手順書",
+    "category": "manual",
+    "businessTypeCode": null,
+    "deptCode": null,
+    "bizDomain": "system",
+    "sourceDocument": "２．Web-EDI_ブラウザ版運用手順書.pdf"
+  },
+  {
+    "slug": "seed-manual-web-edi-tensou-interface",
+    "file": "seed-manual-web-edi-tensou-interface.md",
+    "title": "Web-EDI 転送型インターフェイス定義",
+    "category": "manual",
+    "businessTypeCode": null,
+    "deptCode": null,
+    "bizDomain": "system",
+    "sourceDocument": "Web-EDI_インターフェイス定義.md"
+  },
+  {
+    "slug": "seed-manual-web-edi-browser-interface",
+    "file": "seed-manual-web-edi-browser-interface.md",
+    "title": "Web-EDI ブラウザ型インターフェース定義",
+    "category": "manual",
+    "businessTypeCode": null,
+    "deptCode": null,
+    "bizDomain": "system",
+    "sourceDocument": "Web-EDI_ブラウザ型インターフェース定義.md"
+  },
+  {
+    "slug": "seed-manual-sors-resors-sousa",
+    "file": "seed-manual-sors-resors-sousa.md",
+    "title": "SORS・ReSORSの操作（サプライヤー編）",
+    "category": "manual",
+    "businessTypeCode": null,
+    "deptCode": null,
+    "bizDomain": "system",
+    "sourceDocument": "SORS・ReSORSの操作250317.pdf"
+  },
+  {
+    "slug": "seed-manual-gazou-kanri-sousa",
+    "file": "seed-manual-gazou-kanri-sousa.md",
+    "title": "画像管理システムの操作（サプライヤー編）",
+    "category": "manual",
+    "businessTypeCode": null,
+    "deptCode": null,
+    "bizDomain": "system",
+    "sourceDocument": "画像管理システムの操作250317.pdf"
+  },
+  {
+    "slug": "seed-manual-kijun-gazou-kanri",
+    "file": "seed-manual-kijun-gazou-kanri.md",
+    "title": "お取引の基準：画像管理システム",
+    "category": "manual",
+    "businessTypeCode": null,
+    "deptCode": null,
+    "bizDomain": "system",
+    "sourceDocument": "お取引の基準_画像管理システム240317.pdf"
+  },
+  {
+    "slug": "seed-manual-supplier-setsumeikai-shukka-kanousu",
+    "file": "seed-manual-supplier-setsumeikai-shukka-kanousu.md",
+    "title": "サプライヤー説明会（出荷可能数連携対応）",
+    "category": "manual",
+    "businessTypeCode": null,
+    "deptCode": null,
+    "bizDomain": "system",
+    "sourceDocument": "サプライヤー説明会（出荷可能数連携対応）.pdf"
+  },
+  {
+    "slug": "seed-manual-hinshitsu-kitei",
+    "file": "seed-manual-hinshitsu-kitei.md",
+    "title": "品質規定",
+    "category": "manual",
+    "businessTypeCode": null,
+    "deptCode": null,
+    "bizDomain": "quality",
+    "sourceDocument": "品質規定.pdf"
+  },
+  {
+    "slug": "seed-manual-saisun-kitei",
+    "file": "seed-manual-saisun-kitei.md",
+    "title": "採寸規定",
+    "category": "manual",
+    "businessTypeCode": null,
+    "deptCode": null,
+    "bizDomain": "quality",
+    "sourceDocument": "採寸規定.pdf"
+  },
+  {
+    "slug": "seed-manual-kani-shiken-unyo",
+    "file": "seed-manual-kani-shiken-unyo.md",
+    "title": "簡易試験の運用",
+    "category": "manual",
+    "businessTypeCode": null,
+    "deptCode": null,
+    "bizDomain": "quality",
+    "sourceDocument": "簡易試験の運用.pdf"
+  },
+  {
+    "slug": "seed-manual-pb-koujou-nintei",
+    "file": "seed-manual-pb-koujou-nintei.md",
+    "title": "PB商品生産工場の認定",
+    "category": "manual",
+    "businessTypeCode": null,
+    "deptCode": null,
+    "bizDomain": "quality",
+    "sourceDocument": "PB商品生産工場の認定.pdf"
+  },
+  {
+    "slug": "seed-manual-kanri-daichou-unyo",
+    "file": "seed-manual-kanri-daichou-unyo.md",
+    "title": "管理台帳の運用方法",
+    "category": "manual",
+    "businessTypeCode": null,
+    "deptCode": null,
+    "bizDomain": "quality",
+    "sourceDocument": "管理台帳の運用方法.pdf"
+  },
+  {
+    "slug": "seed-manual-kijun-nefuda-toritsuke",
+    "file": "seed-manual-kijun-nefuda-toritsuke.md",
+    "title": "お取引の基準：値札の取り付け",
+    "category": "manual",
+    "businessTypeCode": null,
+    "deptCode": null,
+    "bizDomain": "quality",
+    "sourceDocument": "お取引の基準_値札取付編250317.pdf"
+  },
+  {
+    "slug": "seed-manual-kijun-center-nouhin-butsuryu",
+    "file": "seed-manual-kijun-center-nouhin-butsuryu.md",
+    "title": "お取引の基準：商品センター納品と物流",
+    "category": "manual",
+    "businessTypeCode": null,
+    "deptCode": null,
+    "bizDomain": "logistics",
+    "sourceDocument": "【検証】お取引の基準_商品センター納品と物流250317.pdf"
+  },
+  {
+    "slug": "seed-manual-chokuryu-shikumi",
+    "file": "seed-manual-chokuryu-shikumi.md",
+    "title": "直流の仕組み",
+    "category": "manual",
+    "businessTypeCode": null,
+    "deptCode": null,
+    "bizDomain": "logistics",
+    "sourceDocument": "直流の仕組_250317.pdf"
+  },
+  {
+    "slug": "seed-manual-kijun-soukatsu",
+    "file": "seed-manual-kijun-soukatsu.md",
+    "title": "お取引の基準：総括編",
+    "category": "manual",
+    "businessTypeCode": null,
+    "deptCode": null,
+    "bizDomain": null,
+    "sourceDocument": "お取引の基準_総括編250317.pdf"
+  },
+  {
+    "slug": "seed-manual-kijun-nihon-supplier",
+    "file": "seed-manual-kijun-nihon-supplier.md",
+    "title": "お取引の基準：日本サプライヤー用",
+    "category": "manual",
+    "businessTypeCode": null,
+    "deptCode": null,
+    "bizDomain": null,
+    "sourceDocument": "お取引の基準_日本ｻﾌﾟﾗｲﾔｰ用250317.pdf"
+  },
+  {
+    "slug": "seed-manual-icon-kanri-unyo",
+    "file": "seed-manual-icon-kanri-unyo.md",
+    "title": "アイコンの管理と運用",
+    "category": "manual",
+    "businessTypeCode": null,
+    "deptCode": null,
+    "bizDomain": null,
+    "sourceDocument": "アイコンの管理と運用.pdf"
+  }
+]

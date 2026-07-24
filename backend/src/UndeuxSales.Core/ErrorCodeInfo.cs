@@ -10,7 +10,7 @@ public sealed record ErrorCodeInfo(string Code, string Summary, string Remedy);
 /// アプリケーション全体のエラーコード一元定義。
 /// <para>
 /// 形式: <c>UNDX-{領域}-{連番3桁}</c>。
-/// 領域: AUTH=認証/認可, REQ=リクエスト検証, IMP=取込処理, DATA=データ層, SYS=システム。
+/// 領域: AUTH=認証/認可, REQ=リクエスト検証, IMP=取込処理, DATA=データ層, AI=AI機能, SYS=システム。
 /// </para>
 /// </summary>
 public static class ErrorCodes
@@ -77,6 +77,21 @@ public static class ErrorCodes
         "指定された在庫アクションフラグが見つかりません。",
         "一覧を再読み込みして最新の状態を確認してください（他のユーザーが削除した可能性があります）。");
 
+    public static readonly ErrorCodeInfo KnowledgeNotFound = new(
+        "UNDX-DATA-004",
+        "指定されたナレッジ（またはマスタ行・原本ファイル）が見つかりません。",
+        "一覧を再読み込みして最新の状態を確認してください（他のユーザーが削除した可能性があります）。");
+
+    public static readonly ErrorCodeInfo AiCallFailed = new(
+        "UNDX-AI-001",
+        "AI 応答の生成に失敗しました（LLM 呼出エラー/タイムアウト）。",
+        "時間をおいて再送してください。繰り返し発生する場合はシステム管理者に連絡してください。");
+
+    public static readonly ErrorCodeInfo AiNotConfigured = new(
+        "UNDX-AI-008",
+        "AI 機能が未設定です（Anthropic API キーが構成されていません）。",
+        "運営者が環境変数 Anthropic__ApiKey（ANTHROPIC_API_KEY）を設定してから利用してください。");
+
     public static readonly ErrorCodeInfo Unexpected = new(
         "UNDX-SYS-001",
         "想定外のシステムエラーが発生しました。",
@@ -97,6 +112,9 @@ public static class ErrorCodes
         DatabaseError,
         ProductNotFound,
         FlagNotFound,
+        KnowledgeNotFound,
+        AiCallFailed,
+        AiNotConfigured,
         Unexpected,
     };
 }

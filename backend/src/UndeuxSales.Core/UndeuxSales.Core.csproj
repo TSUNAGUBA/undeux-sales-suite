@@ -6,4 +6,9 @@
     <Nullable>enable</Nullable>
   </PropertyGroup>
 
+  <ItemGroup>
+    <!-- 単体テストから internal ヘルパー（テキスト正規化等）を検証するため。 -->
+    <InternalsVisibleTo Include="UndeuxSales.Tests" />
+  </ItemGroup>
+
 </Project>

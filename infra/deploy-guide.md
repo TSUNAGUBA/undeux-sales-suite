@@ -293,6 +293,8 @@ gh secret set FRONTEND_ORIGIN      --repo $Repo --body "https://$FirebaseProject
 gh secret set RDS_CONNECTION_STRING --repo $Repo --body $RdsConnectionString
 gh secret set EC2_HOST             --repo $Repo --body $Ec2Ip
 gh secret set EC2_USER             --repo $Repo --body "ubuntu"
+# AIチャット（業務/商談）を有効化する場合のみ（未登録でもデプロイは成功し、チャットのみ「AI未設定」になる）
+gh secret set ANTHROPIC_API_KEY    --repo $Repo --body $AnthropicApiKey
 
 # ファイルから登録するもの（サービスアカウントJSON・SSH秘密鍵）
 Get-Content $FirebaseServiceAccountPath -Raw | gh secret set FIREBASE_SERVICE_ACCOUNT --repo $Repo
@@ -393,6 +395,7 @@ GitHub の **Actions** タブの「Run workflow」ボタンからも実行でき
 | `EC2_HOST` | EC2 の固定IP | ステップ3-4 |
 | `EC2_USER` | `ubuntu` | 固定 |
 | `EC2_SSH_KEY` | SSH秘密鍵（`undeux-ec2` ファイル全文） | ステップ3-1 |
+| `ANTHROPIC_API_KEY` | Anthropic API キー（AIチャット用・任意。未登録時はチャットのみ「AI未設定」） | Anthropic Console |
 
 ---
 

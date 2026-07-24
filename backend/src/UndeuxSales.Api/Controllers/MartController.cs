@@ -25,15 +25,18 @@ public sealed class MartController : ControllerBase
 
     private readonly MartAnalyticsRepository _martRepository;
     private readonly IServiceScopeFactory _scopeFactory;
+    private readonly UndeuxSales.Infrastructure.Rag.ChatPromptCacheVersion _promptCacheVersion;
     private readonly ILogger<MartController> _logger;
 
     public MartController(
         MartAnalyticsRepository martRepository,
         IServiceScopeFactory scopeFactory,
+        UndeuxSales.Infrastructure.Rag.ChatPromptCacheVersion promptCacheVersion,
         ILogger<MartController> logger)
     {
         _martRepository = martRepository;
         _scopeFactory = scopeFactory;
+        _promptCacheVersion = promptCacheVersion;
         _logger = logger;
     }
 
@@ -286,6 +289,9 @@ public sealed class MartController : ControllerBase
                 using var scope = _scopeFactory.CreateScope();
                 var repository = scope.ServiceProvider.GetRequiredService<MartAnalyticsRepository>();
                 await repository.RunRebuildCoreAsync(CancellationToken.None);
+                // 商談チャットの実績サマリー（system プロンプトの安定部キャッシュ）を
+                // 再構築後の最新値で作り直させる（SoT→派生の同期）。
+                _promptCacheVersion.Bump();
             });
             _logger.LogInformation("mart 再構築をバックグラウンドで開始しました。");
         }
