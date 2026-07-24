@@ -16,7 +16,7 @@ using UndeuxSales.Infrastructure.Import;
 //
 //  環境変数:
 //    ConnectionStrings__Default / UNDEUX_DB_CONNECTION : 接続文字列（必須）
-//    UNDEUX_DUMP_PATH   : ダンプファイル or 格納ディレクトリ（既定: refference を探索）
+//    UNDEUX_DUMP_PATH   : ダンプファイル or 格納ディレクトリ（既定: reference を探索）
 //    UNDEUX_SCHEMA_PATH : schema.sql のパス（既定: db/schema.sql を探索）
 //    UNDEUX_FORCE_RELOAD: "true" の場合、投入済みでも再投入する
 // ============================================================
@@ -123,7 +123,7 @@ static string ResolveDumpPath(string? configured)
         throw new FileNotFoundException($"指定された取込パスが存在しません: {configured}");
     }
 
-    foreach (var directory in EnumerateCandidateDirectories("refference"))
+    foreach (var directory in EnumerateCandidateDirectories("reference"))
     {
         var found = FindGzipDump(directory);
         if (found is not null)

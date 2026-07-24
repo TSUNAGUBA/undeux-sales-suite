@@ -27,10 +27,10 @@ services:
     image: "${UNDEUX_IMAGE_REPO}-dataloader:${UNDEUX_IMAGE_TAG}"
     environment:
       ConnectionStrings__Default: "${UNDEUX_DB_CONNECTION}"
-      UNDEUX_DUMP_PATH: /refference
+      UNDEUX_DUMP_PATH: /reference
       UNDEUX_SCHEMA_PATH: /app/db/schema.sql
     volumes:
-      - ../../refference:/refference:ro
+      - ../../reference:/reference:ro
       - ../../db:/app/db:ro
     restart: "no"
     deploy:

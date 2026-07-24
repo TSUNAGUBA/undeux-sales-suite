@@ -99,7 +99,7 @@ docker compose up --build
 | API | http://localhost:8080 |
 | API ドキュメント（Swagger） | http://localhost:8080/swagger |
 
-初回起動時、`refference/` の初期DBダンプ（約160万行）が自動投入される（数分かかる場合がある）。
+初回起動時、`reference/` の初期DBダンプ（約160万行）が自動投入される（数分かかる場合がある）。
 
 > **ログインには Firebase の設定が必要です。** Firebase コンソールでプロジェクトを作成し、
 > Authentication（メール/パスワード）を有効化のうえ、`.env` に各値を設定してください。
@@ -117,7 +117,7 @@ undeux-sales-suite/
 │   └── tests/UndeuxSales.Tests/         ユニット・統合テスト
 ├── frontend/           Nuxt SPA
 ├── db/schema.sql       PostgreSQL スキーマDDL
-├── refference/         小売提供の初期データ（DBダンプ・カラム定義）
+├── reference/          小売提供の初期データ（DBダンプ・カラム定義・しまむら提供ドキュメント）
 ├── infra/              デプロイ手順（Firebase / AWS）
 ├── docs/design.md      設計ドキュメント
 └── docker-compose.yml

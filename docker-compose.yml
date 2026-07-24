@@ -2,7 +2,7 @@
 #  UndeuxSales 売上参照スイート — ローカル実行環境
 #  起動: docker compose up --build
 #    db        : PostgreSQL 16（schema.sql を初期適用）
-#    dataloader: 初期DBダンプ(refference)を投入し終了する
+#    dataloader: 初期DBダンプ(reference)を投入し終了する
 #    api       : C# Web API（http://localhost:8080）
 #    frontend  : Nuxt SPA（http://localhost:3000）
 # ============================================================
@@ -37,10 +37,10 @@ services:
       target: dataloader
     environment:
       ConnectionStrings__Default: "Host=db;Port=5432;Database=undeux;Username=undeux;Password=${POSTGRES_PASSWORD:-undeux};Command Timeout=600"
-      UNDEUX_DUMP_PATH: /refference
+      UNDEUX_DUMP_PATH: /reference
       UNDEUX_SCHEMA_PATH: /app/db/schema.sql
     volumes:
-      - ./refference:/refference:ro
+      - ./reference:/reference:ro
       - ./db:/app/db:ro
     depends_on:
       db:

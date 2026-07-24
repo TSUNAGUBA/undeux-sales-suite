@@ -108,7 +108,7 @@ jobs:
           } > deploy.env
 
       # EC2 はビルドしないため backend ソースは同期しない。dataloader が volume で参照する
-      # 初期ダンプ（refference）・スキーマ（db）と、compose/デプロイスクリプト（infra）のみ同期する。
+      # 初期ダンプ（reference）・スキーマ（db）と、compose/デプロイスクリプト（infra）のみ同期する。
       - name: デプロイ資材を EC2 へ同期
         env:
           EC2_USER: ${{ secrets.EC2_USER }}
@@ -116,7 +116,7 @@ jobs:
         run: |
           rsync -az --delete --exclude='.env' \
             -e "ssh -i ~/.ssh/deploy_key" \
-            db refference infra \
+            db reference infra \
             "$EC2_USER@$EC2_HOST:~/undeux-sales-suite/"
           scp -i ~/.ssh/deploy_key deploy.env \
             "$EC2_USER@$EC2_HOST:~/undeux-sales-suite/infra/aws/.env"
