@@ -48,6 +48,8 @@ services:
       ConnectionStrings__Default: "${UNDEUX_DB_CONNECTION}"
       Firebase__ProjectId: "${UNDEUX_FIREBASE_PROJECT_ID}"
       Cors__AllowedOrigins__0: "${UNDEUX_FRONTEND_ORIGIN}"
+      # AIチャット（業務/商談）用。未設定でも起動し、チャットのみ「AI未設定」になる。
+      Anthropic__ApiKey: "${UNDEUX_ANTHROPIC_API_KEY:-}"
       # EC2 上の nginx-proxy / acme-companion による自動公開・HTTPS化。
       # VIRTUAL_HOST のドメインで公開され、acme-companion が証明書を取得する
       # （acme-companion 側に DEFAULT_EMAIL 設定済みのため EMAIL 指定は不要）。

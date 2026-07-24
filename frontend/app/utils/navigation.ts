@@ -11,21 +11,26 @@
  */
 import type { Component } from 'vue'
 import {
+  BookOpenText,
   Boxes,
+  Building2,
   CalendarDays,
   CalendarPlus,
   CalendarRange,
   Database,
   Gauge,
+  Handshake,
   Images,
   LayoutDashboard,
   LayoutGrid,
   ListChecks,
   ListOrdered,
+  MessagesSquare,
   Package,
   ScatterChart,
   Shirt,
   SlidersHorizontal,
+  Sparkles,
   Store,
   Table2,
   Tag,
@@ -145,6 +150,18 @@ export const NAV_CATEGORIES: NavCategory[] = [
     ],
   },
   {
+    id: 'ai',
+    label: 'AIチャット',
+    icon: Sparkles,
+    description: '社内ナレッジ（RAG）を参照するAIチャットで、業務の質問と商談準備を支援する',
+    // 業務チャット・商談チャットは両ロール共通のナレッジ活用機能のため roles は指定しない。
+    pages: [
+      { path: '/ai/business-chat', label: '業務チャット', icon: MessagesSquare },
+      { path: '/ai/negotiation-chat', label: '商談チャット', icon: Handshake },
+      { path: '/ai/rag-settings', label: 'RAG設定', icon: BookOpenText },
+    ],
+  },
+  {
     id: 'data',
     label: 'データ管理',
     icon: Database,
@@ -155,6 +172,8 @@ export const NAV_CATEGORIES: NavCategory[] = [
       // 商品マスタ・週次取込は自社データ整備のためサプライヤー（メーカー）向け。
       { path: '/product-master', label: '商品マスタ', icon: Shirt, matchSubroutes: true, roles: ['supplier'] },
       { path: '/imports', label: '週次取込', icon: Upload, roles: ['supplier'] },
+      // 業態・部門マスタは商談チャットの選択肢や相談受付デスクの SoT 表示のため両ロールに公開する。
+      { path: '/org-master', label: '業態・部門マスタ', icon: Building2 },
     ],
   },
   {

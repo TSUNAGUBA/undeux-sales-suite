@@ -22,6 +22,8 @@ public sealed class CustomWebApplicationFactory : WebApplicationFactory<Program>
         builder.UseEnvironment("Testing");
         builder.UseSetting("ConnectionStrings:Default", _connectionString);
         builder.UseSetting("Firebase:ProjectId", "test-project");
+        // 起動時ナレッジシードはテストと競合するため無効化する（シード自体は専用テストで検証）。
+        builder.UseSetting("Rag:SeedOnStartup", "false");
 
         builder.ConfigureTestServices(services =>
         {

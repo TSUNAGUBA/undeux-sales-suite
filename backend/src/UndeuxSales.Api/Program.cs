@@ -49,6 +49,13 @@ builder.Services.AddSwaggerGen(SwaggerSetup.Configure);
 builder.Services.Configure<ImportSettings>(
     builder.Configuration.GetSection(ImportSettings.SectionName));
 
+// AI（Anthropic Claude API）設定。キー未設定時もアプリは起動し、チャットのみ無効になる。
+builder.Services.Configure<UndeuxSales.Infrastructure.Ai.AiOptions>(
+    builder.Configuration.GetSection(UndeuxSales.Infrastructure.Ai.AiOptions.SectionName));
+
+// 事前蓄積ナレッジ（しまむら提供資料）の起動時シード（冪等・非ブロッキング）。
+builder.Services.AddHostedService<UndeuxSales.Api.Configuration.KnowledgeSeedHostedService>();
+
 var firebaseOptions = builder.Configuration
     .GetSection(FirebaseAuthOptions.SectionName)
     .Get<FirebaseAuthOptions>() ?? new FirebaseAuthOptions();
@@ -85,6 +92,10 @@ builder.Services.AddAuthorization(options =>
 {
     // 取込（データ更新操作）は role=admin のカスタムクレームを持つ利用者に限定する。
     options.AddPolicy(AuthorizationPolicies.Importer, policy =>
+        policy.RequireClaim(AuthorizationPolicies.RoleClaim, AuthorizationPolicies.AdminRole));
+
+    // 運営者（アプリオーナー）操作: 組織マスタ編集・運営者RAG設定の変更。
+    options.AddPolicy(AuthorizationPolicies.Owner, policy =>
         policy.RequireClaim(AuthorizationPolicies.RoleClaim, AuthorizationPolicies.AdminRole));
 });
 

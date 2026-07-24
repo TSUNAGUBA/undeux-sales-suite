@@ -5,11 +5,15 @@
   </ItemGroup>
 
   <ItemGroup>
+    <PackageReference Include="Anthropic" Version="12.38.0" />
     <PackageReference Include="Dapper" Version="2.1.79" />
+    <PackageReference Include="Microsoft.Extensions.Caching.Memory" Version="10.0.8" />
     <PackageReference Include="Microsoft.Extensions.DependencyInjection.Abstractions" Version="10.0.8" />
     <PackageReference Include="Microsoft.Extensions.Logging.Abstractions" Version="10.0.8" />
     <PackageReference Include="Microsoft.Extensions.Options" Version="10.0.8" />
     <PackageReference Include="Npgsql" Version="10.0.2" />
+    <PackageReference Include="PdfPig" Version="0.1.15" />
+    <PackageReference Include="System.Text.Encoding.CodePages" Version="10.0.10" />
   </ItemGroup>
 
   <PropertyGroup>
@@ -17,5 +21,10 @@
     <ImplicitUsings>enable</ImplicitUsings>
     <Nullable>enable</Nullable>
   </PropertyGroup>
+
+  <ItemGroup>
+    <!-- 単体テストから internal ヘルパー（メッセージ検証等）を検証するため。 -->
+    <InternalsVisibleTo Include="UndeuxSales.Tests" />
+  </ItemGroup>
 
 </Project>

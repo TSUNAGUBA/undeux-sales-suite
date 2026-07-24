@@ -92,6 +92,8 @@ jobs:
           FIREBASE_PROJECT_ID: ${{ secrets.FIREBASE_PROJECT_ID }}
           FRONTEND_ORIGIN: ${{ secrets.FRONTEND_ORIGIN }}
           API_DOMAIN: ${{ secrets.API_DOMAIN }}
+          # 未登録でもデプロイは成功する（AIチャットのみ「AI未設定」となる）。
+          ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
           IMAGE_REPO: ${{ steps.meta.outputs.repo }}
           IMAGE_TAG: ${{ steps.meta.outputs.tag }}
         run: |
@@ -100,6 +102,7 @@ jobs:
             echo "UNDEUX_FIREBASE_PROJECT_ID=$FIREBASE_PROJECT_ID"
             echo "UNDEUX_FRONTEND_ORIGIN=$FRONTEND_ORIGIN"
             echo "UNDEUX_API_DOMAIN=$API_DOMAIN"
+            echo "UNDEUX_ANTHROPIC_API_KEY=$ANTHROPIC_API_KEY"
             echo "UNDEUX_IMAGE_REPO=$IMAGE_REPO"
             echo "UNDEUX_IMAGE_TAG=$IMAGE_TAG"
           } > deploy.env

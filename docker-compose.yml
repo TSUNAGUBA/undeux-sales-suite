@@ -61,6 +61,8 @@ services:
       ConnectionStrings__Default: "Host=db;Port=5432;Database=undeux;Username=undeux;Password=${POSTGRES_PASSWORD:-undeux}"
       Firebase__ProjectId: "${FIREBASE_PROJECT_ID:-}"
       Cors__AllowedOrigins__0: "${FRONTEND_ORIGIN:-http://localhost:3000}"
+      # AIチャット（未設定時はチャットのみ無効。ナレッジ管理は利用可能）
+      Anthropic__ApiKey: "${ANTHROPIC_API_KEY:-}"
     ports:
       - "8080:8080"
     depends_on:

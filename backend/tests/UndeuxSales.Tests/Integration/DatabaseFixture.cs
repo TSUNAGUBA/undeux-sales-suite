@@ -73,7 +73,11 @@ public sealed class DatabaseFixture : IAsyncLifetime
         }
     }
 
-    private async Task ApplySchemaAsync()
+    /// <summary>
+    /// db/schema.sql をテストDBへ適用する。デプロイ時の再適用（DataLoader 実行）を再現する
+    /// リグレッションテストからも呼び出す（例: 空テーブルガードによるシード非復活の検証）。
+    /// </summary>
+    public async Task ApplySchemaAsync()
     {
         var schemaSql = await File.ReadAllTextAsync(ResolveSchemaPath());
         await using var connection = new NpgsqlConnection(ConnectionString);
@@ -86,9 +90,13 @@ public sealed class DatabaseFixture : IAsyncLifetime
         await using var connection = new NpgsqlConnection(ConnectionString);
         await connection.OpenAsync();
         // m_product_sku は m_product CASCADE で消えるが、両方を明示することで意図を残す。
+        // 組織マスタ（m_buyer_section / m_section_department）と knowledge.entry は
+        // business_type への FK により CASCADE で消えるが、意図を明示するため列挙する。
+        // knowledge.chunk / chunk_embedding は entry の FK CASCADE で消える。
         await connection.ExecuteAsync("""
             TRUNCATE m_product_sku, m_product, sales_weekly, import_batch, department,
-                     customer, business_type, season, inventory_action_flag
+                     customer, business_type, season, inventory_action_flag,
+                     m_buyer_section, m_section_department, m_contact_desk, knowledge.entry
                      RESTART IDENTITY CASCADE;
             """);
     }

@@ -16,4 +16,15 @@
     <ProjectReference Include="..\UndeuxSales.Infrastructure\UndeuxSales.Infrastructure.csproj" />
   </ItemGroup>
 
+  <ItemGroup>
+    <!-- 事前蓄積ナレッジ（しまむら提供資料由来）。起動時シードが読み込む。 -->
+    <EmbeddedResource Include="SeedKnowledge\**\*.md" />
+    <EmbeddedResource Include="SeedKnowledge\manifest.json" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <!-- 単体テストから埋め込みシードの整合検証（LoadSeedSources）を行うため。 -->
+    <InternalsVisibleTo Include="UndeuxSales.Tests" />
+  </ItemGroup>
+
 </Project>
