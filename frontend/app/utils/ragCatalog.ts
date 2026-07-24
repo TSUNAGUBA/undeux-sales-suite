@@ -54,6 +54,18 @@ export const RAG_FILE_ACCEPT = RAG_FILE_EXTENSIONS.map((ext) => `.${ext}`).join(
 /** ファイルサイズ上限（20MB。超過はバックエンドで 413 UNDX-IMP-005）。 */
 export const RAG_MAX_FILE_BYTES = 20 * 1024 * 1024
 
+/**
+ * 画像ファイルのサイズ上限（5MB。バックエンド検証と一致させる）。
+ * AI 画像説明（Anthropic API）の画像上限に合わせ、常に失敗する登録を入口で防ぐ。
+ */
+export const RAG_MAX_IMAGE_BYTES = 5 * 1024 * 1024
+
+/** ファイル名が画像（.jpg/.jpeg/.png）か。 */
+export function isRagImageFileName(fileName: string): boolean {
+  const ext = fileName.split('.').pop()?.toLowerCase() ?? ''
+  return ext === 'jpg' || ext === 'jpeg' || ext === 'png'
+}
+
 /** ファイル名の拡張子が許可リストに含まれるか。 */
 export function isAllowedRagFileName(fileName: string): boolean {
   const ext = fileName.split('.').pop()?.toLowerCase() ?? ''

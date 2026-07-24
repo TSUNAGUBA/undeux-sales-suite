@@ -696,7 +696,8 @@ CREATE UNIQUE INDEX IF NOT EXISTS ux_inventory_action_flag_key
 --  しまむらグループ 組織マスタ（業態 × 商品部（部署） × 部門の相関）
 -- ------------------------------------------------------------
 --  SoT はしまむら提供資料「お取引の基準：総括編」（掲載の部門部連絡先表）。
---  初期データは同資料 2025.3.10 版から投入し、以後は運用者がマスタメンテ画面
+--  初期データは同資料 250317 版（部門部連絡先表ページの改定日 2025.3.10）から
+--  投入し、以後は運用者がマスタメンテ画面
 --  （/org-master）で人的に修正する（修正後はアプリ側マスタが正）。
 --  業態マスタは既存 business_type を再利用する（原則3。コード 01-06 は
 --  上記でシード済み）。
@@ -718,7 +719,9 @@ CREATE TABLE IF NOT EXISTS m_buyer_section (
     display_order      integer NOT NULL DEFAULT 0,
     created_at         timestamptz NOT NULL DEFAULT now(),
     updated_at         timestamptz NOT NULL DEFAULT now(),
-    UNIQUE (business_type_code, name)
+    UNIQUE (business_type_code, name),
+    -- 部門側の複合FK（業態越境参照のDBレベル禁止）の参照先
+    CONSTRAINT uq_buyer_section_btc_id UNIQUE (business_type_code, id)
 );
 COMMENT ON TABLE  m_buyer_section IS '商品部（部署）マスタ。業態ごとのバイヤー部署と連絡先（SoT: お取引の基準 総括編＋運用者修正）';
 COMMENT ON COLUMN m_buyer_section.name          IS '部署名（商品1部・事業部 等）';
@@ -732,15 +735,41 @@ CREATE TABLE IF NOT EXISTS m_section_department (
     business_type_code text NOT NULL REFERENCES business_type (code),
     dept_code          text NOT NULL,
     dept_name          text NOT NULL,
-    buyer_section_id   bigint REFERENCES m_buyer_section (id) ON DELETE SET NULL,
+    buyer_section_id   bigint,
     display_order      integer NOT NULL DEFAULT 0,
     created_at         timestamptz NOT NULL DEFAULT now(),
     updated_at         timestamptz NOT NULL DEFAULT now(),
-    UNIQUE (business_type_code, dept_code)
+    UNIQUE (business_type_code, dept_code),
+    -- 所属商品部は同一業態のみ（複合FK。アプリ側検証の同時編集すり抜けもDBで遮断）。
+    -- 部署削除時は所属のみ NULL 化し部門は温存（PG15+ の列指定 SET NULL）。
+    CONSTRAINT fk_section_department_section
+        FOREIGN KEY (business_type_code, buyer_section_id)
+        REFERENCES m_buyer_section (business_type_code, id)
+        ON DELETE SET NULL (buyer_section_id)
 );
 COMMENT ON TABLE  m_section_department IS '部門マスタ（業態×部門の相関）。買付部門コードと名称・所属部署（SoT: お取引の基準 総括編＋運用者修正）';
 COMMENT ON COLUMN m_section_department.dept_code        IS '部門コード（5A 等。業態内で一意）';
 COMMENT ON COLUMN m_section_department.buyer_section_id IS '所属する商品部（部署）。部署削除時は NULL（部門は温存）';
+
+-- 既存DB移行: 旧・単一列FK（buyer_section_id → m_buyer_section.id）を、業態越境参照を
+-- DBレベルで禁止する複合FKへ置き換える（冪等。新規作成DBでは CREATE TABLE 内で定義済み）。
+DO $$
+BEGIN
+    IF NOT EXISTS (SELECT 1 FROM pg_constraint WHERE conname = 'uq_buyer_section_btc_id') THEN
+        ALTER TABLE m_buyer_section
+            ADD CONSTRAINT uq_buyer_section_btc_id UNIQUE (business_type_code, id);
+    END IF;
+    IF EXISTS (SELECT 1 FROM pg_constraint WHERE conname = 'm_section_department_buyer_section_id_fkey') THEN
+        ALTER TABLE m_section_department DROP CONSTRAINT m_section_department_buyer_section_id_fkey;
+    END IF;
+    IF NOT EXISTS (SELECT 1 FROM pg_constraint WHERE conname = 'fk_section_department_section') THEN
+        ALTER TABLE m_section_department
+            ADD CONSTRAINT fk_section_department_section
+            FOREIGN KEY (business_type_code, buyer_section_id)
+            REFERENCES m_buyer_section (business_type_code, id)
+            ON DELETE SET NULL (buyer_section_id);
+    END IF;
+END $$;
 
 -- 相談受付デスクマスタ（お取引についての相談受付）。業務チャットの部署絞込にも使用。
 CREATE TABLE IF NOT EXISTS m_contact_desk (
@@ -757,7 +786,7 @@ CREATE TABLE IF NOT EXISTS m_contact_desk (
 COMMENT ON TABLE  m_contact_desk IS '相談受付デスクマスタ（お取引についての相談受付）。SoT: お取引の基準 総括編＋運用者修正';
 COMMENT ON COLUMN m_contact_desk.chat_domain IS '業務チャットの部署キー（system=システム部/quality=商品管理部/logistics=物流部。NULL=チャット対象外）';
 
--- 初期データ: 商品部（部署）。総括編 2025.3.10 版の部門部連絡先表より。
+-- 初期データ: 商品部（部署）。総括編 250317 版の部門部連絡先表（ページ改定日 2025.3.10）より。
 -- 空テーブル時のみ投入（運用者の削除・キー変更を再適用で巻き戻さない）。
 INSERT INTO m_buyer_section (business_type_code, name, category_note, phone, floor, display_order)
 SELECT v.*

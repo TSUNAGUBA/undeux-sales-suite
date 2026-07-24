@@ -148,6 +148,9 @@ public sealed class RagController : ControllerBase
             var file = form.Files.GetFile("file")
                 ?? throw new AppException(ErrorCodes.InvalidRequest, 400, "file は必須です。");
 
+            // サイズ超過（画像5MB/その他20MB）はバッファ確保前に拒否する（無駄な大容量確保の回避）。
+            KnowledgeIngestionService.ValidateFileSize(file.FileName, file.Length);
+
             // MemoryStream 経由の二重バッファ（瞬間2倍のメモリ確保）を避け、単一バッファへ直接読み込む。
             var fileData = new byte[file.Length];
             await using (var stream = file.OpenReadStream())

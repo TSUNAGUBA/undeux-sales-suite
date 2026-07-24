@@ -187,6 +187,68 @@ public sealed class RagIntegrationTests
     }
 
     [Fact]
+    public async Task TextKnowledge_UnknownBusinessTypeCode_Returns400()
+    {
+        // FK 違反（存在しない業態コード）は 500 ではなく想定エラー 400 に変換される
+        using var client = CreateClient("member-token");
+        var response = await client.PostAsJsonAsync("/api/rag/knowledge", new
+        {
+            scope = "user",
+            category = "business_type",
+            businessTypeCode = "99",
+            title = "存在しない業態の検証",
+            content = "本文",
+        });
+        Assert.Equal(HttpStatusCode.BadRequest, response.StatusCode);
+        Assert.Contains("業態コード", await response.Content.ReadAsStringAsync());
+    }
+
+    [Fact]
+    public async Task FileKnowledge_ImageOverSizeLimit_Returns413()
+    {
+        // 画像は 5MB 上限（Anthropic API の画像上限。他形式の 20MB より厳しい）
+        using var client = CreateClient("member-token");
+        using var form = new MultipartFormDataContent();
+        form.Add(new StringContent("user"), "scope");
+        form.Add(new StringContent("basic"), "category");
+        form.Add(new ByteArrayContent(new byte[5 * 1024 * 1024 + 1]), "file", "big.png");
+
+        var response = await client.PostAsync("/api/rag/knowledge", form);
+        Assert.Equal(HttpStatusCode.RequestEntityTooLarge, response.StatusCode);
+    }
+
+    [Fact]
+    public async Task FileKnowledge_FailedExtraction_ReindexRetriesAndKeepsFailedState()
+    {
+        // 抽出失敗（破損PDF）＋説明ありのエントリを再インデックスした場合:
+        // 原本からの抽出を再試行し、失敗のままなら indexed に戻さない（回復パスの保証）。
+        // 説明文が重複混入しないこと（冪等）も確認する。
+        using var client = CreateClient("member-token");
+        var description = $"破損PDF検証{Guid.NewGuid():N} の説明文";
+
+        using var form = new MultipartFormDataContent();
+        form.Add(new StringContent("user"), "scope");
+        form.Add(new StringContent("basic"), "category");
+        form.Add(new StringContent("破損PDFの再インデックス検証"), "title");
+        form.Add(new StringContent(description), "description");
+        form.Add(new ByteArrayContent(Encoding.UTF8.GetBytes("this is not a pdf")), "file", "broken.pdf");
+
+        var create = await client.PostAsync("/api/rag/knowledge", form);
+        create.EnsureSuccessStatusCode();
+        var created = await create.Content.ReadFromJsonAsync<KnowledgeDetail>();
+        Assert.Equal("failed", created!.IndexState);
+        Assert.Equal(description, created.Content);
+
+        var reindex = await client.PostAsJsonAsync($"/api/rag/knowledge/{created.Id}/reindex", new { });
+        reindex.EnsureSuccessStatusCode();
+        var reindexed = await reindex.Content.ReadFromJsonAsync<KnowledgeDetail>();
+        Assert.Equal("failed", reindexed!.IndexState);
+        Assert.Equal(description, reindexed.Content);
+
+        await client.PostAsJsonAsync($"/api/rag/knowledge/{created.Id}/delete", new { });
+    }
+
+    [Fact]
     public async Task BusinessChatSearchScope_FiltersByDomainTag()
     {
         using var client = CreateClient();

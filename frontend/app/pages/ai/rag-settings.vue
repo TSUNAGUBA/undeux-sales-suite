@@ -107,6 +107,11 @@ async function runSearch(): Promise<void> {
     searchError.value = '検索キーワードを入力してください。'
     return
   }
+  // 商談チャットモードは業態が必須（バックエンド仕様と一致。400 になる前に入口で案内する）
+  if (searchMode.value === 'negotiation' && !searchBtCode.value) {
+    searchError.value = '商談チャットモードでは業態を選択してください。'
+    return
+  }
   searchLoading.value = true
   searchError.value = null
   try {
@@ -248,7 +253,7 @@ function scoreWidth(score: number): string {
                   class="w-full rounded-lg border border-slate-300 bg-white px-3 py-2 text-sm"
                   @change="searchDeptCode = ''"
                 >
-                  <option value="">指定なし</option>
+                  <option value="" disabled>選択してください（必須）</option>
                   <option v-for="bt in businessTypes" :key="bt.code" :value="bt.code">
                     {{ bt.displayName ?? bt.code }}
                   </option>

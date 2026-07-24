@@ -104,14 +104,16 @@ public sealed class ChatController : ControllerBase
         // nginx 等のリバースプロキシでのバッファリングを抑止する。
         Response.Headers["X-Accel-Buffering"] = "no";
 
-        await WriteEventAsync("sources", new
-        {
-            sources = preparation.Sources
-                .Select(s => new { entryId = s.EntryId, title = s.Title, category = s.Category, seq = s.Seq }),
-        }, cancellationToken);
-
         try
         {
+            // sources イベントも try 内で送る（直後のクライアント切断による
+            // OperationCanceledException を下のハンドラで正常系として吸収するため）。
+            await WriteEventAsync("sources", new
+            {
+                sources = preparation.Sources
+                    .Select(s => new { entryId = s.EntryId, title = s.Title, category = s.Category, seq = s.Seq }),
+            }, cancellationToken);
+
             await foreach (var streamEvent in _aiClient.StreamChatAsync(preparation.Request, cancellationToken))
             {
                 if (streamEvent.Type == "delta")

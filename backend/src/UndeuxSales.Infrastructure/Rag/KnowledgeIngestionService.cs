@@ -17,6 +17,28 @@ public sealed class KnowledgeIngestionService
     /// <summary>アップロードファイルの上限サイズ（20MB）。</summary>
     public const long MaxFileSizeBytes = 20 * 1024 * 1024;
 
+    /// <summary>
+    /// 画像ファイルの上限サイズ（5MB）。Anthropic API の画像上限（約5MB/枚）を超える画像は
+    /// AI 説明生成が常に失敗するため、登録時点で拒否して利用者に予見可能にする。
+    /// あわせて base64 変換（約1.33倍の文字列化）による一時メモリ膨張も抑える。
+    /// </summary>
+    public const long MaxImageFileSizeBytes = 5 * 1024 * 1024;
+
+    /// <summary>
+    /// ファイルサイズを検証する（画像は5MB・その他は20MB）。バッファ確保前の事前検証用に
+    /// 公開する（コントローラは確保前に呼び、本サービスの登録処理でも再検証する）。
+    /// </summary>
+    public static void ValidateFileSize(string fileName, long length)
+    {
+        var isImage = KnowledgeTextExtractor.IsImage(fileName);
+        var limit = isImage ? MaxImageFileSizeBytes : MaxFileSizeBytes;
+        if (length > limit)
+        {
+            throw new AppException(ErrorCodes.ImportFileTooLarge, 413,
+                $"ファイルサイズが上限（{(isImage ? "画像は" : "")}{limit / 1024 / 1024}MB）を超えています。");
+        }
+    }
+
     private readonly KnowledgeRepository _repository;
     private readonly IAiChatClient _aiClient;
     private readonly ILogger<KnowledgeIngestionService> _logger;
@@ -79,11 +101,7 @@ public sealed class KnowledgeIngestionService
             throw new AppException(ErrorCodes.InvalidRequest, 400, "ファイルが空です。");
         }
 
-        if (fileData.LongLength > MaxFileSizeBytes)
-        {
-            throw new AppException(ErrorCodes.ImportFileTooLarge, 413,
-                $"ファイルサイズが上限（{MaxFileSizeBytes / 1024 / 1024}MB）を超えています。");
-        }
+        ValidateFileSize(fileName, fileData.LongLength);
 
         var resolvedTitle = string.IsNullOrWhiteSpace(title)
             ? Path.GetFileNameWithoutExtension(fileName)
@@ -132,7 +150,8 @@ public sealed class KnowledgeIngestionService
 
     /// <summary>
     /// 再インデックス。原本は不変のまま、現在の本文からチャンク・ベクターを再生成する。
-    /// 本文が空のファイルナレッジ（過去の抽出失敗）は原本から抽出をやり直す。
+    /// 抽出失敗中（index_state=failed）または本文が空のファイルナレッジは原本から抽出を
+    /// やり直す（失敗状態は再抽出が成功するまで indexed に戻さない＝回復パスの保証）。
     /// </summary>
     public async Task<KnowledgeDetail> ReindexAsync(Guid id, string updatedBy, CancellationToken cancellationToken = default)
     {
@@ -142,13 +161,20 @@ public sealed class KnowledgeIngestionService
         var indexState = "indexed";
         string? indexError = null;
 
-        if (string.IsNullOrWhiteSpace(content) && current.SourceType == "file")
+        if (current.SourceType == "file" &&
+            (string.IsNullOrWhiteSpace(content) || current.IndexState == "failed"))
         {
             var file = await _repository.GetFileAsync(id, cancellationToken);
             if (file is not null)
             {
+                // 抽出失敗エントリの content は登録時の説明文のみ（抽出テキストは未混入）。
+                // これを description として渡すことで、登録時と同じ「説明文＋抽出結果」の
+                // 合成が再現され、再実行しても説明文が重複しない（冪等）。
+                var description = current.IndexState == "failed" && !string.IsNullOrWhiteSpace(content)
+                    ? content
+                    : null;
                 (content, indexState, indexError) =
-                    await ExtractContentAsync(file.FileName, file.Data, null, cancellationToken);
+                    await ExtractContentAsync(file.FileName, file.Data, description, cancellationToken);
             }
         }
 

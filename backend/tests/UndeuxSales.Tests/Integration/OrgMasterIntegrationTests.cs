@@ -155,6 +155,25 @@ public sealed class OrgMasterIntegrationTests
     }
 
     [Fact]
+    public async Task Database_RejectsCrossBusinessTypeSectionReference()
+    {
+        // アプリ側検証だけでなく、複合FKにより業態越境参照が DB レベルでも遮断されること
+        // （同時編集による check-then-write のすり抜け対策）。
+        await using var connection = new Npgsql.NpgsqlConnection(_fixture.ConnectionString);
+        await connection.OpenAsync();
+
+        var foreignSectionId = await connection.ExecuteScalarAsync<long>(
+            "SELECT id FROM m_buyer_section WHERE business_type_code = '01' ORDER BY id LIMIT 1;");
+
+        var ex = await Assert.ThrowsAsync<Npgsql.PostgresException>(() =>
+            connection.ExecuteAsync("""
+                INSERT INTO m_section_department (business_type_code, dept_code, dept_name, buyer_section_id)
+                VALUES ('03', '9X', 'DB越境検証', @sectionId);
+                """, new { sectionId = foreignSectionId }));
+        Assert.Equal(Npgsql.PostgresErrorCodes.ForeignKeyViolation, ex.SqlState);
+    }
+
+    [Fact]
     public async Task SchemaReapply_DoesNotResurrectOperatorDeletedSeedRows()
     {
         // デプロイごとの schema.sql 再適用（DataLoader）で、運用者が削除したシード行が

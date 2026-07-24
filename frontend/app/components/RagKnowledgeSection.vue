@@ -270,6 +270,9 @@ function validateForm(): string | null {
     if (!isAllowedRagFileName(createFile.value.name)) {
       return `対応していないファイル形式です（${RAG_FILE_ACCEPT} のみ登録できます）。`
     }
+    if (isRagImageFileName(createFile.value.name) && createFile.value.size > RAG_MAX_IMAGE_BYTES) {
+      return `画像ファイルのサイズが上限（${formatFileSize(RAG_MAX_IMAGE_BYTES)}）を超えています。`
+    }
     if (createFile.value.size > RAG_MAX_FILE_BYTES) {
       return `ファイルサイズが上限（${formatFileSize(RAG_MAX_FILE_BYTES)}）を超えています。`
     }
@@ -839,7 +842,7 @@ async function downloadFile(item: KnowledgeItem): Promise<void> {
             <template v-if="dialogMode === 'create' && createMode === 'file'">
               <div>
                 <label class="mb-1 block text-xs font-medium text-slate-500">
-                  ファイル（{{ RAG_FILE_ACCEPT }}・最大 {{ formatFileSize(RAG_MAX_FILE_BYTES) }}）
+                  ファイル（{{ RAG_FILE_ACCEPT }}・最大 {{ formatFileSize(RAG_MAX_FILE_BYTES) }}、画像は {{ formatFileSize(RAG_MAX_IMAGE_BYTES) }}）
                 </label>
                 <input
                   ref="fileInput"

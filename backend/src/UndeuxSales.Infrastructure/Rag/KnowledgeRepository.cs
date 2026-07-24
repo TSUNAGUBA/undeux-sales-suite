@@ -156,7 +156,10 @@ public sealed class KnowledgeRepository
         await using var transaction = await connection.BeginTransactionAsync(cancellationToken);
 
         var conflictClause = data.SeedSlug is null ? string.Empty : "ON CONFLICT (seed_slug) DO NOTHING";
-        var id = await connection.ExecuteScalarAsync<Guid?>(new CommandDefinition($"""
+        Guid? id;
+        try
+        {
+            id = await connection.ExecuteScalarAsync<Guid?>(new CommandDefinition($"""
             INSERT INTO knowledge.entry
                 (scope, category, business_type_code, dept_code, biz_domain,
                  title, content, source_type, file_name, file_content_type, file_size_bytes, file_data,
@@ -189,6 +192,11 @@ public sealed class KnowledgeRepository
                 createdBy = data.CreatedBy,
             },
             transaction, cancellationToken: cancellationToken));
+        }
+        catch (PostgresException ex) when (ex.SqlState == PostgresErrorCodes.ForeignKeyViolation)
+        {
+            throw TranslateForeignKeyViolation();
+        }
 
         if (id is null)
         {
@@ -222,7 +230,10 @@ public sealed class KnowledgeRepository
         await using var connection = await _connectionFactory.OpenConnectionAsync(cancellationToken);
         await using var transaction = await connection.BeginTransactionAsync(cancellationToken);
 
-        var affected = await connection.ExecuteAsync(new CommandDefinition("""
+        int affected;
+        try
+        {
+            affected = await connection.ExecuteAsync(new CommandDefinition("""
             UPDATE knowledge.entry
             SET title = @title,
                 content = @content,
@@ -243,6 +254,11 @@ public sealed class KnowledgeRepository
                 indexState, indexError, chunkCount = chunks.Count, updatedBy,
             },
             transaction, cancellationToken: cancellationToken));
+        }
+        catch (PostgresException ex) when (ex.SqlState == PostgresErrorCodes.ForeignKeyViolation)
+        {
+            throw TranslateForeignKeyViolation();
+        }
 
         if (affected == 0)
         {
@@ -440,6 +456,14 @@ public sealed class KnowledgeRepository
             existing.Value.Id, title, content, KnowledgeTaxonomy.CategoryGroup,
             null, null, null, "indexed", null, chunks, "system", cancellationToken);
     }
+
+    /// <summary>
+    /// エントリ書込時の FK 違反を想定エラー（400）へ変換する。knowledge.entry の FK は
+    /// business_type_code → business_type(code) のみ（UI 外から未知の業態コードを
+    /// 指定した場合。原則: 想定エラーにはエラーコードを付与し 500 にしない）。
+    /// </summary>
+    private static AppException TranslateForeignKeyViolation() =>
+        new(ErrorCodes.InvalidRequest, 400, "指定された業態コードが存在しません。");
 
     private static async Task InsertChunksAsync(
         NpgsqlConnection connection,
