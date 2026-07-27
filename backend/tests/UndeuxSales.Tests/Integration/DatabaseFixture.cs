@@ -37,17 +37,50 @@ public sealed class DatabaseFixture : IAsyncLifetime
 
     public async Task InitializeAsync()
     {
+        // 初期化のどの段で落ちたかを特定できるようにする。ここで例外が出ると
+        // コレクション（統合テスト全件）が一括失敗するため、素の例外だけでは原因を追えない。
+        try
+        {
+            await InitializeCoreAsync();
+        }
+        catch (Exception ex)
+        {
+            throw new InvalidOperationException(
+                $"統合テストのDB初期化に失敗しました（段階: {_initStage}、接続先: {SafeConnectionInfo()}）。詳細: {ex}",
+                ex);
+        }
+    }
+
+    /// <summary>初期化の進行段階（失敗時の切り分け用）。</summary>
+    private string _initStage = "(未開始)";
+
+    /// <summary>接続情報のうち資格情報を除いた部分（ログ・例外メッセージ用）。</summary>
+    private string SafeConnectionInfo()
+    {
+        var builder = new Npgsql.NpgsqlConnectionStringBuilder(ConnectionString);
+        return $"Host={builder.Host};Port={builder.Port};Database={builder.Database}";
+    }
+
+    private async Task InitializeCoreAsync()
+    {
+        _initStage = "EnsureTestDatabase";
         await EnsureTestDatabaseAsync();
+        _initStage = "ApplySchema(1回目)";
         await ApplySchemaAsync();
+        _initStage = "Truncate";
         await TruncateAsync();
         // schema.sql は CREATE 系の他に業態マスタの代表データ（01〜06）の `INSERT ... ON CONFLICT
         // DO NOTHING` を含む。TRUNCATE 後にこの参照データを再投入するため schema.sql を再適用する。
         // 全 DDL は IF NOT EXISTS / IF EXISTS 形式で冪等、INSERT も DO NOTHING なので副作用は無い。
         // ※将来 schema.sql に非冪等な DML を追加するときは、business_type の seed を別ファイルに
         //   切り出し本フィクスチャから個別に呼ぶ形へリファクタすること。
+        _initStage = "ApplySchema(2回目・参照データ再投入)";
         await ApplySchemaAsync();
+        _initStage = "Seed";
         await SeedAsync();
+        _initStage = "WebApplicationFactory 構築";
         Factory = new CustomWebApplicationFactory(ConnectionString);
+        _initStage = "完了";
     }
 
     public async Task DisposeAsync()

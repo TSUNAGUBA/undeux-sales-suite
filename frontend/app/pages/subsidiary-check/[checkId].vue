@@ -84,7 +84,8 @@ async function load(): Promise<void> {
     // 画像取得は補助表示のため非ブロッキング（失敗しても指摘・判定は表示する。原則4）。
     void loadImages(result)
   } catch (error) {
-    // notFound / errorMessage は load だけが書くため、判定も load 世代で行う。
+    // notFound はここだけが書き、errorMessage も設定するのはここだけ（解除は pollDetail も行う）。
+    // いずれも load が主体のため、判定は load 世代で行う。
     // ここで requestSeq を見ると、後着のポーリングに打ち消されてエラー状態が
     // どこにも設定されないまま握り潰され、直前のチェックの判定結果が
     // 別 checkId の画面に残り続ける（誤ったレコードへの帰属表示）。
@@ -123,7 +124,8 @@ function startPolling(): void {
 
 /**
  * ポーリングによる詳細の再取得。
- * ローディング表示・エラーパネルは切り替えず（画面がちらつかない・壊れない）、
+ * ローディング表示は切り替えない（画面がちらつかない）。エラーパネルは「立てない」が、
+ * 取得に成功した場合は陳腐化したエラーを解除する（下記参照）。
  * 失敗しても次回の周期で再試行する（ネットワーク断等のグレースフルデグラデーション・原則4）。
  * 画像はチェック登録時に確定していて以降変化しないため、再取得しない。
  */
@@ -312,10 +314,13 @@ function goBack(): void {
   router.back()
 }
 
+// 動的ルートのパラメータが変わるとページは再マウントされるため、通常この watch は発火しない
+// （既存の product-master/[productId].vue と同じ防御的パターン）。将来ページキーを固定して
+// 再マウントを止めた場合に備え、アンマウント時と同じ手順で画像をリセットしてから読み直す。
 watch(checkId, () => {
-  // 別チェックへ遷移したら、前のチェックの画像を必ず破棄してから読み直す。
-  // ポーリング応答が後着して detail だけ新チェックに入れ替わると、
-  // ギャラリーが前チェックの画像のまま残る（目視確認の根拠画像の帰属ズレ）。
+  // onBeforeUnmount と対称にする: 世代を進めてから破棄しないと、前チェックの
+  // 飛行中の loadImages が世代ガードを通過し、新チェックの画面に前の画像が載る。
+  imagesRequestSeq += 1
   revokeGallery()
   void load()
 })
@@ -343,6 +348,20 @@ onMounted(() => {
       >
         チェック履歴一覧へ
       </NuxtLink>
+      <!--
+        再読込は StatusBlock の外に置く。StatusBlock はエラー時にスロットごと隠すため、
+        中に置くとエラー時に再試行導線ごと消えて自力で復帰できなくなる（U-4）。
+      -->
+      <button
+        v-if="errorMessage && !notFound"
+        type="button"
+        class="inline-flex min-h-[36px] items-center gap-1 rounded-lg border border-slate-300 px-3 py-2 text-xs text-slate-600 hover:bg-slate-50 disabled:opacity-50"
+        :disabled="loading"
+        @click="load"
+      >
+        <RotateCcw class="h-3.5 w-3.5" :class="loading ? 'animate-spin' : ''" />
+        再読込
+      </button>
     </div>
 
     <div

@@ -293,7 +293,9 @@ gh secret set FRONTEND_ORIGIN      --repo $Repo --body "https://$FirebaseProject
 gh secret set RDS_CONNECTION_STRING --repo $Repo --body $RdsConnectionString
 gh secret set EC2_HOST             --repo $Repo --body $Ec2Ip
 gh secret set EC2_USER             --repo $Repo --body "ubuntu"
-# AIチャット（業務/商談）を有効化する場合のみ（未登録でもデプロイは成功し、チャットのみ「AI未設定」になる）
+# AI機能（AIチャット・副資材チェック）を有効化する場合のみ
+# （未登録でもデプロイは成功し、該当機能のみ「AI未設定」になる）
+$AnthropicApiKey = "（Anthropic Console で発行したAPIキー）"
 gh secret set ANTHROPIC_API_KEY    --repo $Repo --body $AnthropicApiKey
 
 # ファイルから登録するもの（サービスアカウントJSON・SSH秘密鍵）
@@ -383,12 +385,25 @@ Start-Process "https://$FirebaseProjectId.web.app"
    > 変更が必要な場合は、vhost 単位で効く `nginx-proxy` の `vhost.d/<VIRTUAL_HOST>` 機構を用い、
    > 全体設定（`conf.d`）には手を入れないでください。実施前に共有 EC2 の管理者と調整すること。
 
-3. **RDS ストレージ使用率のアラーム。** チェック記録の画像（1件あたり最大 合計20MB）は
-   記録保護のため自動削除されません（`docs/design.md` §13.6）。運用開始時に
-   CloudWatch でストレージ空き容量のアラームを設定し、通知先を決めてください。
+3. **監視の通知先（SNS トピック）を用意する。** 以降のアラームはすべてこのトピックへ通知します。
 
    ```powershell
-   # 例: 空き容量が 10GB を下回ったら通知（$SnsTopicArn は事前に作成した SNS トピック）
+   $SnsTopicArn = aws sns create-topic --name undeux-alerts --query "TopicArn" --output text
+   aws sns subscribe --topic-arn $SnsTopicArn --protocol email --notification-endpoint "運用担当のメールアドレス"
+   ```
+
+   > 購読直後に確認メールが届きます。**本文のリンクを承認するまで通知は届きません。**
+   > `aws sns list-subscriptions-by-topic --topic-arn $SnsTopicArn` の `SubscriptionArn` が
+   > `PendingConfirmation` でなくなれば有効です。
+
+4. **RDS ストレージ使用率のアラーム。** チェック記録の画像（1件あたり最大 合計20MB）は
+   記録保護のため自動削除されません（`docs/design.md` §13.6）。空き容量のアラームを設定します。
+
+   ```powershell
+   # DB 識別子はステップ2で undeux-db として作成済み
+   $RdsInstanceId = "undeux-db"
+
+   # 空き容量が 10GB を下回ったら通知
    aws cloudwatch put-metric-alarm `
      --alarm-name "undeux-rds-free-storage" `
      --namespace AWS/RDS --metric-name FreeStorageSpace `
@@ -398,102 +413,180 @@ Start-Process "https://$FirebaseProjectId.web.app"
      --alarm-actions $SnsTopicArn
    ```
 
-4. **api コンテナのメモリ監視。** 副資材チェックは1リクエストで最大約100MBを保持します。
-   コンテナのメモリ上限は 512MiB で、cgroup 下の .NET GC ヒープハードリミットは約 384MB。
-   収支上の使用量が約310MB のため、**余裕（ヘッドルーム）は約74MB**（384−310）しかありません
-   （収支は `docs/design.md` §13.5）。画像配信や DB 読取の一時コピーは収支外のため、
-   **同時アクセスが重なると超過しえます**（詳細画面を同時に2名が開くと到達しうる水準）。
-   超過すると api コンテナが OOM Kill され、`restart: unless-stopped` で無言復帰するため、
-   症状は「チェックがときどき処理中のまま」としてしか現れません。
+5. **api コンテナのメモリ監視と OOM 検知。** 手順が長いため、次の「ステップ8-3」に分けて記載します。
+   **この設定は必須です**（`docs/design.md` §13.5 が受容したメモリリスクの検知手段そのものであるため）。
 
-   > **ホスト全体のメモリ指標では検知できません。** api の上限は自身の cgroup 512MiB ですが、
-   > EC2 は `t3.medium`（4GiB）です。api が上限で OOM されてもホスト全体では十数%にすぎず、
-   > CloudWatch エージェントの `mem_used_percent`（`CWAgent` 名前空間・`InstanceId` 次元）を
-   > 何%に設定しても発火しません。また CloudWatch Container Insights は ECS / EKS 等が対象で、
-   > **素の Docker on EC2（本構成）はサポート外**です。コンテナ粒度の値を自分で発行する必要があります。
+> **同時実行数を増やしたい場合:** 先に `infra/aws/docker-compose.ec2.yml` の `api` の
+> `memory`（既定 512m）を EC2 の空き容量を確認のうえ引き上げてください。
+> メモリを据え置いたまま同時実行数だけを増やすと OOM の原因になります（`docs/design.md` §13.5）。
 
-   **(1) コンテナのメモリ使用率を CloudWatch へ発行する（EC2 上で cron 登録）**
+### ステップ8-3: api コンテナのメモリ監視と OOM 検知（必須）
 
-   `docker stats` の `MemPerc` はコンテナの上限（512MiB）に対する比率なので、そのまま使えます。
+副資材チェックは1リクエストで最大約100MBを保持します。コンテナのメモリ上限は 512MiB で、
+cgroup 下の .NET GC ヒープハードリミットはその 75%（384MiB）。収支上の使用量が約310MB のため、
+**余裕（ヘッドルーム）は約74MB** しかありません（収支は `docs/design.md` §13.5）。
+画像配信や DB 読取の一時コピーは収支外のため、**詳細画面を同時に2名が開く程度の同時アクセスで
+超過しえます**。超過すると api コンテナが OOM Kill され、`restart: unless-stopped` で
+無言復帰するため、症状は「チェックがときどき処理中のまま」としてしか現れません。
 
-   > **前提:** EC2 インスタンスに、`cloudwatch:PutMetricData` を許可した IAM ロールを
-   > アタッチしておいてください（未アタッチだと発行が `AccessDenied` で失敗します）。
-   > 手順3-3 でロールを付けていない場合は、IAM でロールを作成し
-   > `aws ec2 associate-iam-instance-profile --instance-id $InstanceId --iam-instance-profile Name=<ロール名>`
-   > で後付けできます。
+> **ホスト全体のメモリ指標では検知できません。** api の上限は自身の cgroup 512MiB ですが、
+> EC2 は `t3.medium`（4GiB）です。api が上限で OOM されてもホスト全体では十数%にすぎず、
+> `mem_used_percent`（`CWAgent` 名前空間・`InstanceId` 次元）を何%に設定しても発火しません。
+> また CloudWatch Container Insights は ECS / EKS 等が対象で、**素の Docker on EC2（本構成）は
+> サポート外**です。コンテナ粒度の値を自分で発行する必要があります。
+>
+> **メモリ使用率の監視だけでは足りません。** 超過は数秒〜十数秒の瞬間バーストで起き、
+> OOM Kill 後は再起動で使用量がリセットされるため、点サンプルには痕跡が残りません。
+> **確実な信号は「コンテナが再起動したこと」そのもの**なので、再起動回数も併せて発行します。
 
-   まずローカル（PowerShell）から EC2 へ接続します。
+#### 8-3-1. EC2 に AWS CLI を導入する
 
-   ```powershell
-   ssh -i "$HOME\.ssh\undeux-ec2" ubuntu@$Ec2Ip
-   ```
+ローカル（PowerShell）から接続します。
 
-   以降は **EC2 上（bash）** で実行します。
+```powershell
+ssh -i "$HOME\.ssh\undeux-ec2" ubuntu@$Ec2Ip
+```
 
-   ```bash
-   sudo tee /usr/local/bin/undeux-api-mem.sh > /dev/null <<'EOF'
-   #!/usr/bin/env bash
-   set -euo pipefail
-   # cron の PATH は最小限（/usr/bin:/bin）のため、docker / aws の場所を明示的に足す
-   export PATH="/usr/local/bin:/snap/bin:$PATH"
-   # デプロイ先はワークフローが scp する ~/undeux-sales-suite（ユーザーは EC2_USER）
-   cd "$HOME/undeux-sales-suite/infra/aws"
-   # コンテナ名は compose のプロジェクト名に依存するため、ID で解決する（名前をハードコードしない）
-   cid="$(docker compose -f docker-compose.ec2.yml --env-file .env ps -q api)"
-   [ -n "$cid" ] || exit 0
-   pct="$(docker stats --no-stream --format '{{.MemPerc}}' "$cid" | tr -d '%')"
-   iid="$(curl -s -H "X-aws-ec2-metadata-token: $(curl -sX PUT http://169.254.169.254/latest/api/token \
-     -H 'X-aws-ec2-metadata-token-ttl-seconds: 60')" http://169.254.169.254/latest/meta-data/instance-id)"
-   aws cloudwatch put-metric-data --namespace UndeuxSales \
-     --metric-name ApiContainerMemoryPercent --unit Percent --value "$pct" \
-     --dimensions InstanceId="$iid"
-   EOF
-   sudo chmod +x /usr/local/bin/undeux-api-mem.sh
-   # 動作確認（エラーが出ないこと）
-   /usr/local/bin/undeux-api-mem.sh && echo OK
-   # 5分間隔で発行
-   ( crontab -l 2>/dev/null; echo "*/5 * * * * /usr/local/bin/undeux-api-mem.sh" ) | crontab -
-   ```
+以降は **EC2 上（bash）** で実行します。
 
-   **(2) 発行した値にアラームを設定する**
+```bash
+sudo snap install aws-cli --classic
+aws --version   # 確認（/snap/bin/aws にインストールされる）
+exit
+```
 
-   ```powershell
-   # $InstanceId はステップ3-3、$SnsTopicArn は事前に作成した SNS トピック
-   aws cloudwatch put-metric-alarm `
-     --alarm-name "undeux-api-memory" `
-     --namespace UndeuxSales --metric-name ApiContainerMemoryPercent `
-     --dimensions Name=InstanceId,Value=$InstanceId `
-     --statistic Average --period 300 --evaluation-periods 2 `
-     --threshold 85 --comparison-operator GreaterThanThreshold `
-     --treat-missing-data breaching `
-     --alarm-actions $SnsTopicArn
-   ```
+#### 8-3-2. EC2 にメトリクス発行権限（IAM インスタンスプロファイル）を付与する
 
-   > `--treat-missing-data breaching` を付けるのは、**メトリクスが届かなくなったこと自体を検知する**
-   > ためです（既定の `missing` では、発行スクリプトが壊れてもアラームは無通知のまま
-   > `INSUFFICIENT_DATA` に留まり、「監視できている」という誤解を招きます）。
+ステップ3-3 の `run-instances` ではロールを付けていないため、ここで作成して後付けします。
+権限は本用途の名前空間に限定します（最小権限の原則）。**ローカル（PowerShell）** で実行します。
 
-   **(3) OOM 再起動が起きたかを事後確認する**
+```powershell
+# 信頼ポリシー（EC2 がこのロールを引き受けられるようにする）
+'{"Version":"2012-10-17","Statement":[{"Effect":"Allow","Principal":{"Service":"ec2.amazonaws.com"},"Action":"sts:AssumeRole"}]}' | Set-Content -Path trust.json -NoNewline
+# 許可ポリシー（UndeuxSales 名前空間への PutMetricData のみ）
+'{"Version":"2012-10-17","Statement":[{"Effect":"Allow","Action":"cloudwatch:PutMetricData","Resource":"*","Condition":{"StringEquals":{"cloudwatch:namespace":"UndeuxSales"}}}]}' | Set-Content -Path metrics-policy.json -NoNewline
 
-   ローカル（PowerShell）から接続し、以降は EC2 上（bash）で実行します。
+aws iam create-role --role-name undeux-ec2-metrics --assume-role-policy-document file://trust.json
+aws iam put-role-policy --role-name undeux-ec2-metrics --policy-name PutUndeuxMetrics --policy-document file://metrics-policy.json
+# インスタンスプロファイル（EC2 へアタッチできる入れ物。ロールとは別に作成が必要）
+aws iam create-instance-profile --instance-profile-name undeux-ec2-metrics
+aws iam add-role-to-instance-profile --instance-profile-name undeux-ec2-metrics --role-name undeux-ec2-metrics
+Start-Sleep -Seconds 10   # プロファイル作成の反映待ち
+aws ec2 associate-iam-instance-profile --instance-id $InstanceId --iam-instance-profile Name=undeux-ec2-metrics
+```
 
-   ```powershell
-   ssh -i "$HOME\.ssh\undeux-ec2" ubuntu@$Ec2Ip
-   ```
+#### 8-3-3. メトリクスを発行する（EC2 上で cron 登録）
 
-   ```bash
-   cd ~/undeux-sales-suite/infra/aws
-   # RestartCount が増えていれば再起動が発生している
-   docker inspect --format '{{.RestartCount}} {{.State.ExitCode}}' \
-     "$(docker compose -f docker-compose.ec2.yml --env-file .env ps -q api)"
-   # 終了コード 137 は SIGKILL（OOM Kill を含む）。ホスト側の記録でも裏取りできる
-   dmesg | grep -i -E 'oom|killed process' | tail
-   ```
+`docker stats` の `MemPerc` はコンテナの上限（512MiB）に対する比率です。
+あわせて、前回実行からの**再起動回数の増分**を発行します。
 
-   > `docker inspect` の `.State.OOMKilled` は**再起動時に false へリセットされる**ため、
-   > 無言復帰した後の事後確認には使えません。`RestartCount` の増加と終了コード 137、
-   > および `dmesg` の記録で判断してください。
+```powershell
+ssh -i "$HOME\.ssh\undeux-ec2" ubuntu@$Ec2Ip
+```
 
+以降は **EC2 上（bash）** で実行します。以下はそのまま貼り付けてください
+（ヒアドキュメントの終端 `EOF` は行頭から始める必要があります）。
+
+```bash
+sudo tee /usr/local/bin/undeux-api-mem.sh > /dev/null <<'EOF'
+#!/usr/bin/env bash
+set -euo pipefail
+# cron の PATH は最小限（/usr/bin:/bin）のため、docker / aws の場所を明示的に足す
+export PATH="/usr/local/bin:/snap/bin:$PATH"
+# デプロイ先はワークフローが scp する ~/undeux-sales-suite（ユーザーは EC2_USER）
+cd "$HOME/undeux-sales-suite/infra/aws"
+# コンテナ名は compose のプロジェクト名に依存するため、ID で解決する（名前をハードコードしない）
+cid="$(docker compose -f docker-compose.ec2.yml --env-file .env ps -q api)"
+[ -n "$cid" ] || exit 0
+
+pct="$(docker stats --no-stream --format '{{.MemPerc}}' "$cid" | tr -d '%')"
+
+# 再起動回数の増分（OOM Kill の確実な信号。値そのものではなく差分を出す）
+now="$(docker inspect --format '{{.RestartCount}}' "$cid")"
+state="$HOME/.undeux-api-restarts"
+prev="$(cat "$state" 2>/dev/null || echo "$now")"
+printf '%s' "$now" > "$state"
+if [ "$now" -ge "$prev" ]; then delta=$(( now - prev )); else delta=0; fi
+
+iid="$(curl -s -H "X-aws-ec2-metadata-token: $(curl -sX PUT http://169.254.169.254/latest/api/token \
+  -H 'X-aws-ec2-metadata-token-ttl-seconds: 60')" http://169.254.169.254/latest/meta-data/instance-id)"
+
+aws cloudwatch put-metric-data --namespace UndeuxSales \
+  --metric-name ApiContainerMemoryPercent --unit Percent --value "$pct" \
+  --dimensions InstanceId="$iid"
+aws cloudwatch put-metric-data --namespace UndeuxSales \
+  --metric-name ApiContainerRestarts --unit Count --value "$delta" \
+  --dimensions InstanceId="$iid"
+EOF
+```
+
+続けて、実行権限の付与・動作確認・cron 登録を行います。
+
+```bash
+sudo chmod +x /usr/local/bin/undeux-api-mem.sh
+# 動作確認（エラーが出ないこと。出たら権限・CLI 導入を見直す）
+/usr/local/bin/undeux-api-mem.sh && echo OK
+# 1分間隔で発行（瞬間バーストを取りこぼさないため）
+( crontab -l 2>/dev/null; echo "* * * * * /usr/local/bin/undeux-api-mem.sh" ) | crontab -
+exit
+```
+
+#### 8-3-4. アラームを設定する
+
+**ローカル（PowerShell）** で実行します。
+
+```powershell
+# (A) 再起動の検知（OOM Kill の確実な信号）。1回でも起きたら通知する
+aws cloudwatch put-metric-alarm `
+  --alarm-name "undeux-api-restart" `
+  --namespace UndeuxSales --metric-name ApiContainerRestarts `
+  --dimensions Name=InstanceId,Value=$InstanceId `
+  --statistic Sum --period 300 --evaluation-periods 1 `
+  --threshold 0 --comparison-operator GreaterThanThreshold `
+  --treat-missing-data notBreaching `
+  --alarm-actions $SnsTopicArn --ok-actions $SnsTopicArn
+
+# (B) メモリ逼迫の予兆。GC ハードリミット（上限の75%）に達したら通知する
+aws cloudwatch put-metric-alarm `
+  --alarm-name "undeux-api-memory" `
+  --namespace UndeuxSales --metric-name ApiContainerMemoryPercent `
+  --dimensions Name=InstanceId,Value=$InstanceId `
+  --statistic Maximum --period 60 --evaluation-periods 2 `
+  --threshold 75 --comparison-operator GreaterThanThreshold `
+  --treat-missing-data breaching `
+  --alarm-actions $SnsTopicArn --ok-actions $SnsTopicArn
+```
+
+> - (A) は**発生の検知**（`Sum > 0`）、(B) は**予兆の検知**です。閾値 75% は GC ヒープ
+>   ハードリミット（512MiB の 75% ＝ 384MiB）に合わせています。85% では手遅れになります。
+> - (B) の `--treat-missing-data breaching` は、**発行が止まったこと自体を検知する**ためです
+>   （既定の `missing` では、スクリプトが壊れてもアラームは無通知のまま `INSUFFICIENT_DATA` に
+>   留まり、「監視できている」という誤解を招きます）。デプロイ中の一時的な欠測で鳴った場合は
+>   `--ok-actions` の復旧通知で収束を確認できます。
+
+#### 8-3-5. OOM だったかを事後確認する
+
+```powershell
+ssh -i "$HOME\.ssh\undeux-ec2" ubuntu@$Ec2Ip
+```
+
+以降は **EC2 上（bash）** で実行します。
+
+```bash
+cd ~/undeux-sales-suite/infra/aws
+# 再起動回数（増えていれば再起動が発生している）
+docker inspect --format '{{.RestartCount}}' \
+  "$(docker compose -f docker-compose.ec2.yml --env-file .env ps -q api)"
+# OOM だったかはカーネルログで判断する（要 sudo）
+sudo dmesg -T | grep -i 'memory cgroup out of memory' | tail
+sudo journalctl -k --since '-1h' | grep -i 'out of memory' | tail
+```
+
+> `docker inspect` の `.State.OOMKilled` と `.State.ExitCode` は、**いずれもコンテナ再起動時に
+> リセットされます**（moby の `setRunning()` が両方を初期化）。無言復帰した後の事後確認には
+> 使えないため、判断は `RestartCount` の増加とカーネルログで行ってください。
+> Ubuntu 24.04 は `kernel.dmesg_restrict=1` が既定のため、`dmesg` には `sudo` が必要です。
+   > Ubuntu 24.04 は `kernel.dmesg_restrict=1` が既定のため、`dmesg` には `sudo` が必要です。
 > **同時実行数を増やしたい場合:** 先に `infra/aws/docker-compose.ec2.yml` の `api` の
 > `memory`（既定 512m）を EC2 の空き容量を確認のうえ引き上げてください。
 > メモリを据え置いたまま同時実行数だけを増やすと OOM の原因になります（`docs/design.md` §13.5）。
