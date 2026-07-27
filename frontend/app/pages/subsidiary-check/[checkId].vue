@@ -52,8 +52,13 @@ const detail = ref<SubsidiaryCheckDetail | null>(null)
 const loading = ref(true)
 const errorMessage = ref<string | null>(null)
 const notFound = ref(false)
-// 連続遷移で古い応答が後着しても表示を上書きしないためのリクエスト世代。
+// 連続遷移で古い応答が後着しても表示を上書きしないためのリクエスト世代
+// （load・ポーリングの両方が進める＝detail への書込順序を決める）。
 let requestSeq = 0
+// ローディング表示のライフサイクル専用の世代（load のみが進める）。
+// requestSeq と分けないと、実行中の load をポーリングが追い越したときに
+// loading が true のまま取り残される（W-1 の回帰防止）。
+let loadingSeq = 0
 
 /** HTTP 404（チェックが見つからない）か。エラーコードはバックエンド採番のためステータスで判定する。 */
 function isNotFoundError(error: unknown): boolean {
@@ -63,6 +68,11 @@ function isNotFoundError(error: unknown): boolean {
 }
 
 async function load(): Promise<void> {
+  // ローディング表示のライフサイクルは load 同士でのみ打ち消し合わせる。
+  // detail への書込順序（requestSeq）と分けているのは、後発のポーリングが
+  // 実行中の load を追い越すと finally が loading を戻せず、スピナー表示のまま
+  // 復帰不能（再読込ボタンごと消える）になるため。
+  const loadSeq = ++loadingSeq
   const seq = ++requestSeq
   loading.value = true
   errorMessage.value = null
@@ -83,7 +93,7 @@ async function load(): Promise<void> {
       errorMessage.value = apiErrorMessage(error)
     }
   } finally {
-    if (seq === requestSeq) {
+    if (loadSeq === loadingSeq) {
       loading.value = false
     }
   }

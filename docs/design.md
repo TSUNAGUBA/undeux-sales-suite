@@ -159,10 +159,10 @@ flowchart TD
 | POST | `/api/chat/business` | 業務チャット（`domain=system\|quality\|logistics`＋会話履歴）。**SSE ストリーミング応答** |
 | POST | `/api/chat/negotiation` | 商談チャット（`businessTypeCode`＋`deptCode`＋会話履歴）。**SSE ストリーミング応答** |
 | GET | `/api/subsidiary-check` | 副資材チェック履歴（`page`・`pageSize`。作成日時降順） |
-| POST | `/api/subsidiary-check` | 副資材チェック登録（multipart: `productId`?・`productLabel`?・`instructionImages` 1〜3・`tagImages` 1〜10。各5MB・**合計20MB** 以内）。記録を作成して **AI はバックグラウンド実行**し、即座に processing の詳細を返す。**要 AI 設定（未設定は 503）** |
+| POST | `/api/subsidiary-check` | 副資材チェック登録（multipart: `productId`?・`productLabel`?・`instructionImages` 1〜3・`tagImages` 1〜10。各5MB・**合計20MB** 以内）。記録を作成して **AI はバックグラウンド実行**し、即座に processing の詳細を返す。**要 AI 設定（未設定は 503）／受付上限超過は 429（`UNDX-REQ-009`）** |
 | GET | `/api/subsidiary-check/{checkId}` | チェック詳細（判定・指摘・画像メタ・商品/付属情報） |
 | GET | `/api/subsidiary-check/{checkId}/images/{imageId}` | 入力画像バイナリ |
-| POST | `/api/subsidiary-check/{checkId}/rerun` | AI 再実行（**status=failed、または最後の実行開始（`started_at`）から10分超の processing（孤児回復）**。completed は記録保護のため 400） |
+| POST | `/api/subsidiary-check/{checkId}/rerun` | AI 再実行（**status=failed、または最後の実行開始（`started_at`）から10分超の processing（孤児回復）**。completed は記録保護のため 400／受付上限超過は 429） |
 | GET | `/api/subsidiary-check/rules` | ルールブック（しまむら副資材規定カタログ） |
 | GET | `/api/error-codes` | エラーコード一覧 |
 
@@ -253,7 +253,7 @@ flowchart TD
 | 領域 | 例 | 内容 |
 |------|-----|------|
 | AUTH | `UNDX-AUTH-001` | 認証エラー |
-| REQ | `UNDX-REQ-001`〜`008` | リクエスト検証エラー（`004`〜`008` は副資材チェックの画像検証: 未指定/形式不正/サイズ超過/枚数超過/合計サイズ超過。`008` はリクエストサイズ超過の共通マップにも使用） |
+| REQ | `UNDX-REQ-001`〜`009` | リクエスト検証エラー（`004`〜`008` は副資材チェックの画像検証: 未指定/形式不正/サイズ超過/枚数超過/合計サイズ超過。`008` はリクエストサイズ超過の共通マップにも使用。`009` は副資材チェックの受付上限超過＝429） |
 | IMP | `UNDX-IMP-001`〜`005` | 取込処理エラー |
 | DATA / SYS | `UNDX-DATA-001`〜`005` / `UNDX-SYS-001` | データ層 / 商品未登録 / フラグ未存在 / ナレッジ・マスタ未存在 / 副資材チェック未存在 / 想定外エラー |
 | AI | `UNDX-AI-001` / `UNDX-AI-008` / `UNDX-AI-009` | LLM 呼出失敗（502 または SSE error イベント） / AI 未設定（503。DD-04 の `UNDX-AI-*` 領域を継承） / AI 応答の解析失敗（`002`〜`007` は DD-04 予約済みのため `009` を採番） |
@@ -526,9 +526,11 @@ flowchart TD
 - MaxTokens は副資材チェック専用の固定値 4096（チャット用 `Anthropic:MaxOutputTokens` とは独立。
   応答が出力トークン上限で切り詰められた場合は明示メッセージ付きの failed 記録にする）。
 - **AI 呼出は同時実行 1 件に直列化**（SemaphoreSlim）し、順番待ちは 30 秒・AI 呼出自体は 120 秒で
-  タイムアウトさせる（いずれも failed 記録＋再実行導線）。さらに実行中＋待機中の**総数**にも
-  上限を設け、超過した要求は記録を作らずに 429 で拒否する（待機中の要求も画像バッファを
-  保持するため、件数を制限しないとメモリ上限に到達しうる）。メモリ収支が根拠:
+  タイムアウトさせる（いずれも failed 記録＋再実行導線）。さらに実行中＋待機中の**総数を4件**に
+  制限し、超過した要求は記録を作らずに 429（`UNDX-REQ-009`）で拒否する（待機中の要求も画像バッファを
+  保持するため、件数を制限しないとメモリ上限に到達しうる。内訳: 実行中1件 約100MB ＋ 待機3件 約60MB
+  ＋ ベースライン 約100〜150MB ＝ 約310MB で、GC ハードリミット約384MB に対し余裕がある）。
+  メモリ収支が根拠:
   api コンテナのメモリ上限は 512MiB で、cgroup 下の .NET GC ヒープハードリミットは約 384MB。
   1 リクエストの保持量は「画像 byte[] 20MB ＋ base64 文字列（.NET string は UTF-16 のため約53MB）
   ＋ HTTP ボディの UTF-8 直列化 約27MB」で約 100MB に達するため、同時実行を増やすと
