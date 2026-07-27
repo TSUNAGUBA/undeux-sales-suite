@@ -68,6 +68,13 @@ const detail = ref<SubsidiaryCheckDetail | null>(null)
 const loading = ref(true)
 const errorMessage = ref<string | null>(null)
 const notFound = ref(false)
+/**
+ * ポーリングを打ち切ったことの案内。errorMessage とは別にするのが要点。
+ * StatusBlock は error があるとスロットごとエラーパネルへ差し替えるため、これを
+ * errorMessage に入れると、打切りと同時に出るはずの「再実行」ボタン（孤児判定）まで
+ * 消えて一次回復手段に辿り着けなくなる。useMart の rebuildMessage と同じ「隠さない情報」扱い。
+ */
+const pollStoppedMessage = ref<string | null>(null)
 // 連続遷移で古い応答が後着しても表示を上書きしないためのリクエスト世代
 // （load・ポーリングの両方が進める＝detail への書込順序を決める）。
 let requestSeq = 0
@@ -135,6 +142,15 @@ async function load(): Promise<void> {
  */
 let pollGeneration = 0
 let polling = false
+/**
+ * このコンポーネントが破棄済みか。
+ * ポーリングの起動口が watch だけだった頃は「Vue が watch を止める＝停止保証」だったが、
+ * load() / rerun() からも起動するようになったため、その保証の外側に出た。
+ * 離脱後に飛行中だった応答が解決して startPolling を呼ぶと、stopPolling を呼ぶ主体
+ * （watch は停止済み・onUnmounted は実行済み）が居らず、止められないループが残る。
+ * 起動口が増えても安全なように、フラグで一元的に塞ぐ。
+ */
+let unmounted = false
 
 function sleep(ms: number): Promise<void> {
   return new Promise((resolve) => setTimeout(resolve, ms))
@@ -146,7 +162,9 @@ function stopPolling(): void {
 }
 
 function startPolling(): void {
-  if (polling) return
+  if (unmounted || polling) return
+  // 再開したので前回の打切り案内は陳腐化している。
+  pollStoppedMessage.value = null
   polling = true
   void runPolling(++pollGeneration)
 }
@@ -186,8 +204,8 @@ async function runPolling(generation: number): Promise<void> {
       )
       if (failures >= POLL_MAX_CONSECUTIVE_FAILURES) {
         // 打ち切る。黙って止まると「処理中」のまま永久に更新されない画面になるため、
-        // 再読込導線（StatusBlock の外の再読込ボタン）が出るようエラーを立てる。
-        errorMessage.value =
+        // 状況と復帰手段を示す（詳細表示は隠さない）。
+        pollStoppedMessage.value =
           '処理状況の自動更新に繰り返し失敗しました。再読込してください。'
         stopPolling()
         return
@@ -200,8 +218,9 @@ async function runPolling(generation: number): Promise<void> {
   // 黙って止めずに状況と復帰手段（再読込 → load が startPolling を呼ぶ）を示す。
   // useMart も同じ局面で「このまま待つか、後でページを再読み込みしてください」を出している。
   if (generation === pollGeneration) {
-    errorMessage.value =
-      '処理状況の自動更新を停止しました（一定時間が経過したため）。再読込してください。'
+    pollStoppedMessage.value =
+      '処理状況の自動更新を停止しました（一定時間が経過したため）。'
+      + '完了していない場合は再読込するか、再実行してください。'
     stopPolling()
   }
 }
@@ -308,6 +327,10 @@ function retryImages(): void {
 }
 
 onBeforeUnmount(() => {
+  unmounted = true
+  // 離脱後に解決した load() / rerun() の続きを、既存の seq ガードで確実に落とす
+  // （これが無いと detail 書込やポーリング起動が離脱後に走る）。imagesRequestSeq と対称。
+  requestSeq += 1
   // 進行中の取得が後着で objectURL を作っても seq ガードが revoke するため、表示済み分のみ破棄する。
   imagesRequestSeq += 1
   revokeGallery()
@@ -519,8 +542,15 @@ onMounted(() => {
           class="rounded-xl border border-sky-200 bg-sky-50 p-4 text-sm text-sky-700"
         >
           <div class="flex flex-wrap items-center gap-3">
-            <LoaderCircle class="h-5 w-5 shrink-0 animate-spin" aria-hidden="true" />
-            <span class="flex-1">
+            <LoaderCircle
+              class="h-5 w-5 shrink-0"
+              :class="pollStoppedMessage ? '' : 'animate-spin'"
+              aria-hidden="true"
+            />
+            <span v-if="pollStoppedMessage" class="flex-1 font-medium">
+              {{ pollStoppedMessage }}
+            </span>
+            <span v-else class="flex-1">
               AIチェックを処理中です…（数十秒かかることがあります）。完了すると自動で表示が切り替わります。
             </span>
             <button

@@ -37,7 +37,7 @@ public sealed class ImageDownloadSlotLease : IDisposable
     {
         if (Interlocked.Exchange(ref _owned, 0) == 1)
         {
-            SubsidiaryCheckService.ReleaseImageDownloadSlotCore();
+            SubsidiaryCheckService.ReleaseImageDownloadSlot();
         }
     }
 }
@@ -378,7 +378,12 @@ public sealed class SubsidiaryCheckService
     internal static Task<bool> TryOccupyImageDownloadSlotAsync() =>
         ImageDownloadSemaphore.WaitAsync(TimeSpan.Zero);
 
-    /// <summary><see cref="TryOccupyImageDownloadSlotAsync"/> で取得した枠を解放する。</summary>
+    /// <summary>
+    /// 画像配信枠を1つ解放する。<b>セマフォを解放する唯一の関数</b>にしておくこと
+    /// （解放時の不変条件チェックやログを足すときに経路ごとの分岐を作らないため）。
+    /// 本番の解放は <see cref="ImageDownloadSlotLease.Dispose"/> 経由、
+    /// テストは <see cref="TryOccupyImageDownloadSlotAsync"/> と対で使う。
+    /// </summary>
     internal static void ReleaseImageDownloadSlot() => ImageDownloadSemaphore.Release();
 
     /// <summary>
@@ -792,6 +797,16 @@ public sealed class SubsidiaryCheckService
 
     /// <summary>
     /// 画像配信の同時実行数を制限するセマフォ。
+    /// <para>
+    /// <b>待機側がメモリを持たないことが前提:</b> byte[] の実体化は
+    /// <see cref="SubsidiaryCheckRepository.GetImageAsync"/> の内側で起きるため、
+    /// 枠を<b>取得してから</b>読み出す限り、順番待ち中のリクエストが保持するのは
+    /// HTTP コンテキストのみで画像バイト列は持たない。したがって待機件数はピークメモリに
+    /// 寄与せず、件数上限（AI 実行側の <see cref="MaxConcurrentAiChecks"/> に相当するもの）を
+    /// 別途設ける必要がない。<b>読み出しを枠の外へ動かさないこと。</b>
+    /// 枠の保持区間が「読取のみ」から「読取＋応答の書き出し」へ延びた分、順番待ちは
+    /// 以前より深くなりうるため、この前提の重要度はむしろ上がっている。
+    /// </para>
     /// maxCount を明示し、解放の非対称が <see cref="SemaphoreFullException"/> で
     /// 顕在化するようにする（<see cref="AcceptanceSemaphore"/> と同じ流儀・原則3）。
     /// </summary>
@@ -837,9 +852,6 @@ public sealed class SubsidiaryCheckService
 
         return new ImageDownloadSlotLease();
     }
-
-    /// <summary><see cref="ImageDownloadSlotLease"/> からのみ呼ばれる解放。</summary>
-    internal static void ReleaseImageDownloadSlotCore() => ImageDownloadSemaphore.Release();
 
     /// <summary>
     /// 画像バイナリを取得する。未存在は 404（UNDX-DATA-005）。

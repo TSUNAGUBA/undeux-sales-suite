@@ -1183,28 +1183,6 @@ public sealed class SubsidiaryCheckIntegrationTests
     /// started_at を現在からどれだけ過去にするか（null なら <paramref name="age"/> と同じ）。
     /// 孤児判定の基準が created_at ではなく started_at であることを検証するために分離できる。
     /// </param>
-    /// <summary>
-    /// 指定バイト列の指示書画像を1枚だけ持つ processing チェックを投入する
-    /// （画像配信の枠保持を観測するテスト用。大きな本文が必要なため専用に用意する）。
-    /// </summary>
-    private async Task<Guid> InsertProcessingCheckWithImageAsync(byte[] data)
-    {
-        var checkId = Guid.NewGuid();
-        await using var connection = new NpgsqlConnection(_fixture.ConnectionString);
-        await connection.OpenAsync();
-        await connection.ExecuteAsync("""
-            INSERT INTO subsidiary_check
-                (check_id, product_label, status, created_by, created_at, started_at)
-            VALUES (@checkId, '画像配信テスト', 'processing', 'tester@example.com', now(), now());
-
-            INSERT INTO subsidiary_check_image
-                (image_id, check_id, kind, file_name, content_type, size_bytes, data, sort_order)
-            VALUES (@imageId, @checkId, 'instruction', 'large.jpg', 'image/jpeg', @size, @data, 0);
-            """,
-            new { checkId, imageId = Guid.NewGuid(), size = data.Length, data });
-        return checkId;
-    }
-
     /// <param name="storedContentTypeCase">
     /// DB に保存する content_type の表記。既定は正規化済みの小文字。大文字表記を渡すと、
     /// 「保存値が正規化されていない既存行」を再現できる（AI 境界での正規化の検証用）。
@@ -1239,6 +1217,28 @@ public sealed class SubsidiaryCheckIntegrationTests
                 jpeg = JpegBytes(0x01),
                 png = PngBytes(0x01),
             });
+        return checkId;
+    }
+
+    /// <summary>
+    /// 指定バイト列の指示書画像を1枚だけ持つ processing チェックを投入する
+    /// （画像配信の枠保持を観測するテスト用。大きな本文が必要なため専用に用意する）。
+    /// </summary>
+    private async Task<Guid> InsertProcessingCheckWithImageAsync(byte[] data)
+    {
+        var checkId = Guid.NewGuid();
+        await using var connection = new NpgsqlConnection(_fixture.ConnectionString);
+        await connection.OpenAsync();
+        await connection.ExecuteAsync("""
+            INSERT INTO subsidiary_check
+                (check_id, product_label, status, created_by, created_at, started_at)
+            VALUES (@checkId, '画像配信テスト', 'processing', 'tester@example.com', now(), now());
+
+            INSERT INTO subsidiary_check_image
+                (image_id, check_id, kind, file_name, content_type, size_bytes, data, sort_order)
+            VALUES (@imageId, @checkId, 'instruction', 'large.jpg', 'image/jpeg', @size, @data, 0);
+            """,
+            new { checkId, imageId = Guid.NewGuid(), size = data.Length, data });
         return checkId;
     }
 

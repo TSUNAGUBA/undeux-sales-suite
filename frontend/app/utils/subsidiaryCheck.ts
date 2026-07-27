@@ -118,7 +118,7 @@ export const SUBSIDIARY_FINDING_SEVERITIES: Record<
  * （subsidiaryCheckStatusPresentation と同じ方針・原則3）。
  */
 export function subsidiaryCheckJudgmentPresentation(
-  judgment: SubsidiaryCheckSeverity,
+  judgment: SubsidiaryCheckJudgment,
 ): { label: string; icon: Component; className: string; bannerClass: string } {
   return SUBSIDIARY_CHECK_JUDGMENTS[judgment] ?? {
     label: String(judgment),

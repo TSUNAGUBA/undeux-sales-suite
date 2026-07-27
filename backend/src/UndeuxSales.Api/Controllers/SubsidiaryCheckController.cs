@@ -143,9 +143,14 @@ public sealed class SubsidiaryCheckController : ControllerBase
     public async Task<IActionResult> GetImage(
         string checkId, string imageId, CancellationToken cancellationToken)
     {
+        // ID の検証は枠の取得より前に行う。後ろに置くと、形式不正のリクエストまで
+        // 順番待ちに並び、枠が飽和しているときは 404 ではなく 429（最大30秒待ち）になる。
+        var parsedCheckId = ParseId(checkId);
+        var parsedImageId = ParseId(imageId);
+
         using var slot = await _service.AcquireImageDownloadSlotAsync(cancellationToken);
         var image = await _service.GetImageRequiredAsync(
-            ParseId(checkId), ParseId(imageId), cancellationToken);
+            parsedCheckId, parsedImageId, cancellationToken);
 
         // File(...) が付ける応答ヘッダと同等のものを手で設定する。
         Response.ContentType = image.ContentType;

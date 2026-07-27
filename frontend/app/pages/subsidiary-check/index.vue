@@ -755,6 +755,9 @@ onMounted(() => {
             <p class="font-medium">
               [{{ submitError.errorCode }}] {{ submitError.summary }}
             </p>
+            <p v-if="submitError.detail" class="text-xs text-red-600">
+              {{ submitError.detail }}
+            </p>
             <p v-if="submitError.remedy" class="text-xs text-red-500">
               {{ submitError.remedy }}
             </p>

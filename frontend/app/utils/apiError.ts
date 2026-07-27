@@ -22,7 +22,13 @@ function httpStatusOf(error: unknown): number | null {
 export function apiErrorMessage(error: unknown): string {
   const apiError = extractApiError(error)
   if (apiError) {
-    return `[${apiError.errorCode}] ${apiError.summary}`
+    // detail は「同一コードを複数経路で共用する場合に、どの経路かを補う」ための欄
+    // （UNDX-REQ-008 / REQ-009 等）。サーバは summary と異なるときだけ詰めるため
+    // （ExceptionHandlingMiddleware）、そのまま連結しても重複しない。
+    // ここで落とすと、汎用化した Summary だけが残って案内が後退する。
+    return apiError.detail
+      ? `[${apiError.errorCode}] ${apiError.summary} ${apiError.detail}`
+      : `[${apiError.errorCode}] ${apiError.summary}`
   }
   // ApiError 本文を伴わない認証・認可エラー（本文空の 401/403）は専用の案内にする。
   const status = httpStatusOf(error)
