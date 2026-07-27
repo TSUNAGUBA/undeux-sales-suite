@@ -1,5 +1,6 @@
 using Microsoft.AspNetCore.Authorization;
 using Microsoft.AspNetCore.Mvc;
+using Microsoft.Net.Http.Headers;
 using UndeuxSales.Core;
 using UndeuxSales.Core.SubsidiaryCheck;
 using UndeuxSales.Infrastructure.SubsidiaryCheck;
@@ -127,17 +128,35 @@ public sealed class SubsidiaryCheckController : ControllerBase
 
     /// <summary>
     /// チェック画像のバイナリを返す（認証付き fetch でのプレビュー・ダウンロード用）。
-    /// 読み出しはサービス側で同時実行数を有界化する
+    /// 同時実行数はサービス側で有界化する
     /// （<see cref="SubsidiaryCheckService.MaxConcurrentImageDownloads"/>）。
     /// 直接リポジトリを呼ぶとこの上限を迂回してしまうため、必ずサービス経由にすること。
+    /// <para>
+    /// <b>File(...) を返さず本文を自分で書き出しているのは意図的。</b> IActionResult を返すと
+    /// MVC が本文を書き出すのは<b>アクション復帰後</b>で、<c>using</c> スコープを抜けた後になる。
+    /// それでは枠が DB 読取しか覆わず、byte[] の生存が枠の外へ出るため
+    /// （低速回線では書き出しの方が支配的）、ピークメモリが同時閲覧者数に比例してしまう。
+    /// ここで書き切ってから枠を返すことで、上限が閲覧者数に依存しなくなる。
+    /// </para>
     /// </summary>
     [HttpGet("{checkId}/images/{imageId}")]
     public async Task<IActionResult> GetImage(
         string checkId, string imageId, CancellationToken cancellationToken)
     {
+        using var slot = await _service.AcquireImageDownloadSlotAsync(cancellationToken);
         var image = await _service.GetImageRequiredAsync(
             ParseId(checkId), ParseId(imageId), cancellationToken);
-        return File(image.Data, image.ContentType, image.FileName);
+
+        // File(...) が付ける応答ヘッダと同等のものを手で設定する。
+        Response.ContentType = image.ContentType;
+        Response.ContentLength = image.Data.Length;
+        var disposition = new ContentDispositionHeaderValue("attachment");
+        // 非 ASCII のファイル名も RFC 5987 形式で安全に載せる（FileResult と同じ扱い）。
+        disposition.SetHttpFileName(image.FileName);
+        Response.Headers.ContentDisposition = disposition.ToString();
+
+        await Response.Body.WriteAsync(image.Data, cancellationToken);
+        return new EmptyResult();
     }
 
     /// <summary>

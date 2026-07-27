@@ -126,7 +126,7 @@ public sealed class AnthropicAiClient : IAiChatClient
                             Source = new Base64ImageSource
                             {
                                 Data = Convert.ToBase64String(imageData),
-                                MediaType = mediaType == "image/png"
+                                MediaType = string.Equals(mediaType, "image/png", StringComparison.OrdinalIgnoreCase)
                                     ? MediaType.ImagePng
                                     : MediaType.ImageJpeg,
                             },

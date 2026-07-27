@@ -113,6 +113,32 @@ export const SUBSIDIARY_FINDING_SEVERITIES: Record<
   },
 }
 
+/**
+ * AI 判定の表示定義を返す。未知の値でも未定義参照で描画ごと落とさない
+ * （subsidiaryCheckStatusPresentation と同じ方針・原則3）。
+ */
+export function subsidiaryCheckJudgmentPresentation(
+  judgment: SubsidiaryCheckSeverity,
+): { label: string; icon: Component; className: string; bannerClass: string } {
+  return SUBSIDIARY_CHECK_JUDGMENTS[judgment] ?? {
+    label: String(judgment),
+    icon: TriangleAlert,
+    className: 'bg-slate-100 text-slate-600',
+    bannerClass: 'border-slate-200 bg-slate-50 text-slate-700',
+  }
+}
+
+/** 指摘の重大度の表示定義を返す（未知の値でも落とさない）。 */
+export function subsidiaryFindingSeverityPresentation(
+  severity: SubsidiaryCheckSeverity,
+): { label: string; icon: Component; className: string } {
+  return SUBSIDIARY_FINDING_SEVERITIES[severity] ?? {
+    label: String(severity),
+    icon: TriangleAlert,
+    className: 'bg-slate-100 text-slate-600',
+  }
+}
+
 /** 指摘カテゴリの表示カタログ（結果詳細のセクション見出し）。 */
 export const SUBSIDIARY_CHECK_CATEGORIES: Record<
   SubsidiaryCheckCategory,
@@ -246,7 +272,10 @@ export async function mapWithConcurrencyLimit<TIn, TOut>(
       results[index] = await worker(items[index]!, index)
     }
   }
-  const runners = Math.max(1, Math.min(limit, items.length))
+  // limit が NaN だと Math.min/Math.max も NaN になり、Array.from({length: NaN}) が
+  // 空配列になってランナーが1つも起動しない（＝結果に穴が空く）。有限値でない場合は直列にする。
+  const safeLimit = Number.isFinite(limit) ? limit : 1
+  const runners = Math.max(1, Math.min(safeLimit, items.length))
   await Promise.all(Array.from({ length: runners }, runner))
   return results
 }

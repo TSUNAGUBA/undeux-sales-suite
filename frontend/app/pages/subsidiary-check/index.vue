@@ -372,7 +372,10 @@ async function runCheck(): Promise<void> {
     console.error('[subsidiary-check] AIチェックの実行に失敗しました:', error)
     submitError.value =
       extractApiError(error) ?? { errorCode: 'UNKNOWN', summary: apiErrorMessage(error), remedy: '' }
-  } finally {
+    // 失敗時だけ送信ボタンを戻す。成功時に戻すと、下の await navigateTo（初回は遷移先
+    // チャンクの取得を伴い数秒かかりうる）の間だけボタンが再び押せてしまい、
+    // 同じフォームからもう一度 POST できる＝重複レコードと重複した有料 AI 呼出になる。
+    // 成功時は遷移で本画面が破棄されるため、戻す必要がない。
     submitting.value = false
   }
 
@@ -543,14 +546,14 @@ onMounted(() => {
               <span
                 v-if="(row as SubsidiaryCheckSummary).judgment"
                 class="inline-flex items-center gap-1 rounded-full px-2 py-0.5 text-xs font-medium"
-                :class="SUBSIDIARY_CHECK_JUDGMENTS[(row as SubsidiaryCheckSummary).judgment!].className"
+                :class="subsidiaryCheckJudgmentPresentation((row as SubsidiaryCheckSummary).judgment!).className"
               >
                 <component
-                  :is="SUBSIDIARY_CHECK_JUDGMENTS[(row as SubsidiaryCheckSummary).judgment!].icon"
+                  :is="subsidiaryCheckJudgmentPresentation((row as SubsidiaryCheckSummary).judgment!).icon"
                   class="h-3 w-3"
                   aria-hidden="true"
                 />
-                {{ SUBSIDIARY_CHECK_JUDGMENTS[(row as SubsidiaryCheckSummary).judgment!].label }}
+                {{ subsidiaryCheckJudgmentPresentation((row as SubsidiaryCheckSummary).judgment!).label }}
               </span>
               <span v-else class="text-xs text-slate-300">—</span>
             </template>

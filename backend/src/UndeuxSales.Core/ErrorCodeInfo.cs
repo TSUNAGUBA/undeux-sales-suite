@@ -98,14 +98,21 @@ public static class ErrorCodes
         "アップロードの合計サイズが上限を超えています。",
         "ファイルのサイズ・件数を減らして再試行してください。");
 
-    // REQ-009（副資材チェックの受付上限）:
-    //   実行中＋バックグラウンド待機中の AI チェック総数が上限
-    //   （SubsidiaryCheckService.MaxConcurrentAiChecks）に達しているときの 429。
-    //   上限値の SoT は同定数。REQ-001〜008 と衝突しない次番として 009 を採番した。
+    // REQ-009（副資材チェックの同時実行の上限。混雑による一時的な拒否）:
+    //   次の2経路で使う。いずれもピークメモリを有界化するための構造的な上限であり、
+    //   「待てば復帰する」という性質が共通する（恒久的な失敗ではない）。
+    //     1. AI チェックの受付上限 — 実行中＋バックグラウンド待機中の総数が
+    //        SubsidiaryCheckService.MaxConcurrentAiChecks に達しているとき（新規登録・rerun）
+    //     2. 画像配信の順番待ち超過 — 同時取得数が
+    //        SubsidiaryCheckService.MaxConcurrentImageDownloads に達した状態が
+    //        ImageDownloadQueueTimeout を超えたとき
+    //   上限値の SoT はいずれも同クラスの定数。REQ-001〜008 と衝突しない次番として 009 を採番した。
+    //   複数経路で共用するため、Summary / Remedy は REQ-008 と同じくエンドポイント非依存の
+    //   汎用文言にする（どちらの経路かは各呼出側が AppException の detail で補う）。
     public static readonly ErrorCodeInfo AiCheckBusy = new(
         "UNDX-REQ-009",
-        "AI チェックの受付上限に達しています（実行中・待機中のチェックが多すぎます）。",
-        "実行中のチェックが完了するまで待ってから再試行してください。");
+        "副資材チェックが混み合っています（同時に実行・取得できる上限に達しています）。",
+        "しばらく待ってから再試行してください。");
 
     public static readonly ErrorCodeInfo DatabaseError = new(
         "UNDX-DATA-001",

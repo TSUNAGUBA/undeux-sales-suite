@@ -671,6 +671,51 @@ public sealed class SubsidiaryCheckIntegrationTests
     }
 
     /// <summary>
+    /// 画像配信の枠は「DB 読取」だけでなく「応答本文の書き出し」が終わるまで保持される。
+    /// ここが崩れる（IActionResult を返して MVC に書かせる等で早期解放する）と、
+    /// byte[] の生存が枠の外へ出てピークメモリが同時閲覧者数に比例し、
+    /// docs/design.md §13.5 のメモリ収支が成立しなくなる。
+    /// </summary>
+    [Fact]
+    public async Task GetImage_HoldsDownloadSlot_UntilResponseBodyIsWritten()
+    {
+        var stub = new SubsidiaryCheckFakeAiClient { ResponseText = AllPassResponse };
+        using var factory = WithSubsidiaryAi(stub);
+        using var client = CreateClient(factory);
+
+        // TestServer の応答ボディはパイプで、既定の pauseWriterThreshold を超えると
+        // 読み手が来るまで書込がブロックする。枠が書き出し区間を覆っていることを観測するため、
+        // その閾値を確実に超えるサイズ（1MiB）の画像を用意する。
+        // 小さい画像では書込が即完了してしまい、保持しているかを区別できない。
+        var payload = LargeImage(new byte[] { 0xFF, 0xD8, 0xFF, 0x01 }, 1024 * 1024);
+        var staleId = await InsertProcessingCheckWithImageAsync(payload);
+        var detail = await client.GetFromJsonAsync<SubsidiaryCheckDetail>(
+            $"/api/subsidiary-check/{staleId}");
+        var imageId = detail!.Images[0].ImageId;
+
+        var before = SubsidiaryCheckService.AvailableImageDownloadSlots;
+
+        // 本文を読まずにヘッダだけ受け取る。この時点でアクションは応答本文の書き出し中。
+        using var response = await client.GetAsync(
+            $"/api/subsidiary-check/{staleId}/images/{imageId}",
+            HttpCompletionOption.ResponseHeadersRead);
+        response.EnsureSuccessStatusCode();
+
+        Assert.Equal(before - 1, SubsidiaryCheckService.AvailableImageDownloadSlots);
+
+        // 本文を読み切ると枠が返る（解放漏れがない）。
+        _ = await response.Content.ReadAsByteArrayAsync();
+        var deadline = DateTime.UtcNow + TimeSpan.FromSeconds(5);
+        while (SubsidiaryCheckService.AvailableImageDownloadSlots != before
+               && DateTime.UtcNow < deadline)
+        {
+            await Task.Delay(25);
+        }
+
+        Assert.Equal(before, SubsidiaryCheckService.AvailableImageDownloadSlots);
+    }
+
+    /// <summary>
     /// rerun は DB に保存された content_type を読み直す経路のため、正規化前に保存された
     /// 既存行（"IMAGE/PNG" 等）でも AI へは正規化した media type を渡す。
     /// これが崩れると PNG が JPEG として送信され、rerun しても直らない恒久失敗になる。
@@ -1003,8 +1048,18 @@ public sealed class SubsidiaryCheckIntegrationTests
                 continue;
             }
 
-            Assert.True(DateTime.UtcNow < deadline,
-                "画像配信枠が解放されず、順番待ち状態を作れませんでした。");
+            if (DateTime.UtcNow >= deadline)
+            {
+                // 諦める前に取得済みの枠を返す。返さずに Assert で抜けると、
+                // 以降のテストが枠不足で連鎖失敗し、原因の特定が難しくなる。
+                for (var i = 0; i < taken; i++)
+                {
+                    SubsidiaryCheckService.ReleaseImageDownloadSlot();
+                }
+
+                Assert.Fail("画像配信枠が解放されず、順番待ち状態を作れませんでした。");
+            }
+
             await Task.Delay(25);
         }
 
@@ -1128,6 +1183,28 @@ public sealed class SubsidiaryCheckIntegrationTests
     /// started_at を現在からどれだけ過去にするか（null なら <paramref name="age"/> と同じ）。
     /// 孤児判定の基準が created_at ではなく started_at であることを検証するために分離できる。
     /// </param>
+    /// <summary>
+    /// 指定バイト列の指示書画像を1枚だけ持つ processing チェックを投入する
+    /// （画像配信の枠保持を観測するテスト用。大きな本文が必要なため専用に用意する）。
+    /// </summary>
+    private async Task<Guid> InsertProcessingCheckWithImageAsync(byte[] data)
+    {
+        var checkId = Guid.NewGuid();
+        await using var connection = new NpgsqlConnection(_fixture.ConnectionString);
+        await connection.OpenAsync();
+        await connection.ExecuteAsync("""
+            INSERT INTO subsidiary_check
+                (check_id, product_label, status, created_by, created_at, started_at)
+            VALUES (@checkId, '画像配信テスト', 'processing', 'tester@example.com', now(), now());
+
+            INSERT INTO subsidiary_check_image
+                (image_id, check_id, kind, file_name, content_type, size_bytes, data, sort_order)
+            VALUES (@imageId, @checkId, 'instruction', 'large.jpg', 'image/jpeg', @size, @data, 0);
+            """,
+            new { checkId, imageId = Guid.NewGuid(), size = data.Length, data });
+        return checkId;
+    }
+
     /// <param name="storedContentTypeCase">
     /// DB に保存する content_type の表記。既定は正規化済みの小文字。大文字表記を渡すと、
     /// 「保存値が正規化されていない既存行」を再現できる（AI 境界での正規化の検証用）。

@@ -97,6 +97,10 @@ async function load(): Promise<void> {
     const result = await get<SubsidiaryCheckDetail>(`/api/subsidiary-check/${checkId.value}`)
     if (seq !== requestSeq) return
     detail.value = result
+    // status の watch は「値が変わったとき」しか発火しない。ポーリングが打ち切られた後に
+    // 利用者が再読込を押しても status は processing のままなので、watch では再開しない
+    // （＝案内した復帰導線が機能しない）。ここで明示的に開始する。startPolling は冪等。
+    if (result.summary.status === 'processing') startPolling()
     // 画像取得は補助表示のため非ブロッキング（失敗しても指摘・判定は表示する。原則4）。
     void loadImages(result)
   } catch (error) {
@@ -190,8 +194,16 @@ async function runPolling(generation: number): Promise<void> {
       }
     }
   }
-  // 上限に達した（＝滞留判定の時間を超えた）。孤児として再実行導線が出るため止めてよい。
-  if (generation === pollGeneration) stopPolling()
+  // 総回数の上限に達した。多くの場合は滞留判定も超えていて再実行導線が出ているが、
+  // 途中で rerun された場合は滞留判定の起点（startedAt）だけが進み、導線が出るのは後になる。
+  // その間「処理中」のまま静かに更新が止まると、利用者は待ち続けることになるため、
+  // 黙って止めずに状況と復帰手段（再読込 → load が startPolling を呼ぶ）を示す。
+  // useMart も同じ局面で「このまま待つか、後でページを再読み込みしてください」を出している。
+  if (generation === pollGeneration) {
+    errorMessage.value =
+      '処理状況の自動更新を停止しました（一定時間が経過したため）。再読込してください。'
+    stopPolling()
+  }
 }
 
 // status が processing の間だけポーリングする（completed / failed になったら止める）。
@@ -228,10 +240,12 @@ function revokeGallery(): void {
 
 async function loadImages(target: SubsidiaryCheckDetail): Promise<void> {
   if (target.images.length === 0) {
-    // 世代を進めるのは「取得を始める」ときだけにする。ここで先に ++ すると、
-    // 先行リクエストの finally が seq 不一致で imagesLoading を戻せず固まる。
+    // 世代を進めて先行リクエストの結果を無効化する。ただしそれだけだと、飛行中だった
+    // 先行の finally が seq 不一致で imagesLoading を戻せず true のまま固着するため、
+    // ここで明示的に false にする（この分岐自体は取得を行わない＝読込中ではない）。
     imagesRequestSeq += 1
     revokeGallery()
+    imagesLoading.value = false
     return
   }
   const seq = ++imagesRequestSeq
@@ -282,6 +296,15 @@ async function loadImages(target: SubsidiaryCheckDetail): Promise<void> {
       imagesLoading.value = false
     }
   }
+}
+
+/** 1枚でも取得に失敗した枠があるか（ギャラリーの再取得導線の出し分け）。 */
+const hasFailedImages = computed(() => galleryImages.value.some((image) => image.failed))
+
+/** ギャラリーを取得し直す（失敗枠の回復用）。 */
+function retryImages(): void {
+  if (!detail.value) return
+  void loadImages(detail.value)
 }
 
 onBeforeUnmount(() => {
@@ -536,17 +559,17 @@ onMounted(() => {
         <div
           v-else-if="summary.judgment"
           class="rounded-xl border p-4"
-          :class="SUBSIDIARY_CHECK_JUDGMENTS[summary.judgment].bannerClass"
+          :class="subsidiaryCheckJudgmentPresentation(summary.judgment).bannerClass"
         >
           <div class="flex flex-wrap items-center gap-3">
             <component
-              :is="SUBSIDIARY_CHECK_JUDGMENTS[summary.judgment].icon"
+              :is="subsidiaryCheckJudgmentPresentation(summary.judgment).icon"
               class="h-8 w-8 shrink-0"
               aria-hidden="true"
             />
             <div class="min-w-0 flex-1">
               <p class="text-lg font-bold">
-                {{ SUBSIDIARY_CHECK_JUDGMENTS[summary.judgment].label }}
+                {{ subsidiaryCheckJudgmentPresentation(summary.judgment).label }}
               </p>
               <p class="text-xs opacity-80">
                 <template v-if="summary.failCount > 0 || summary.warnCount > 0">
@@ -647,14 +670,14 @@ onMounted(() => {
                 <div class="flex flex-wrap items-center gap-2">
                   <span
                     class="inline-flex items-center gap-1 rounded-full px-2 py-0.5 text-xs font-medium"
-                    :class="SUBSIDIARY_FINDING_SEVERITIES[finding.severity].className"
+                    :class="subsidiaryFindingSeverityPresentation(finding.severity).className"
                   >
                     <component
-                      :is="SUBSIDIARY_FINDING_SEVERITIES[finding.severity].icon"
+                      :is="subsidiaryFindingSeverityPresentation(finding.severity).icon"
                       class="h-3 w-3"
                       aria-hidden="true"
                     />
-                    {{ SUBSIDIARY_FINDING_SEVERITIES[finding.severity].label }}
+                    {{ subsidiaryFindingSeverityPresentation(finding.severity).label }}
                   </span>
                   <h3 class="min-w-0 flex-1 text-sm font-semibold text-slate-800">
                     {{ finding.title }}
@@ -683,11 +706,32 @@ onMounted(() => {
           class="rounded-xl border border-slate-200 bg-white shadow-sm"
           aria-label="アップロード画像"
         >
-          <div class="border-b border-slate-100 px-4 py-3">
-            <h2 class="text-sm font-bold text-slate-800">アップロード画像</h2>
-            <p class="mt-0.5 text-xs text-slate-400">
-              チェックに使用した画像です（目視確認の補助にお使いください）。
-            </p>
+          <div class="flex flex-wrap items-start justify-between gap-2 border-b border-slate-100 px-4 py-3">
+            <div>
+              <h2 class="text-sm font-bold text-slate-800">アップロード画像</h2>
+              <p class="mt-0.5 text-xs text-slate-400">
+                チェックに使用した画像です（目視確認の補助にお使いください）。
+              </p>
+            </div>
+            <!--
+              画像の取得失敗は errorMessage を立てない（判定・指摘の表示は妨げない・原則4）ため、
+              上部の再読込ボタンは現れない。混雑による 429 や瞬断で枠が失敗表示になったとき、
+              ブラウザ全体の再読込しか手がない状態にしないための復帰導線。
+            -->
+            <button
+              v-if="hasFailedImages"
+              type="button"
+              class="inline-flex items-center gap-1.5 rounded-lg border border-slate-200 bg-white px-3 py-1.5 text-xs font-medium text-slate-600 transition-colors hover:border-indigo-300 hover:text-indigo-700 disabled:cursor-not-allowed disabled:opacity-40"
+              :disabled="imagesLoading"
+              @click="retryImages"
+            >
+              <RotateCcw
+                class="h-3.5 w-3.5 shrink-0"
+                :class="imagesLoading ? 'animate-spin' : ''"
+                aria-hidden="true"
+              />
+              {{ imagesLoading ? '取得中...' : '画像を再取得' }}
+            </button>
           </div>
           <div class="space-y-4 p-4">
             <div

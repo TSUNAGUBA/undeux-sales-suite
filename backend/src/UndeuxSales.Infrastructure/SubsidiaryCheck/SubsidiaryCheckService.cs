@@ -13,6 +13,36 @@ namespace UndeuxSales.Infrastructure.SubsidiaryCheck;
 public sealed record SubsidiaryCheckImageUpload(string FileName, string ContentType, byte[] Data);
 
 /// <summary>
+/// 画像配信の枠（上限は <see cref="SubsidiaryCheckService.MaxConcurrentImageDownloads"/>）を
+/// 1つ取得したスコープ。<see cref="Dispose"/> で解放する。
+/// <para>
+/// <b>なぜスコープ型か:</b> 枠は「DB 読取 → 応答本文の書き出し」の全区間で保持する必要があり
+/// （<see cref="SubsidiaryCheckService.MaxConcurrentImageDownloads"/> の解説を参照）、
+/// 途中の失敗パス（404・キャンセル・書き出し中の切断）でも確実に解放しなければ
+/// 429 が恒久化して画像が一切表示できなくなる。<c>using</c> で構造的に保証する。
+/// </para>
+/// 解放は1回だけ（<see cref="Interlocked.Exchange(ref int, int)"/> で二重解放を防ぐ。
+/// 過剰解放は上限を無効化してメモリ防御を崩すため）。
+/// </summary>
+public sealed class ImageDownloadSlotLease : IDisposable
+{
+    /// <summary>解放責務を保持しているか（1＝保持、0＝解放済み）。</summary>
+    private int _owned = 1;
+
+    internal ImageDownloadSlotLease()
+    {
+    }
+
+    public void Dispose()
+    {
+        if (Interlocked.Exchange(ref _owned, 0) == 1)
+        {
+            SubsidiaryCheckService.ReleaseImageDownloadSlotCore();
+        }
+    }
+}
+
+/// <summary>
 /// 受付枠（AI チェックの実行中＋待機中の総数。上限は
 /// <see cref="SubsidiaryCheckService.MaxConcurrentAiChecks"/>）を1つ予約したスコープ。
 /// <para>
@@ -340,6 +370,9 @@ public sealed class SubsidiaryCheckService
 
     /// <summary><see cref="TryOccupyAiSlotAsync"/> で取得したスロットを解放する。</summary>
     internal static void ReleaseAiSlot() => AiCallSemaphore.Release();
+
+    /// <summary>画像配信枠の空き数（テストから占有状態を観測するために使う）。</summary>
+    internal static int AvailableImageDownloadSlots => ImageDownloadSemaphore.CurrentCount;
 
     /// <summary>画像配信枠を即時取得できたか（テストから順番待ち状態を作るために使う）。</summary>
     internal static Task<bool> TryOccupyImageDownloadSlotAsync() =>
@@ -741,23 +774,24 @@ public sealed class SubsidiaryCheckService
     /// （約74MiB・<c>docs/design.md</c> §13.5）を 2 名程度の同時閲覧で超えうる。
     /// </para>
     /// <para>
-    /// <b>値の根拠:</b> 1枚あたりのピークは「DB から読んだ byte[]（最大5MiB）＋応答バッファ
-    /// （同）」で約 10MiB。4 並列で約 40MiB となりヘッドルーム約74MiB に収まる。
-    /// 同時閲覧者が何人いてもこの値を超えないことが要点で、閲覧者数に依存しない。
+    /// <b>値の根拠:</b> 1枠のピークは、DB 読取中が「byte[]（最大5MiB）＋ Npgsql の
+    /// オーバーサイズバッファ（同量程度）」で約 10MiB、応答書き出し中が byte[] のみで約 5MiB。
+    /// 全枠が同時に読取中という最悪ケースで 4 × 10MiB ＝ <b>約 40MiB がこの経路の上限</b>。
+    /// </para>
+    /// <para>
+    /// <b>枠は応答本文の書き出しが終わるまで保持すること。</b> byte[] は
+    /// <see cref="Microsoft.AspNetCore.Mvc.ControllerBase.File(byte[], string, string)"/> の
+    /// ような <c>IActionResult</c> に載せて返すと、MVC が結果を実行する
+    /// （＝本文を書き出す）のは<b>アクション復帰後</b>であり、枠を DB 読取だけで解放すると
+    /// byte[] の生存が枠の外へ出る。低速回線では書き出しに数十秒かかりうるため、
+    /// その区間こそが支配的で、解放が早いと「同時閲覧者数に比例」する状態に戻る。
+    /// このためコントローラは本文を自分で書き出し、書き終えるまで枠を保持する。
     /// </para>
     /// </summary>
     public const int MaxConcurrentImageDownloads = 4;
 
     /// <summary>
     /// 画像配信の同時実行数を制限するセマフォ。
-    /// <para>
-    /// <b>待機側がメモリを持たないことが前提:</b> byte[] の実体化は
-    /// <see cref="SubsidiaryCheckRepository.GetImageAsync"/> の内側で起きるため、
-    /// 本セマフォを<b>取得してから</b>読み出す限り、順番待ち中のリクエストが保持するのは
-    /// HTTP コンテキストのみで画像バイト列は持たない。したがって待機件数は
-    /// ピークメモリに寄与せず、件数上限（AI 実行側の <see cref="MaxConcurrentAiChecks"/> に
-    /// 相当するもの）を別途設ける必要がない。<b>読み出しを待機の外へ動かさないこと。</b>
-    /// </para>
     /// maxCount を明示し、解放の非対称が <see cref="SemaphoreFullException"/> で
     /// 顕在化するようにする（<see cref="AcceptanceSemaphore"/> と同じ流儀・原則3）。
     /// </summary>
@@ -768,10 +802,17 @@ public sealed class SubsidiaryCheckService
     /// 画像配信の順番待ち上限（30秒）。
     /// <para>
     /// AI 呼出（<see cref="AiCallQueueTimeout"/> ＝ 420秒）と違い、画像配信は利用者が
-    /// 画面の前で待つ同期リクエストのため、待ちは短く打ち切る。1枠あたりの占有は
-    /// 「DB から数MiB を読んで応答へ書く」だけで通常は数百ミリ秒であり、30秒の待ちは
-    /// 4 並列 × 十数回転ぶんに相当する。超過は 429（<see cref="ErrorCodes.AiCheckBusy"/>）とし、
-    /// 利用者は再読込で復帰できる（ギャラリーは1枚単位で失敗を表示する設計・原則4）。
+    /// 画面の前で待つ同期リクエストのため、待ちは短く打ち切る。
+    /// 超過は 429（<see cref="ErrorCodes.AiCheckBusy"/>）とし、利用者は再読込で復帰できる
+    /// （ギャラリーは1枚単位で失敗を表示するため、全体は止まらない・原則4）。
+    /// </para>
+    /// <para>
+    /// <b>トレードオフ（受容）:</b> 枠は応答の書き出し完了まで保持するため、低速回線の
+    /// 利用者は1枠を数十秒占有しうる。その間に多数の同時閲覧が重なると 429 が増えるが、
+    /// これは「メモリを守るために表示を待たせる」意図した縮退であり、
+    /// OOM でコンテナごと落ちる（実行中のチェックが processing のまま滞留する）よりは軽い。
+    /// クライアント側の同時取得を 3 に絞って（<c>SUBSIDIARY_GALLERY_FETCH_CONCURRENCY</c>）、
+    /// 1名が全枠を占有しにくくしている。
     /// </para>
     /// </summary>
     private static readonly TimeSpan ImageDownloadQueueTimeout = TimeSpan.FromSeconds(30);
@@ -780,13 +821,12 @@ public sealed class SubsidiaryCheckService
     internal static TimeSpan? ImageDownloadQueueTimeoutOverride;
 
     /// <summary>
-    /// 画像バイナリを取得する。未存在は 404（UNDX-DATA-005）、
-    /// 同時実行の順番待ちが上限を超えた場合は 429（UNDX-REQ-009）。
-    /// ピークメモリを有界化するため、読み出しは必ず
-    /// <see cref="ImageDownloadSemaphore"/> の内側で行う。
+    /// 画像配信の枠を1つ取得する。順番待ちが上限を超えた場合は 429（UNDX-REQ-009）。
+    /// 取得した枠は <see cref="ImageDownloadSlotLease.Dispose"/> で必ず解放すること
+    /// （<c>using</c> スコープが応答本文の書き出しまでを覆う位置に置く）。
     /// </summary>
-    public async Task<SubsidiaryCheckImagePayload> GetImageRequiredAsync(
-        Guid checkId, Guid imageId, CancellationToken cancellationToken = default)
+    public async Task<ImageDownloadSlotLease> AcquireImageDownloadSlotAsync(
+        CancellationToken cancellationToken = default)
     {
         var queueTimeout = ImageDownloadQueueTimeoutOverride ?? ImageDownloadQueueTimeout;
         if (!await ImageDownloadSemaphore.WaitAsync(queueTimeout, cancellationToken))
@@ -795,17 +835,22 @@ public sealed class SubsidiaryCheckService
                 "画像の取得が混み合っています。しばらく待ってから再読込してください。");
         }
 
-        try
-        {
-            return await _repository.GetImageAsync(checkId, imageId, cancellationToken)
-                   ?? throw new AppException(ErrorCodes.SubsidiaryCheckNotFound, 404,
-                       "指定された画像が見つかりません。");
-        }
-        finally
-        {
-            ImageDownloadSemaphore.Release();
-        }
+        return new ImageDownloadSlotLease();
     }
+
+    /// <summary><see cref="ImageDownloadSlotLease"/> からのみ呼ばれる解放。</summary>
+    internal static void ReleaseImageDownloadSlotCore() => ImageDownloadSemaphore.Release();
+
+    /// <summary>
+    /// 画像バイナリを取得する。未存在は 404（UNDX-DATA-005）。
+    /// <b>必ず <see cref="AcquireImageDownloadSlotAsync"/> で取得した枠の内側で呼ぶこと</b>
+    /// （枠の外で呼ぶとピークメモリの有界化が崩れる）。
+    /// </summary>
+    public async Task<SubsidiaryCheckImagePayload> GetImageRequiredAsync(
+        Guid checkId, Guid imageId, CancellationToken cancellationToken = default)
+        => await _repository.GetImageAsync(checkId, imageId, cancellationToken)
+           ?? throw new AppException(ErrorCodes.SubsidiaryCheckNotFound, 404,
+               "指定された画像が見つかりません。");
 
     /// <summary>
     /// 画像の枚数・形式・サイズ（各上限＋合計上限）を検証する

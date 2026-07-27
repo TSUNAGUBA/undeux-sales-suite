@@ -403,6 +403,13 @@ Start-Process "https://$FirebaseProjectId.web.app"
 
 3. **監視の通知先（SNS トピック）を用意する。** 以降のアラームはすべてこのトピックへ通知します。
 
+   > **項目3〜5に必要な操作権限:** ステップ0で作業用 IAM ユーザーの権限を EC2・RDS に絞った場合、
+   > ここから先は `AccessDenied` になります。以下を追加で付与してください。
+   > `sns:CreateTopic` / `sns:Subscribe` / `sns:ListSubscriptionsByTopic`（項目3）、
+   > `cloudwatch:PutMetricAlarm`（項目4・ステップ8-3-4）。
+   > これらが無いと、**必須と明記した監視（ステップ8-3）が一つも設定されないまま
+   > リリースされる**ことになります。ステップ8-3-2 ではさらに IAM 系の権限が必要です（同節に記載）。
+
    ```powershell
    $SnsTopicArn = aws sns create-topic --name undeux-alerts --query "TopicArn" --output text
    aws sns subscribe --topic-arn $SnsTopicArn --protocol email --notification-endpoint "運用担当のメールアドレス"
@@ -419,31 +426,45 @@ Start-Process "https://$FirebaseProjectId.web.app"
    # DB 識別子はステップ2で undeux-db として作成済み
    $RdsInstanceId = "undeux-db"
 
-   # 空き容量が 5GiB を 30分継続で下回ったら通知（閾値・継続時間の根拠は下記）
+   # 空き容量が 1.5GiB を 30分継続で下回ったら通知（閾値の根拠は下記）
    aws cloudwatch put-metric-alarm `
      --alarm-name "undeux-rds-free-storage" `
      --namespace AWS/RDS --metric-name FreeStorageSpace `
      --dimensions Name=DBInstanceIdentifier,Value=$RdsInstanceId `
      --statistic Average --period 300 --evaluation-periods 6 `
-     --threshold 5368709120 --comparison-operator LessThanThreshold `
+     --threshold 1610612736 --comparison-operator LessThanThreshold `
      --alarm-actions $SnsTopicArn --ok-actions $SnsTopicArn
    ```
 
-   > **閾値と継続時間の意味（ストレージ自動スケーリング有効時）。** ステップ2で
+   > **閾値の根拠（ストレージ自動スケーリング有効時）。** ステップ2で
    > `--max-allocated-storage 100` を付けているため、空き容量が減るとボリュームは
-   > 最大 100GiB まで自動拡張されます。つまり**一時的に空きが減ること自体は異常ではなく、
-   > 自動拡張で解消されます**。そのため
+   > 最大 100GiB まで自動拡張されます。AWS の自動拡張が発動する条件は
+   > **「空き容量が割当の10%以下」かつ「その状態が5分以上継続」かつ「前回の変更から6時間経過」** です。
+   >
+   > つまり「空きが減ってきた」こと自体は異常ではなく、**自動拡張が面倒を見る領域**です。
+   > アラームで捉えたいのはその外側、すなわち**自動拡張が働くはずなのに空きが戻らない**状態だけです。
+   > 閾値 1.5GiB は、初期割当 20GiB のときの発動点（20 × 10% ＝ 2GiB）**より下**に置いてあります。
+   > 割当が増えるほど発動点は上がる（100GiB なら 10GiB）ので、**どの割当サイズでも
+   > 「自動拡張が一度は試みたはずの後」にしか鳴りません**。
    >
    > - **鳴ってすぐ OK に戻った場合** → 自動拡張が働いた正常な挙動。対応不要
    >   （`--ok-actions` を付けているのは、この収束を通知で確認するためです）
-   > - **30分続けて鳴り止まない場合** → 自動拡張が上限 100GiB に達して追随できていない状態。
-   >   このときの回復手段が `--max-allocated-storage` の引上げです:
-   >   `aws rds modify-db-instance --db-instance-identifier undeux-db --max-allocated-storage 200 --apply-immediately`
+   > - **30分続けて鳴り止まない場合** → まず現状を確認します:
+   >   `aws rds describe-db-instances --db-instance-identifier undeux-db --query "DBInstances[0].[AllocatedStorage,MaxAllocatedStorage]"`
+   >     - `AllocatedStorage` が `MaxAllocatedStorage` に達している → 上限が原因。引上げます:
+   >       `aws rds modify-db-instance --db-instance-identifier undeux-db --max-allocated-storage 200 --apply-immediately`
+   >     - 達していない → 上限は原因ではありません（引上げても効果がない）。直前6時間以内に
+   >       拡張済み（クールダウン中）か、ストレージ変更が進行中の可能性があります。
+   >       `describe-db-instances` の `StatusInfo` / イベント履歴を確認してください。
    >
-   > 閾値を「割当の何割」ではなく絶対値 5GiB にしているのは、自動拡張でボリュームサイズ自体が
-   > 変動するため割合では基準が動いてしまうからです。逆に閾値を大きく取ると（例: 10GiB）、
-   > 初期割当 20GiB のうち半分を使った時点で鳴り始め、その時点では自動拡張がまだ働かないため
-   > **引上げても何も変わらない＝打つ手のない通知**になります。
+   > 閾値を「割当の何割」ではなく絶対値にしているのは、`AllocatedStorage` が CloudWatch の
+   > メトリクスではなく、割合をアラーム条件に直接書けないためです。
+   > **閾値を大きく取ってはいけません**（例: 10GiB にすると、初期割当 20GiB のうち半分を
+   > 使った時点で鳴り始めますが、その時点では発動点 2GiB に達しておらず自動拡張は動きません。
+   > 上限を引き上げても何も変わらない＝**打つ手のない通知**になり、アラーム疲れを招きます）。
+   >
+   > 1.5GiB の猶予: チェック1件あたり最大 20MiB なので約76件ぶん。想定利用（日次10件程度）で
+   > 1週間以上あり、自動拡張のクールダウン6時間に対して十分です。
 
 5. **api コンテナのメモリ監視と OOM 検知。** 手順が長いため、次の「ステップ8-3」に分けて記載します。
    **この設定は必須です**（`docs/design.md` §13.5 が受容したメモリリスクの検知手段そのものであるため）。
@@ -507,7 +528,7 @@ exit
 ステップ3-3 の `run-instances` ではロールを付けていないため、ここで作成して後付けします。
 権限は本用途の名前空間に限定します（最小権限の原則）。**ローカル（PowerShell）** で実行します。
 
-> **このステップに必要な操作権限:** ステップ1で作業用 IAM ユーザーの権限を EC2・RDS に絞った場合、
+> **このステップに必要な操作権限:** ステップ0で作業用 IAM ユーザーの権限を EC2・RDS に絞った場合、
 > ここで `AccessDenied` になります。以下を追加で付与してください。
 > `iam:CreateRole` / `iam:PutRolePolicy` / `iam:CreateInstanceProfile` /
 > `iam:AddRoleToInstanceProfile` / `ec2:AssociateIamInstanceProfile`、および
@@ -565,6 +586,9 @@ cid="$(docker compose -f docker-compose.ec2.yml --env-file .env ps -q api)"
 [ -n "$cid" ] || exit 0
 
 pct="$(docker stats --no-stream --format '{{.MemPerc}}' "$cid" | tr -d '%')"
+# 再起動直後は docker stats が "--" を返す。そのまま --value に渡すと毎分エラーになるため、
+# 数値でなければメモリ率は諦める（再起動メトリクスは下で必ず先に発行される）。
+case "$pct" in ''|*[!0-9.]*) pct="" ;; esac
 
 # 再起動回数の増分（OOM Kill の確実な信号。値そのものではなく差分を出す）
 now="$(docker inspect --format '{{.RestartCount}}' "$cid")"
@@ -582,9 +606,13 @@ fi
 if [ "$now" -ge "$prev" ]; then delta=$(( now - prev )); else delta=0; fi
 
 # IMDSv2 のトークンはリージョン・インスタンスID の双方で使うため一度だけ取得する
-imds_token="$(curl -sX PUT http://169.254.169.254/latest/api/token \
+# IMDS はリンクローカル宛だが、経路が DROP されると応答が返らない。cron で毎分起動するため
+# タイムアウトを付けてプロセスの滞留を防ぐ（到達不能なら curl が非0で終了し set -e で止まる）。
+imds_token="$(curl -s --connect-timeout 2 --max-time 5 -X PUT \
+  http://169.254.169.254/latest/api/token \
   -H 'X-aws-ec2-metadata-token-ttl-seconds: 60')"
-imds() { curl -s -H "X-aws-ec2-metadata-token: $imds_token" \
+imds() { curl -s --connect-timeout 2 --max-time 5 \
+  -H "X-aws-ec2-metadata-token: $imds_token" \
   "http://169.254.169.254/latest/meta-data/$1"; }
 
 # AWS CLI は「リージョン」を IMDS から自動解決しない。8-3-2 のインスタンスプロファイルが
@@ -613,9 +641,11 @@ aws cloudwatch put-metric-data --namespace UndeuxSales \
 printf '%s' "$now" > "$state.tmp" && mv -f "$state.tmp" "$state"
 
 # メモリ率は時系列の点サンプルであり、失敗しても次の周期で回復するため後段でよい
-aws cloudwatch put-metric-data --namespace UndeuxSales \
-  --metric-name ApiContainerMemoryPercent --unit Percent --value "$pct" \
-  --dimensions InstanceId="$iid"
+if [ -n "$pct" ]; then
+  aws cloudwatch put-metric-data --namespace UndeuxSales \
+    --metric-name ApiContainerMemoryPercent --unit Percent --value "$pct" \
+    --dimensions InstanceId="$iid"
+fi
 EOF
 ```
 
@@ -747,7 +777,7 @@ GitHub の **Actions** タブの「Run workflow」ボタンからも実行でき
 | 取込が 403 になる | 取込する利用者に `role=admin` カスタムクレームが必要（`infra/README.md` 参照） |
 | 副資材チェックが「処理中」のまま進まない | AI 実行はバックグラウンドタスクで動くため、**デプロイ・コンテナ再起動・プロセス異常終了で実行が失われる**と処理中のまま残る（永続キューを持たない設計判断。`docs/design.md` §13.6）。滞留判定の時間が経過すると詳細画面に再実行ボタンが出るので、利用者に再実行してもらう。デプロイ直後に複数件が該当する場合は、実行中だったチェックが巻き込まれた可能性が高い |
 | 副資材チェックが 429（受付上限）になる | 実行中＋待機中のチェックが上限に達している。AI 呼出は同時1件に直列化しているため（メモリ上限が根拠。`docs/design.md` §13.5）、先行分の完了を待ってから再試行する。恒常的に発生する場合は api コンテナのメモリ上限引上げを検討する（同時実行数だけを増やすと OOM の原因になる） |
-| 監視スクリプトが `You must specify a region.` で失敗（ステップ8-3-3 の動作確認で `OK` が出ない） | AWS CLI はリージョンを IMDS から自動解決しない（インスタンスプロファイルが供給するのは資格情報のみ）。スクリプト内で `AWS_DEFAULT_REGION` を IMDS の `placement/availability-zone` から確定させているので、この行が欠けていないか確認する。`IMDS からリージョンを取得できませんでした` が出る場合は IMDS への到達性（`curl -sX PUT http://169.254.169.254/latest/api/token -H 'X-aws-ec2-metadata-token-ttl-seconds: 60'` がトークンを返すか）を確認する |
+| 監視スクリプトが `You must specify a region.` で失敗（ステップ8-3-3 の動作確認で `OK` が出ない） | AWS CLI はリージョンを IMDS から自動解決しない（インスタンスプロファイルが供給するのは資格情報のみ）。スクリプト内で `AWS_DEFAULT_REGION` を IMDS の `placement/availability-zone` から確定させているので、この行が欠けていないか確認する。**何も出力されずに終了する場合**（IMDS へ到達できず curl 自体が失敗）も含め、IMDS への到達性（`curl -sX PUT http://169.254.169.254/latest/api/token -H 'X-aws-ec2-metadata-token-ttl-seconds: 60'` がトークンを返すか）を確認する |
 | 監視スクリプトが `AccessDenied`（`cloudwatch:PutMetricData`）で失敗 | ステップ8-3-2 のインスタンスプロファイルが関連付いていない。`aws ec2 describe-iam-instance-profile-associations --filters Name=instance-id,Values=$InstanceId` で確認し、未関連なら associate を再実行する（IAM の伝播に数十秒かかることがある） |
 | CloudWatch に `UndeuxSales` のメトリクスが出ない | まず EC2 上で `/usr/local/bin/undeux-api-mem.sh && echo OK` を手で実行してエラーを確認する（上2行が該当しやすい）。cron 登録は `crontab -l \| grep undeux-api-mem` で1行あることを確認する。api コンテナが停止していると発行しない仕様（`ps -q api` が空なら正常終了する） |
 | EC2 上のログを見たい | `ssh -i "$HOME\.ssh\undeux-ec2" ubuntu@<EC2IP>` で接続し `cd undeux-sales-suite/infra/aws; docker compose -f docker-compose.ec2.yml --env-file .env logs api` |
