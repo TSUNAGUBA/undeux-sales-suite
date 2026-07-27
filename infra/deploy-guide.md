@@ -359,6 +359,48 @@ Start-Process "https://$FirebaseProjectId.web.app"
 > **取込機能を使う利用者** には、取込権限ロール（`role=admin`）の付与が必要です。
 > 詳細は `infra/README.md` の「認証」を参照してください。
 
+### ステップ8-2: 副資材チェックを使う場合の追加確認
+
+副資材チェック（`/subsidiary-check`）は画像アップロードと同期の AI 呼出を行うため、
+初回リリース時に次の3点を確認してください（設計の根拠は `docs/design.md` §13.5・§13.6）。
+
+1. **`ANTHROPIC_API_KEY` の登録**（未登録時は当該メニューのみ 503「AI未設定」。他機能は影響なし）
+2. **リバースプロキシのタイムアウトとボディサイズ。** AI 呼出は最大約3分（順番待ち30秒＋AI 120秒）
+   かかりうるため、EC2 上の nginx-proxy で `proxy_read_timeout` を **180 秒以上**、
+   `client_max_body_size` を **25MB 以上**に設定します（nginx 既定はそれぞれ60秒・1MB）。
+   不足すると、サーバー側はチェックを正常に確定するのに利用者には 504 が見え、
+   失敗と誤認した再送で重複チェック・重複 AI コストが発生します。
+
+   ```powershell
+   # 例: nginx-proxy のカスタム設定を配置して再読込
+   ssh -i $KeyPath ec2-user@$ElasticIp
+   sudo tee /etc/nginx/conf.d/undeux-subsidiary.conf > /dev/null <<'EOF'
+   proxy_read_timeout 180s;
+   client_max_body_size 25m;
+   EOF
+   sudo nginx -t && sudo nginx -s reload
+   ```
+
+3. **RDS ストレージ使用率のアラーム。** チェック記録の画像（1件あたり最大 合計20MB）は
+   記録保護のため自動削除されません（`docs/design.md` §13.6）。運用開始時に
+   CloudWatch でストレージ空き容量のアラームを設定し、通知先を決めてください。
+
+   ```powershell
+   # 例: 空き容量が 10GB を下回ったら通知（$SnsTopicArn は事前に作成した SNS トピック）
+   aws cloudwatch put-metric-alarm `
+     --alarm-name "undeux-rds-free-storage" `
+     --namespace AWS/RDS --metric-name FreeStorageSpace `
+     --dimensions Name=DBInstanceIdentifier,Value=$RdsInstanceId `
+     --statistic Average --period 300 --evaluation-periods 1 `
+     --threshold 10737418240 --comparison-operator LessThanThreshold `
+     --alarm-actions $SnsTopicArn
+   ```
+
+> **api コンテナのメモリ:** 副資材チェックは1リクエストで最大約100MBを保持するため、
+> AI 呼出は同時1件に直列化しています（`docs/design.md` §13.5）。同時実行数を増やしたい場合は、
+> 先に `infra/aws/docker-compose.ec2.yml` の `api` の `memory`（既定 512m）を EC2 の空き容量を
+> 確認のうえ引き上げてください。メモリを据え置いたまま同時実行数だけを増やすと OOM の原因になります。
+
 ---
 
 ## 2回目以降のデプロイ

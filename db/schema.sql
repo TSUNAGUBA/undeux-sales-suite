@@ -952,6 +952,17 @@ COMMENT ON COLUMN subsidiary_check.findings      IS '指摘配列（API ワイ�
 COMMENT ON COLUMN subsidiary_check.ai_model      IS 'チェックに使用した AI モデル ID（表示用）';
 COMMENT ON COLUMN subsidiary_check.checked_at    IS 'AI チェックの完了（または失敗確定）日時';
 
+-- AI 実行開始日時（冪等に追加）。
+-- created_at（登録日時）・checked_at（完了/失敗確定日時）とは役割が異なり、再実行（rerun）の
+-- クレーム UPDATE で now() に更新される。孤児判定（processing のまま滞留超過）の基準時刻でもある。
+ALTER TABLE subsidiary_check
+    ADD COLUMN IF NOT EXISTS started_at timestamptz;
+COMMENT ON COLUMN subsidiary_check.started_at IS '最後に AI 実行を開始した日時。孤児判定（滞留超過）とクレームの基準時刻';
+
+-- 既存行のバックフィル（冪等）。started_at 導入前の行は登録＝実行開始とみなす。
+-- 2回目以降は対象行が無く 0 行更新（再適用しても値は巻き戻らない・原則2）。
+UPDATE subsidiary_check SET started_at = created_at WHERE started_at IS NULL;
+
 CREATE INDEX IF NOT EXISTS ix_subsidiary_check_created ON subsidiary_check (created_at DESC);
 
 CREATE TABLE IF NOT EXISTS subsidiary_check_image (

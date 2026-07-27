@@ -38,6 +38,12 @@ public static class SubsidiaryCheckImageKind
 }
 
 /// <summary>副資材チェックのサマリ（履歴一覧・詳細ヘッダ共用）。</summary>
+/// <param name="CreatedAt">チェックの登録日時（不変）。</param>
+/// <param name="CheckedAt">完了（または失敗確定）日時。未確定なら null。</param>
+/// <param name="StartedAt">
+/// 最後に AI 実行を開始した日時（再実行のたびに更新される）。孤児判定（processing の滞留超過）の
+/// 基準時刻。started_at 導入前の既存行は created_at でバックフィル済み（理論上のみ null）。
+/// </param>
 public sealed record SubsidiaryCheckSummary(
     Guid CheckId,
     Guid? ProductId,
@@ -53,7 +59,8 @@ public sealed record SubsidiaryCheckSummary(
     string? ErrorMessage,
     string CreatedBy,
     DateTime CreatedAt,
-    DateTime? CheckedAt);
+    DateTime? CheckedAt,
+    DateTime? StartedAt);
 
 /// <summary>AI チェックの指摘1件。</summary>
 /// <param name="Category">layout / order / content。</param>
