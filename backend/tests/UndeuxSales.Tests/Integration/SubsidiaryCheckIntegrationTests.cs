@@ -132,6 +132,59 @@ public sealed class SubsidiaryCheckIntegrationTests
         Assert.Equal(instructionBytes, await download.Content.ReadAsByteArrayAsync());
     }
 
+    /// <summary>
+    /// 画像配信の同時実行数は有界化されており、枠が埋まっている間の要求は
+    /// 順番待ち上限で 429（UNDX-REQ-009）になる。
+    /// これが無いと「同時閲覧者数 × 1チェックの画像合計」がそのままピークメモリになり、
+    /// GC ハードリミットに対するヘッドルーム（docs/design.md §13.5）を超えうる。
+    /// </summary>
+    [Fact]
+    public async Task GetImage_WhenAllDownloadSlotsBusy_Returns429_AndRecoversAfterRelease()
+    {
+        var stub = new SubsidiaryCheckFakeAiClient { ResponseText = AllPassResponse };
+        using var factory = WithSubsidiaryAi(stub);
+        using var client = CreateClient(factory);
+
+        using var form = new MultipartFormDataContent();
+        AddImage(form, "instructionImages", "instruction.jpg", "image/jpeg", JpegBytes(0x01));
+        AddImage(form, "tagImages", "tag.png", "image/png", PngBytes(0x01));
+
+        var create = await client.PostAsync("/api/subsidiary-check", form);
+        create.EnsureSuccessStatusCode();
+        var accepted = await create.Content.ReadFromJsonAsync<SubsidiaryCheckDetail>();
+        var detail = await WaitForSettledAsync(client, accepted!.Summary.CheckId);
+        var imageId = detail.Images[0].ImageId;
+        var url = $"/api/subsidiary-check/{detail.Summary.CheckId}/images/{imageId}";
+
+        // 枠が空いている通常時は取得できる（上限が常時 429 を返す実装になっていないこと）。
+        var beforeBusy = await client.GetAsync(url);
+        beforeBusy.EnsureSuccessStatusCode();
+
+        var taken = await OccupyAllImageDownloadSlotsAsync();
+        SubsidiaryCheckService.ImageDownloadQueueTimeoutOverride = TimeSpan.FromMilliseconds(50);
+        try
+        {
+            var busy = await client.GetAsync(url);
+            Assert.Equal(HttpStatusCode.TooManyRequests, busy.StatusCode);
+            Assert.Contains("UNDX-REQ-009", await busy.Content.ReadAsStringAsync());
+        }
+        finally
+        {
+            SubsidiaryCheckService.ImageDownloadQueueTimeoutOverride = null;
+            for (var i = 0; i < taken; i++)
+            {
+                SubsidiaryCheckService.ReleaseImageDownloadSlot();
+            }
+        }
+
+        // 枠の解放後は復帰する（429 が恒久化しない＝解放漏れがない）。
+        var afterRelease = await client.GetAsync(url);
+        afterRelease.EnsureSuccessStatusCode();
+        Assert.Equal(
+            await beforeBusy.Content.ReadAsByteArrayAsync(),
+            await afterRelease.Content.ReadAsByteArrayAsync());
+    }
+
     [Fact]
     public async Task Create_WithProduct_IncludesAttachment_AndProductMasterDetailExposesIt()
     {
@@ -609,6 +662,34 @@ public sealed class SubsidiaryCheckIntegrationTests
         var created = await WaitForSettledAsync(client, accepted!.Summary.CheckId);
 
         Assert.Equal(SubsidiaryCheckStatus.Completed, created.Summary.Status);
+
+        // 受理されるだけでは不十分。AI 境界を跨ぐ media type が正規化済み（小文字）で
+        // なければ、AI クライアント側の比較次第で PNG が JPEG として送信され、外部 API に
+        // 拒否されて恒久失敗する（保存値は変わらないため rerun でも直らない）。
+        Assert.Equal(new[] { "image/jpeg", "image/png" }, stub.LastMediaTypes);
+
+    }
+
+    /// <summary>
+    /// rerun は DB に保存された content_type を読み直す経路のため、正規化前に保存された
+    /// 既存行（"IMAGE/PNG" 等）でも AI へは正規化した media type を渡す。
+    /// これが崩れると PNG が JPEG として送信され、rerun しても直らない恒久失敗になる。
+    /// </summary>
+    [Fact]
+    public async Task Rerun_WithUnnormalizedStoredContentType_PassesNormalizedMediaTypeToAi()
+    {
+        var stub = new SubsidiaryCheckFakeAiClient { ResponseText = AllPassResponse };
+        using var factory = WithSubsidiaryAi(stub);
+        using var client = CreateClient(factory);
+
+        var staleId = await InsertProcessingCheckAsync(OrphanAge, storedContentTypeCase: true);
+        using var rerun = await client.PostAsync(
+            $"/api/subsidiary-check/{staleId}/rerun", content: null);
+        rerun.EnsureSuccessStatusCode();
+        var settled = await WaitForSettledAsync(client, staleId);
+
+        Assert.Equal(SubsidiaryCheckStatus.Completed, settled.Summary.Status);
+        Assert.Equal(new[] { "image/jpeg", "image/png" }, stub.LastMediaTypes);
     }
 
     [Fact]
@@ -906,6 +987,31 @@ public sealed class SubsidiaryCheckIntegrationTests
     }
 
     /// <summary>
+    /// 画像配信枠（<see cref="SubsidiaryCheckService.MaxConcurrentImageDownloads"/>）を
+    /// すべて占有して順番待ちを起こす。取得できるまでリトライするのは
+    /// <see cref="OccupyAiSlotAsync"/> と同じ理由（直前のテストの解放待ち）。
+    /// </summary>
+    private static async Task<int> OccupyAllImageDownloadSlotsAsync()
+    {
+        var deadline = DateTime.UtcNow + TimeSpan.FromSeconds(10);
+        var taken = 0;
+        while (taken < SubsidiaryCheckService.MaxConcurrentImageDownloads)
+        {
+            if (await SubsidiaryCheckService.TryOccupyImageDownloadSlotAsync())
+            {
+                taken++;
+                continue;
+            }
+
+            Assert.True(DateTime.UtcNow < deadline,
+                "画像配信枠が解放されず、順番待ち状態を作れませんでした。");
+            await Task.Delay(25);
+        }
+
+        return taken;
+    }
+
+    /// <summary>
     /// AI 実行スロット（同時実行1のセマフォ）を占有して「順番待ちが発生する」状態を作る。
     /// 直前のテストのバックグラウンド実行が解放し切るまで少し待つため、取得できるまでリトライする
     /// （「RunAiAsync がセマフォを解放してから status を更新する」という内部順序に依存しない）。
@@ -1022,7 +1128,12 @@ public sealed class SubsidiaryCheckIntegrationTests
     /// started_at を現在からどれだけ過去にするか（null なら <paramref name="age"/> と同じ）。
     /// 孤児判定の基準が created_at ではなく started_at であることを検証するために分離できる。
     /// </param>
-    private async Task<Guid> InsertProcessingCheckAsync(TimeSpan age, TimeSpan? startedAge = null)
+    /// <param name="storedContentTypeCase">
+    /// DB に保存する content_type の表記。既定は正規化済みの小文字。大文字表記を渡すと、
+    /// 「保存値が正規化されていない既存行」を再現できる（AI 境界での正規化の検証用）。
+    /// </param>
+    private async Task<Guid> InsertProcessingCheckAsync(
+        TimeSpan age, TimeSpan? startedAge = null, bool storedContentTypeCase = false)
     {
         var checkId = Guid.NewGuid();
         await using var connection = new NpgsqlConnection(_fixture.ConnectionString);
@@ -1036,14 +1147,16 @@ public sealed class SubsidiaryCheckIntegrationTests
             INSERT INTO subsidiary_check_image
                 (image_id, check_id, kind, file_name, content_type, size_bytes, data, sort_order)
             VALUES
-                (@instructionId, @checkId, 'instruction', 'i.jpg', 'image/jpeg', 4, @jpeg, 0),
-                (@tagId, @checkId, 'tag', 't.png', 'image/png', 5, @png, 0);
+                (@instructionId, @checkId, 'instruction', 'i.jpg', @jpegType, 4, @jpeg, 0),
+                (@tagId, @checkId, 'tag', 't.png', @pngType, 5, @png, 0);
             """,
             new
             {
                 checkId,
                 age,
                 startedAge = startedAge ?? age,
+                jpegType = storedContentTypeCase ? "IMAGE/JPEG" : "image/jpeg",
+                pngType = storedContentTypeCase ? "IMAGE/PNG" : "image/png",
                 instructionId = Guid.NewGuid(),
                 tagId = Guid.NewGuid(),
                 jpeg = JpegBytes(0x01),
@@ -1154,6 +1267,12 @@ public sealed class SubsidiaryCheckFakeAiClient : IAiChatClient
     /// <summary>AnalyzeImagesAsync が呼ばれた回数（「AI を呼ばずに失敗した」ことの検証用）。</summary>
     public int AnalyzeCallCount => _analyzeCallCount;
 
+    /// <summary>
+    /// 直近の AnalyzeImagesAsync に渡された media type の列（表示順）。
+    /// AI 境界を跨ぐ値が正規化済みであることを検証するために記録する。
+    /// </summary>
+    public IReadOnlyList<string> LastMediaTypes { get; private set; } = Array.Empty<string>();
+
     private int _analyzeCallCount;
 
     public bool IsConfigured => Configured;
@@ -1177,6 +1296,7 @@ public sealed class SubsidiaryCheckFakeAiClient : IAiChatClient
         int maxTokens, CancellationToken cancellationToken)
     {
         Interlocked.Increment(ref _analyzeCallCount);
+        LastMediaTypes = images.Select(i => i.MediaType).ToList();
 
         if (!Configured)
         {

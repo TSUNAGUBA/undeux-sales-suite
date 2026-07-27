@@ -46,6 +46,22 @@ const checkId = computed(() => String(route.params.checkId ?? ''))
  */
 const POLL_INTERVAL_MS = 5000
 
+/**
+ * ポーリングの連続失敗の許容回数。超えたら打ち切ってエラーを表示する。
+ * 打ち切らないと、セッション期限切れによる恒常的な 401 や、実行が失われた孤児レコード
+ * （まさに再実行機能が存在する理由）に対して、上限なく要求を投げ続けることになる。
+ * 5回＝約25秒ぶんの連続失敗で、一時的なネットワーク断は乗り越えられる。
+ */
+const POLL_MAX_CONSECUTIVE_FAILURES = 5
+
+/**
+ * ポーリングの総回数の上限（5秒 × 240 ＝ 約20分）。
+ * サーバ側の滞留時間の上限（SUBSIDIARY_PROCESSING_STALE_MS）と同じで、
+ * これを超えて processing のままなら孤児と判定され再実行導線が出るため、
+ * 自動更新を続ける意味がなくなる（useMart の 400 回打切りと同じ考え方）。
+ */
+const POLL_MAX_ATTEMPTS = SUBSIDIARY_PROCESSING_STALE_MS / POLL_INTERVAL_MS
+
 // ---- 詳細の取得 ----
 
 const detail = ref<SubsidiaryCheckDetail | null>(null)
@@ -84,7 +100,7 @@ async function load(): Promise<void> {
     // 画像取得は補助表示のため非ブロッキング（失敗しても指摘・判定は表示する。原則4）。
     void loadImages(result)
   } catch (error) {
-    // notFound はここだけが書き、errorMessage も設定するのはここだけ（解除は pollDetail も行う）。
+    // notFound はここだけが書き、errorMessage も設定するのはここだけ（解除は runPolling も行う）。
     // いずれも load が主体のため、判定は load 世代で行う。
     // ここで requestSeq を見ると、後着のポーリングに打ち消されてエラー状態が
     // どこにも設定されないまま握り潰され、直前のチェックの判定結果が
@@ -106,42 +122,76 @@ async function load(): Promise<void> {
 
 // ---- processing 中の自動ポーリング ----
 
-let pollTimer: ReturnType<typeof setInterval> | null = null
+/**
+ * ポーリング中の世代。停止は「この値を進める」ことで行い、走行中のループは
+ * 各ステップで自分の世代と照合して自ら降りる。
+ * setInterval ではなく「1回取得 → 待つ」の自走ループにしているのは、
+ * 前回の取得が終わる前に次を発火させないため（useMart.ts の rebuild と同じ方式）。
+ * API が遅延すると setInterval では要求が積み上がり、観測対象の輻輳を自ら悪化させる。
+ */
+let pollGeneration = 0
+let polling = false
+
+function sleep(ms: number): Promise<void> {
+  return new Promise((resolve) => setTimeout(resolve, ms))
+}
 
 function stopPolling(): void {
-  if (pollTimer !== null) {
-    clearInterval(pollTimer)
-    pollTimer = null
-  }
+  pollGeneration += 1
+  polling = false
 }
 
 function startPolling(): void {
-  if (pollTimer !== null) return
-  pollTimer = setInterval(() => {
-    void pollDetail()
-  }, POLL_INTERVAL_MS)
+  if (polling) return
+  polling = true
+  void runPolling(++pollGeneration)
 }
 
 /**
- * ポーリングによる詳細の再取得。
+ * processing の間、詳細を一定間隔で取得し続ける。
  * ローディング表示は切り替えない（画面がちらつかない）。エラーパネルは「立てない」が、
  * 取得に成功した場合は陳腐化したエラーを解除する（下記参照）。
- * 失敗しても次回の周期で再試行する（ネットワーク断等のグレースフルデグラデーション・原則4）。
+ * 単発の失敗は次の周期で再試行するが、連続失敗が続く場合は打ち切る（原則4）。
  * 画像はチェック登録時に確定していて以降変化しないため、再取得しない。
  */
-async function pollDetail(): Promise<void> {
-  const seq = ++requestSeq
-  try {
-    const result = await get<SubsidiaryCheckDetail>(`/api/subsidiary-check/${checkId.value}`)
-    if (seq !== requestSeq) return
-    detail.value = result
-    // 取得に成功した時点で、直前の load 失敗で出したエラーは陳腐化している。
-    // ここで消さないと、データは取れているのにエラーパネルが残り、
-    // StatusBlock がスロットごと隠すため再読込ボタンまで消えて固着する。
-    errorMessage.value = null
-  } catch (error) {
-    console.warn('[subsidiary-check] 処理状況の自動更新に失敗しました（次回再試行します）:', error)
+async function runPolling(generation: number): Promise<void> {
+  let failures = 0
+  for (let attempt = 0; attempt < POLL_MAX_ATTEMPTS; attempt++) {
+    await sleep(POLL_INTERVAL_MS)
+    if (generation !== pollGeneration) return
+
+    const seq = ++requestSeq
+    try {
+      const result = await get<SubsidiaryCheckDetail>(`/api/subsidiary-check/${checkId.value}`)
+      if (generation !== pollGeneration) return
+      failures = 0
+      if (seq !== requestSeq) continue
+      detail.value = result
+      // 取得に成功した時点で、直前の load 失敗で出したエラーは陳腐化している。
+      // ここで消さないと、データは取れているのにエラーパネルが残り、
+      // StatusBlock がスロットごと隠すため再読込ボタンまで消えて固着する。
+      errorMessage.value = null
+      // completed / failed になったら status の watch が stopPolling を呼ぶため、
+      // 次の周回で generation 不一致となって降りる。
+    } catch (error) {
+      if (generation !== pollGeneration) return
+      failures += 1
+      console.warn(
+        `[subsidiary-check] 処理状況の自動更新に失敗しました（${failures}/${POLL_MAX_CONSECUTIVE_FAILURES}）:`,
+        error,
+      )
+      if (failures >= POLL_MAX_CONSECUTIVE_FAILURES) {
+        // 打ち切る。黙って止まると「処理中」のまま永久に更新されない画面になるため、
+        // 再読込導線（StatusBlock の外の再読込ボタン）が出るようエラーを立てる。
+        errorMessage.value =
+          '処理状況の自動更新に繰り返し失敗しました。再読込してください。'
+        stopPolling()
+        return
+      }
+    }
   }
+  // 上限に達した（＝滞留判定の時間を超えた）。孤児として再実行導線が出るため止めてよい。
+  if (generation === pollGeneration) stopPolling()
 }
 
 // status が processing の間だけポーリングする（completed / failed になったら止める）。
@@ -177,15 +227,25 @@ function revokeGallery(): void {
 }
 
 async function loadImages(target: SubsidiaryCheckDetail): Promise<void> {
+  if (target.images.length === 0) {
+    // 世代を進めるのは「取得を始める」ときだけにする。ここで先に ++ すると、
+    // 先行リクエストの finally が seq 不一致で imagesLoading を戻せず固まる。
+    imagesRequestSeq += 1
+    revokeGallery()
+    return
+  }
   const seq = ++imagesRequestSeq
   revokeGallery()
-  if (target.images.length === 0) return
   imagesLoading.value = true
   try {
     const token = await getIdToken()
     // 1枚の取得失敗でギャラリー全体を止めない（失敗した枠のみプレースホルダ表示）。
-    const results = await Promise.all(
-      target.images.map(async (info): Promise<GalleryImage> => {
+    // 同時リクエスト数は有界化する（最大13枚を一斉に投げるとサーバの画像配信枠を
+    // 1人で占有し、他の閲覧者を 429 にしてしまうため）。
+    const results = await mapWithConcurrencyLimit(
+      target.images,
+      SUBSIDIARY_GALLERY_FETCH_CONCURRENCY,
+      async (info): Promise<GalleryImage> => {
         try {
           const response = await fetch(
             `${apiBaseUrl}/api/subsidiary-check/${target.summary.checkId}/images/${info.imageId}`,
@@ -197,7 +257,7 @@ async function loadImages(target: SubsidiaryCheckDetail): Promise<void> {
         } catch {
           return { info, objectUrl: null, failed: true }
         }
-      }),
+      },
     )
     if (seq !== imagesRequestSeq) {
       // 後着の旧リクエスト: 生成済み objectURL を破棄してリークさせない。
@@ -207,6 +267,16 @@ async function loadImages(target: SubsidiaryCheckDetail): Promise<void> {
       return
     }
     galleryImages.value = results
+  } catch {
+    // ここに来るのは主に getIdToken() の失敗（トークン失効・瞬断）。catch が無いと
+    // 未処理の Promise 拒否になり、冒頭の revokeGallery() でギャラリーを空にした状態のまま
+    // 見出しだけが残って、利用者は全リロード以外に復帰手段が無くなる（原則4）。
+    // 全枠を失敗プレースホルダで埋め、既存の「取得に失敗しました」表示に載せる。
+    if (seq === imagesRequestSeq) {
+      galleryImages.value = target.images.map((info) => ({
+        info, objectUrl: null, failed: true,
+      }))
+    }
   } finally {
     if (seq === imagesRequestSeq) {
       imagesLoading.value = false
@@ -285,8 +355,14 @@ async function rerun(): Promise<void> {
     )
     if (seq !== requestSeq) return
     detail.value = updated
-    // 画像自体は不変だが、初回取得に失敗していた場合の回復も兼ねて再取得する。
-    void loadImages(updated)
+    // 孤児（processing のまま滞留）の再実行では status が processing から変化せず
+    // watch が発火しないため、ここで明示的に開始する（startPolling は冪等）。
+    startPolling()
+    // 画像自体は不変。初回取得に失敗した枠がある場合だけ回復のために再取得する
+    // （全件再取得すると、AI 実行でメモリを最も使う瞬間に画像配信も重ねることになる）。
+    if (galleryImages.value.some((image) => image.failed)) {
+      void loadImages(updated)
+    }
   } catch (error) {
     console.error('[subsidiary-check] AIチェックの再実行に失敗しました:', error)
     rerunError.value = apiErrorMessage(error)

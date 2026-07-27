@@ -46,9 +46,13 @@ public sealed class DatabaseFixture : IAsyncLifetime
         catch (Exception ex)
         {
             throw new InvalidOperationException(
-                // 例外は型名＋メッセージに絞る。ToString() のスタックトレースには接続文字列断片が
-                // 載る型の失敗があり、SafeConnectionInfo() で資格情報を除いた意図が相殺されるため。
-                // 元例外は InnerException として保持しており、必要なら参照できる。
+                // 例外は型名＋メッセージに絞り、ToString() の全文は載せない。
+                // 目的は出力の重複を避けること: 元例外は InnerException として保持しており、
+                // xUnit が内側の型名・メッセージ・スタックトレースを別途そのまま描画する。
+                // 注意: これは資格情報の秘匿にはならない（内側の描画も、ここで残す ex.Message も、
+                // 接続文字列断片を含みうる）。秘匿は SafeConnectionInfo() が付与する
+                // 「接続先」表示にのみ効く。テストDBの資格情報はローカル既定値であり、
+                // 秘匿ではなく可読性のための整形と位置づける。
                 $"統合テストのDB初期化に失敗しました（段階: {_initStage}、接続先: {SafeConnectionInfo()}）。"
                 + $"詳細: {ex.GetType().Name}: {ex.Message}",
                 ex);

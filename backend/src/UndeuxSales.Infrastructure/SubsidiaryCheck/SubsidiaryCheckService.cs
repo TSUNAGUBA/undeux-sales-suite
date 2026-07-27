@@ -341,6 +341,13 @@ public sealed class SubsidiaryCheckService
     /// <summary><see cref="TryOccupyAiSlotAsync"/> で取得したスロットを解放する。</summary>
     internal static void ReleaseAiSlot() => AiCallSemaphore.Release();
 
+    /// <summary>画像配信枠を即時取得できたか（テストから順番待ち状態を作るために使う）。</summary>
+    internal static Task<bool> TryOccupyImageDownloadSlotAsync() =>
+        ImageDownloadSemaphore.WaitAsync(TimeSpan.Zero);
+
+    /// <summary><see cref="TryOccupyImageDownloadSlotAsync"/> で取得した枠を解放する。</summary>
+    internal static void ReleaseImageDownloadSlot() => ImageDownloadSemaphore.Release();
+
     /// <summary>
     /// 受付枠を1つ占有する（テストから受付上限に達した状態を作るために使う）。上限到達時は null。
     /// 解放は本番と同じ <see cref="AiCheckSlotLease.Dispose"/> で行う（テスト専用の解放経路を作らない）。
@@ -723,6 +730,84 @@ public sealed class SubsidiaryCheckService
         ?? throw new AppException(ErrorCodes.SubsidiaryCheckNotFound, 404);
 
     /// <summary>
+    /// 画像配信（1枚あたり最大 <see cref="MaxImageSizeBytes"/>）の同時実行数の上限。
+    /// <para>
+    /// <b>なぜ必要か:</b> AI 実行経路は <see cref="MaxConcurrentAiChecks"/> と
+    /// <see cref="AiCallSemaphore"/> でピークメモリが構造的に有界化されているが、画像配信には
+    /// 認証以外の制限が無かった。詳細画面は1回開くだけで最大 13 枚
+    /// （<see cref="MaxInstructionImages"/>＋<see cref="MaxTagImages"/>）を並列取得するため、
+    /// 上限が無いと「同時閲覧者数 × 1チェックの画像合計（最大 20MiB）」が
+    /// そのままピークメモリになり、GC ハードリミット 384MiB に対するヘッドルーム
+    /// （約74MiB・<c>docs/design.md</c> §13.5）を 2 名程度の同時閲覧で超えうる。
+    /// </para>
+    /// <para>
+    /// <b>値の根拠:</b> 1枚あたりのピークは「DB から読んだ byte[]（最大5MiB）＋応答バッファ
+    /// （同）」で約 10MiB。4 並列で約 40MiB となりヘッドルーム約74MiB に収まる。
+    /// 同時閲覧者が何人いてもこの値を超えないことが要点で、閲覧者数に依存しない。
+    /// </para>
+    /// </summary>
+    public const int MaxConcurrentImageDownloads = 4;
+
+    /// <summary>
+    /// 画像配信の同時実行数を制限するセマフォ。
+    /// <para>
+    /// <b>待機側がメモリを持たないことが前提:</b> byte[] の実体化は
+    /// <see cref="SubsidiaryCheckRepository.GetImageAsync"/> の内側で起きるため、
+    /// 本セマフォを<b>取得してから</b>読み出す限り、順番待ち中のリクエストが保持するのは
+    /// HTTP コンテキストのみで画像バイト列は持たない。したがって待機件数は
+    /// ピークメモリに寄与せず、件数上限（AI 実行側の <see cref="MaxConcurrentAiChecks"/> に
+    /// 相当するもの）を別途設ける必要がない。<b>読み出しを待機の外へ動かさないこと。</b>
+    /// </para>
+    /// maxCount を明示し、解放の非対称が <see cref="SemaphoreFullException"/> で
+    /// 顕在化するようにする（<see cref="AcceptanceSemaphore"/> と同じ流儀・原則3）。
+    /// </summary>
+    private static readonly SemaphoreSlim ImageDownloadSemaphore =
+        new(MaxConcurrentImageDownloads, MaxConcurrentImageDownloads);
+
+    /// <summary>
+    /// 画像配信の順番待ち上限（30秒）。
+    /// <para>
+    /// AI 呼出（<see cref="AiCallQueueTimeout"/> ＝ 420秒）と違い、画像配信は利用者が
+    /// 画面の前で待つ同期リクエストのため、待ちは短く打ち切る。1枠あたりの占有は
+    /// 「DB から数MiB を読んで応答へ書く」だけで通常は数百ミリ秒であり、30秒の待ちは
+    /// 4 並列 × 十数回転ぶんに相当する。超過は 429（<see cref="ErrorCodes.AiCheckBusy"/>）とし、
+    /// 利用者は再読込で復帰できる（ギャラリーは1枚単位で失敗を表示する設計・原則4）。
+    /// </para>
+    /// </summary>
+    private static readonly TimeSpan ImageDownloadQueueTimeout = TimeSpan.FromSeconds(30);
+
+    /// <summary>順番待ち上限のテスト用オーバーライド（null＝<see cref="ImageDownloadQueueTimeout"/>）。</summary>
+    internal static TimeSpan? ImageDownloadQueueTimeoutOverride;
+
+    /// <summary>
+    /// 画像バイナリを取得する。未存在は 404（UNDX-DATA-005）、
+    /// 同時実行の順番待ちが上限を超えた場合は 429（UNDX-REQ-009）。
+    /// ピークメモリを有界化するため、読み出しは必ず
+    /// <see cref="ImageDownloadSemaphore"/> の内側で行う。
+    /// </summary>
+    public async Task<SubsidiaryCheckImagePayload> GetImageRequiredAsync(
+        Guid checkId, Guid imageId, CancellationToken cancellationToken = default)
+    {
+        var queueTimeout = ImageDownloadQueueTimeoutOverride ?? ImageDownloadQueueTimeout;
+        if (!await ImageDownloadSemaphore.WaitAsync(queueTimeout, cancellationToken))
+        {
+            throw new AppException(ErrorCodes.AiCheckBusy, 429,
+                "画像の取得が混み合っています。しばらく待ってから再読込してください。");
+        }
+
+        try
+        {
+            return await _repository.GetImageAsync(checkId, imageId, cancellationToken)
+                   ?? throw new AppException(ErrorCodes.SubsidiaryCheckNotFound, 404,
+                       "指定された画像が見つかりません。");
+        }
+        finally
+        {
+            ImageDownloadSemaphore.Release();
+        }
+    }
+
+    /// <summary>
     /// 画像の枚数・形式・サイズ（各上限＋合計上限）を検証する
     /// （コントローラの事前チェックと二重でも安全な再検証）。
     /// <para>
@@ -1027,6 +1112,21 @@ public sealed class SubsidiaryCheckService
             instructionImages.Select(i => (i.Data, i.ContentType)).ToList(),
             tagImages.Select(i => (i.Data, i.ContentType)).ToList());
 
+    /// <summary>
+    /// AI へ渡す media type を正規化する（小文字化）。
+    /// <para>
+    /// 入力検証は media type を case-insensitive で受理するため（RFC 9110。
+    /// <see cref="AllowedContentTypes"/> の比較は <see cref="StringComparer.OrdinalIgnoreCase"/>）、
+    /// DB には "IMAGE/PNG" のような表記も保存されうる。AI クライアント側で完全一致比較を
+    /// されると PNG が JPEG として送信され、外部 API に拒否されて<b>再実行しても直らない</b>
+    /// 恒久失敗になる（保存済みの値は変わらないため）。境界を跨ぐ前にここで正規化して、
+    /// 下流の比較方法に依存しないようにする。
+    /// </para>
+    /// 既存行（正規化前に保存されたもの）も読取時に本メソッドを通るため救済される。
+    /// </summary>
+    private static string NormalizeMediaType(string contentType) =>
+        contentType.Trim().ToLowerInvariant();
+
     /// <summary>指示書→タグの順にラベル（「指示書画像（正） 1/3」等）を付けて AI 入力列を構築する。</summary>
     private static IReadOnlyList<AiImageInput> BuildAiImages(
         IReadOnlyList<(byte[] Data, string ContentType)> instructionImages,
@@ -1034,11 +1134,11 @@ public sealed class SubsidiaryCheckService
     {
         var images = new List<AiImageInput>(instructionImages.Count + tagImages.Count);
         images.AddRange(instructionImages.Select((image, index) => new AiImageInput(
-            image.Data, image.ContentType,
+            image.Data, NormalizeMediaType(image.ContentType),
             SubsidiaryCheckPromptBuilder.BuildImageLabel(
                 SubsidiaryCheckImageKind.Instruction, index + 1, instructionImages.Count))));
         images.AddRange(tagImages.Select((image, index) => new AiImageInput(
-            image.Data, image.ContentType,
+            image.Data, NormalizeMediaType(image.ContentType),
             SubsidiaryCheckPromptBuilder.BuildImageLabel(
                 SubsidiaryCheckImageKind.Tag, index + 1, tagImages.Count))));
         return images;

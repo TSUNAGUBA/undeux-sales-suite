@@ -125,14 +125,18 @@ public sealed class SubsidiaryCheckController : ControllerBase
     public Task<SubsidiaryCheckDetail> Get(string checkId, CancellationToken cancellationToken)
         => _service.GetDetailRequiredAsync(ParseId(checkId), cancellationToken);
 
-    /// <summary>チェック画像のバイナリを返す（認証付き fetch でのプレビュー・ダウンロード用）。</summary>
+    /// <summary>
+    /// チェック画像のバイナリを返す（認証付き fetch でのプレビュー・ダウンロード用）。
+    /// 読み出しはサービス側で同時実行数を有界化する
+    /// （<see cref="SubsidiaryCheckService.MaxConcurrentImageDownloads"/>）。
+    /// 直接リポジトリを呼ぶとこの上限を迂回してしまうため、必ずサービス経由にすること。
+    /// </summary>
     [HttpGet("{checkId}/images/{imageId}")]
     public async Task<IActionResult> GetImage(
         string checkId, string imageId, CancellationToken cancellationToken)
     {
-        var image = await _repository.GetImageAsync(ParseId(checkId), ParseId(imageId), cancellationToken)
-                    ?? throw new AppException(ErrorCodes.SubsidiaryCheckNotFound, 404,
-                        "指定された画像が見つかりません。");
+        var image = await _service.GetImageRequiredAsync(
+            ParseId(checkId), ParseId(imageId), cancellationToken);
         return File(image.Data, image.ContentType, image.FileName);
     }
 

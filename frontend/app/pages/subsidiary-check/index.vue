@@ -349,6 +349,8 @@ async function runCheck(): Promise<void> {
     return
   }
   submitting.value = true
+  // 登録に成功したチェックの ID。遷移は try の外で行う（下記）。
+  let createdCheckId: string | null = null
   try {
     const formData = new FormData()
     if (selectedProduct.value) {
@@ -365,13 +367,20 @@ async function runCheck(): Promise<void> {
     // 即座に返す（AI 実行はバックグラウンド。共用リバースプロキシのタイムアウト回避）。
     // 結果詳細へ遷移し、そちらの自動ポーリングで completed / failed（＋再実行導線）を見せる。
     const detail = await post<SubsidiaryCheckDetail>('/api/subsidiary-check', formData)
-    await navigateTo(`/subsidiary-check/${detail.summary.checkId}`)
+    createdCheckId = detail.summary.checkId
   } catch (error) {
     console.error('[subsidiary-check] AIチェックの実行に失敗しました:', error)
     submitError.value =
       extractApiError(error) ?? { errorCode: 'UNKNOWN', summary: apiErrorMessage(error), remedy: '' }
   } finally {
     submitting.value = false
+  }
+
+  // 遷移を try の中に入れない。ナビゲーションが中断されると「実行に失敗しました」と
+  // 表示されるがレコードは作成済みで、フォームに画像も残るため利用者が再送信し、
+  // 重複レコードと重複した有料 AI 呼出を招く。
+  if (createdCheckId !== null) {
+    await navigateTo(`/subsidiary-check/${createdCheckId}`)
   }
 }
 
@@ -519,15 +528,15 @@ onMounted(() => {
             <template #status="{ row }">
               <span
                 class="inline-flex items-center gap-1 rounded-full px-2 py-0.5 text-xs font-medium"
-                :class="SUBSIDIARY_CHECK_STATUSES[(row as SubsidiaryCheckSummary).status].className"
+                :class="subsidiaryCheckStatusPresentation((row as SubsidiaryCheckSummary).status).className"
               >
                 <component
-                  :is="SUBSIDIARY_CHECK_STATUSES[(row as SubsidiaryCheckSummary).status].icon"
+                  :is="subsidiaryCheckStatusPresentation((row as SubsidiaryCheckSummary).status).icon"
                   class="h-3 w-3"
                   :class="(row as SubsidiaryCheckSummary).status === 'processing' ? 'animate-spin' : ''"
                   aria-hidden="true"
                 />
-                {{ SUBSIDIARY_CHECK_STATUSES[(row as SubsidiaryCheckSummary).status].label }}
+                {{ subsidiaryCheckStatusPresentation((row as SubsidiaryCheckSummary).status).label }}
               </span>
             </template>
             <template #judgment="{ row }">
@@ -777,7 +786,28 @@ onMounted(() => {
     </section>
 
     <!-- ============ ルールブック ============ -->
-    <section v-else aria-label="ルールブック">
+    <section v-else aria-label="ルールブック" class="space-y-3">
+      <!--
+        再取得ボタンは StatusBlock の「外」に置く。StatusBlock はエラー時にスロットごと
+        差し替えるため、中に置くと取得失敗時に再試行導線ごと消え、利用者は別タブへ移動して
+        戻る（発見不可能な操作）以外に復帰できなくなる（U-4）。履歴タブと同じ流儀。
+      -->
+      <div v-if="rulesError" class="flex justify-end">
+        <button
+          type="button"
+          class="inline-flex items-center gap-1.5 rounded-lg border border-slate-200 bg-white px-3 py-1.5 text-xs font-medium text-slate-600 transition-colors hover:border-indigo-300 hover:text-indigo-700 disabled:cursor-not-allowed disabled:opacity-40"
+          :disabled="rulesLoading"
+          @click="loadRules"
+        >
+          <RefreshCw
+            class="h-3.5 w-3.5 shrink-0"
+            :class="rulesLoading ? 'animate-spin' : ''"
+            aria-hidden="true"
+          />
+          {{ rulesLoading ? '再取得中...' : '再取得' }}
+        </button>
+      </div>
+
       <!-- loading は「未取得（タブ切替直後の取得開始前）」も含める（空状態の一瞬表示を防ぐ）。 -->
       <StatusBlock
         :loading="rulesLoading || (!rulesLoaded && !rulesError)"

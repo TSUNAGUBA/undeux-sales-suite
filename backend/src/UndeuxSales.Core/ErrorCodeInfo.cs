@@ -67,9 +67,11 @@ public static class ErrorCodes
     //   （MaxInstructionImages / MaxTagImages / MaxImageSizeBytes）。
     //   上限値を変更する場合は、以下のメッセージ文言も同時に更新すること。
     // REQ-008（アップロード共通）:
-    //   合計サイズ超過・transport 層の上限（RequestSizeLimit / MultipartBodyLengthLimit）超過に
-    //   全アップロード API（副資材チェック・RAG 原本登録・週次取込）で共用する。
-    //   そのため Summary / Remedy はエンドポイント非依存の汎用文言にすること
+    //   transport 層の上限（RequestSizeLimit / MultipartBodyLengthLimit）超過は
+    //   ExceptionHandlingMiddleware が全アップロード API 共通で本コードへマップする。
+    //   アプリ層の合計サイズ超過で本コードを投げているのは副資材チェックのみ
+    //   （週次取込は UNDX-IMP-005、RAG 原本登録はアプリ層の合計検証を持たない）。
+    //   いずれにせよ Summary / Remedy はエンドポイント非依存の汎用文言にすること
     //   （画像固有・CSV 固有の誘導は各呼出側が AppException の detail で補う）。
     public static readonly ErrorCodeInfo SubsidiaryImageMissing = new(
         "UNDX-REQ-004",

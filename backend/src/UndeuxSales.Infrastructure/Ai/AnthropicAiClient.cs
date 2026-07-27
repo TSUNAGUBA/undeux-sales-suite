@@ -177,7 +177,11 @@ public sealed class AnthropicAiClient : IAiChatClient
                 Source = new Base64ImageSource
                 {
                     Data = Convert.ToBase64String(image.Data),
-                    MediaType = image.MediaType == "image/png"
+                    // media type は RFC 9110 上 case-insensitive で、副資材チェックの
+                    // 入力検証も OrdinalIgnoreCase で受理する（"IMAGE/PNG" 等）。完全一致で
+                    // 比較すると PNG を JPEG と宣言して送ることになり、Messages API に
+                    // 拒否されて恒久的に失敗する（再実行しても保存済みの値は変わらない）。
+                    MediaType = string.Equals(image.MediaType, "image/png", StringComparison.OrdinalIgnoreCase)
                         ? MediaType.ImagePng
                         : MediaType.ImageJpeg,
                 },

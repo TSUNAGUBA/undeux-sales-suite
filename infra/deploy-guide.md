@@ -375,11 +375,19 @@ Start-Process "https://$FirebaseProjectId.web.app"
 初回リリース時に次の5点を確認してください（設計の根拠は `docs/design.md` §13.5・§13.6）。
 
 1. **`ANTHROPIC_API_KEY` の登録**（未登録時は当該メニューのみ 503「AI未設定」。他機能は影響なし）
-2. **リバースプロキシのボディサイズ上限。** アップロードは1リクエスト最大 25MB
-   （画像は合計20MB＋multipart のオーバーヘッド）のため、共有 `nginx-proxy` の
-   `client_max_body_size` が **25MB 以上**である必要があります（nginx 既定は 1MB）。
-   RAG のナレッジ原本登録（最大25MB）でも同じ上限を要するため、既に設定済みの場合があります。
-   まず現行値を確認し、不足する場合のみ変更してください。
+2. **リバースプロキシのボディサイズ上限。** 共有 `nginx-proxy` の `client_max_body_size` が
+   **50MB 以上**である必要があります（nginx 既定は 1MB）。まず現行値を確認し、
+   不足する場合のみ変更してください。
+
+   本アプリのアップロード経路と、それぞれが必要とする上限は次のとおりです。
+   **最大値である週次取込の 50MB に合わせないと、副資材チェックは通っても既存の週次取込が
+   nginx 層の 413 で失敗します**（アプリに到達しないためエラーコードによる切り分けもできません）。
+
+   | 経路 | 必要な上限 | 実装上の SoT |
+   |------|-----------|-------------|
+   | 週次売上の取込（`POST /api/imports`） | **50MB** | `ImportsController.HardSizeLimitBytes` |
+   | RAG のナレッジ原本登録 | 25MB | `RagController` の transport 上限 |
+   | 副資材チェック（`POST /api/subsidiary-check`） | 25MB | `SubsidiaryCheckController.HardSizeLimitBytes`（画像合計20MB＋multipart のオーバーヘッド） |
 
    > **タイムアウトの設定は不要です。** AI 実行は**バックグラウンドで非同期実行**し、
    > POST は即座に応答します（フロントは状態をポーリング）。これは mart 再構築と同じ方式で、
@@ -411,15 +419,31 @@ Start-Process "https://$FirebaseProjectId.web.app"
    # DB 識別子はステップ2で undeux-db として作成済み
    $RdsInstanceId = "undeux-db"
 
-   # 空き容量が 10GB を下回ったら通知
+   # 空き容量が 5GiB を 30分継続で下回ったら通知（閾値・継続時間の根拠は下記）
    aws cloudwatch put-metric-alarm `
      --alarm-name "undeux-rds-free-storage" `
      --namespace AWS/RDS --metric-name FreeStorageSpace `
      --dimensions Name=DBInstanceIdentifier,Value=$RdsInstanceId `
-     --statistic Average --period 300 --evaluation-periods 1 `
-     --threshold 10737418240 --comparison-operator LessThanThreshold `
-     --alarm-actions $SnsTopicArn
+     --statistic Average --period 300 --evaluation-periods 6 `
+     --threshold 5368709120 --comparison-operator LessThanThreshold `
+     --alarm-actions $SnsTopicArn --ok-actions $SnsTopicArn
    ```
+
+   > **閾値と継続時間の意味（ストレージ自動スケーリング有効時）。** ステップ2で
+   > `--max-allocated-storage 100` を付けているため、空き容量が減るとボリュームは
+   > 最大 100GiB まで自動拡張されます。つまり**一時的に空きが減ること自体は異常ではなく、
+   > 自動拡張で解消されます**。そのため
+   >
+   > - **鳴ってすぐ OK に戻った場合** → 自動拡張が働いた正常な挙動。対応不要
+   >   （`--ok-actions` を付けているのは、この収束を通知で確認するためです）
+   > - **30分続けて鳴り止まない場合** → 自動拡張が上限 100GiB に達して追随できていない状態。
+   >   このときの回復手段が `--max-allocated-storage` の引上げです:
+   >   `aws rds modify-db-instance --db-instance-identifier undeux-db --max-allocated-storage 200 --apply-immediately`
+   >
+   > 閾値を「割当の何割」ではなく絶対値 5GiB にしているのは、自動拡張でボリュームサイズ自体が
+   > 変動するため割合では基準が動いてしまうからです。逆に閾値を大きく取ると（例: 10GiB）、
+   > 初期割当 20GiB のうち半分を使った時点で鳴り始め、その時点では自動拡張がまだ働かないため
+   > **引上げても何も変わらない＝打つ手のない通知**になります。
 
 5. **api コンテナのメモリ監視と OOM 検知。** 手順が長いため、次の「ステップ8-3」に分けて記載します。
    **この設定は必須です**（`docs/design.md` §13.5 が受容したメモリリスクの検知手段そのものであるため）。
@@ -483,6 +507,13 @@ exit
 ステップ3-3 の `run-instances` ではロールを付けていないため、ここで作成して後付けします。
 権限は本用途の名前空間に限定します（最小権限の原則）。**ローカル（PowerShell）** で実行します。
 
+> **このステップに必要な操作権限:** ステップ1で作業用 IAM ユーザーの権限を EC2・RDS に絞った場合、
+> ここで `AccessDenied` になります。以下を追加で付与してください。
+> `iam:CreateRole` / `iam:PutRolePolicy` / `iam:CreateInstanceProfile` /
+> `iam:AddRoleToInstanceProfile` / `ec2:AssociateIamInstanceProfile`、および
+> **`iam:PassRole`**（対象リソース `arn:aws:iam::<アカウントID>:role/undeux-ec2-metrics`）。
+> `iam:PassRole` は EC2 権限には含まれず、これが無いと最終行の associate だけが失敗します。
+
 ```powershell
 # 信頼ポリシー（EC2 がこのロールを引き受けられるようにする）
 '{"Version":"2012-10-17","Statement":[{"Effect":"Allow","Principal":{"Service":"ec2.amazonaws.com"},"Action":"sts:AssumeRole"}]}' | Set-Content -Path trust.json -NoNewline
@@ -497,7 +528,17 @@ aws iam add-role-to-instance-profile --instance-profile-name undeux-ec2-metrics 
 Start-Sleep -Seconds 10   # プロファイル作成の反映待ち（IAM の伝播は保証されないため、
 #   次行が InvalidParameterValue で失敗したら数十秒おいて再実行する）
 aws ec2 associate-iam-instance-profile --instance-id $InstanceId --iam-instance-profile Name=undeux-ec2-metrics
+
+# 一時ファイルを残さない（内容は機密ではないが、作業ディレクトリを汚さない）
+Remove-Item trust.json, metrics-policy.json
 ```
+
+> **再実行した場合:** `create-role` / `create-instance-profile` / `add-role-to-instance-profile` は
+> 2回目以降 `EntityAlreadyExists`（または `LimitExceeded`）で失敗しますが、**すでに目的の状態に
+> なっているため無視して構いません**。`put-role-policy` と `associate-iam-instance-profile` は
+> 上書き・再関連付けなので何度実行しても安全です。関連付け済みかどうかは
+> `aws ec2 describe-iam-instance-profile-associations --filters Name=instance-id,Values=$InstanceId`
+> で確認できます。
 
 #### 8-3-3. メトリクスを発行する（EC2 上で cron 登録）
 
@@ -540,8 +581,26 @@ else
 fi
 if [ "$now" -ge "$prev" ]; then delta=$(( now - prev )); else delta=0; fi
 
-iid="$(curl -s -H "X-aws-ec2-metadata-token: $(curl -sX PUT http://169.254.169.254/latest/api/token \
-  -H 'X-aws-ec2-metadata-token-ttl-seconds: 60')" http://169.254.169.254/latest/meta-data/instance-id)"
+# IMDSv2 のトークンはリージョン・インスタンスID の双方で使うため一度だけ取得する
+imds_token="$(curl -sX PUT http://169.254.169.254/latest/api/token \
+  -H 'X-aws-ec2-metadata-token-ttl-seconds: 60')"
+imds() { curl -s -H "X-aws-ec2-metadata-token: $imds_token" \
+  "http://169.254.169.254/latest/meta-data/$1"; }
+
+# AWS CLI は「リージョン」を IMDS から自動解決しない。8-3-2 のインスタンスプロファイルが
+# 供給するのは資格情報のみで、リージョンは別系統の設定値である。未設定だと
+# put-metric-data が毎回 "You must specify a region." で失敗し、メトリクスが1件も
+# 発行されない＝再起動アラームが永久に INSUFFICIENT_DATA となり OOM を検知できない。
+# AZ 名の末尾1文字を落としてリージョンを得る方式は AWS SDK 本体
+# （botocore の InstanceMetadataRegionFetcher）と同一で、IMDS の版差に影響されない。
+az="$(imds placement/availability-zone)"
+export AWS_DEFAULT_REGION="${az%[a-z]}"
+case "$AWS_DEFAULT_REGION" in
+  ''|*[!a-z0-9-]*)
+    echo "IMDS からリージョンを取得できませんでした（取得値: '$az'）。" >&2
+    exit 1 ;;
+esac
+iid="$(imds instance-id)"
 
 # 再起動の増分を先に発行し、成功してから state を進める。
 # 逆順（state を先に進める）だと、発行が一度でも失敗した時点で増分が消費済みになり、
@@ -566,8 +625,11 @@ EOF
 sudo chmod +x /usr/local/bin/undeux-api-mem.sh
 # 動作確認（エラーが出ないこと。出たら権限・CLI 導入を見直す）
 /usr/local/bin/undeux-api-mem.sh && echo OK
-# 1分間隔で発行（瞬間バーストを取りこぼさないため）
-( crontab -l 2>/dev/null; echo "* * * * * /usr/local/bin/undeux-api-mem.sh" ) | crontab -
+# 1分間隔で発行（瞬間バーストを取りこぼさないため）。
+# 既存の同一エントリを除いてから足すので、再実行しても重複登録されない（原則2: 冪等性）。
+( crontab -l 2>/dev/null | grep -Fv '/usr/local/bin/undeux-api-mem.sh'
+  echo "* * * * * /usr/local/bin/undeux-api-mem.sh" ) | crontab -
+crontab -l | grep undeux-api-mem   # 1行だけ表示されることを確認
 exit
 ```
 
@@ -685,6 +747,9 @@ GitHub の **Actions** タブの「Run workflow」ボタンからも実行でき
 | 取込が 403 になる | 取込する利用者に `role=admin` カスタムクレームが必要（`infra/README.md` 参照） |
 | 副資材チェックが「処理中」のまま進まない | AI 実行はバックグラウンドタスクで動くため、**デプロイ・コンテナ再起動・プロセス異常終了で実行が失われる**と処理中のまま残る（永続キューを持たない設計判断。`docs/design.md` §13.6）。滞留判定の時間が経過すると詳細画面に再実行ボタンが出るので、利用者に再実行してもらう。デプロイ直後に複数件が該当する場合は、実行中だったチェックが巻き込まれた可能性が高い |
 | 副資材チェックが 429（受付上限）になる | 実行中＋待機中のチェックが上限に達している。AI 呼出は同時1件に直列化しているため（メモリ上限が根拠。`docs/design.md` §13.5）、先行分の完了を待ってから再試行する。恒常的に発生する場合は api コンテナのメモリ上限引上げを検討する（同時実行数だけを増やすと OOM の原因になる） |
+| 監視スクリプトが `You must specify a region.` で失敗（ステップ8-3-3 の動作確認で `OK` が出ない） | AWS CLI はリージョンを IMDS から自動解決しない（インスタンスプロファイルが供給するのは資格情報のみ）。スクリプト内で `AWS_DEFAULT_REGION` を IMDS の `placement/availability-zone` から確定させているので、この行が欠けていないか確認する。`IMDS からリージョンを取得できませんでした` が出る場合は IMDS への到達性（`curl -sX PUT http://169.254.169.254/latest/api/token -H 'X-aws-ec2-metadata-token-ttl-seconds: 60'` がトークンを返すか）を確認する |
+| 監視スクリプトが `AccessDenied`（`cloudwatch:PutMetricData`）で失敗 | ステップ8-3-2 のインスタンスプロファイルが関連付いていない。`aws ec2 describe-iam-instance-profile-associations --filters Name=instance-id,Values=$InstanceId` で確認し、未関連なら associate を再実行する（IAM の伝播に数十秒かかることがある） |
+| CloudWatch に `UndeuxSales` のメトリクスが出ない | まず EC2 上で `/usr/local/bin/undeux-api-mem.sh && echo OK` を手で実行してエラーを確認する（上2行が該当しやすい）。cron 登録は `crontab -l \| grep undeux-api-mem` で1行あることを確認する。api コンテナが停止していると発行しない仕様（`ps -q api` が空なら正常終了する） |
 | EC2 上のログを見たい | `ssh -i "$HOME\.ssh\undeux-ec2" ubuntu@<EC2IP>` で接続し `cd undeux-sales-suite/infra/aws; docker compose -f docker-compose.ec2.yml --env-file .env logs api` |
 | `deploy-backend` の SSH 認証が失敗する | `EC2_SSH_KEY` シークレットを `Get-Content -Raw` で登録し直す（改行コード混入時の対処） |
 | `puttygen` で `unrecognised option '-O'` エラー | Windows の `puttygen.exe`（GUI 版）はコマンドライン変換に非対応。**付録A** の GUI 手順で `.ppk` を変換する |

@@ -49,6 +49,21 @@ export const SUBSIDIARY_CHECK_STATUSES: Record<
 }
 
 /**
+ * 処理状態の表示定義を返す。未知の値（サーバが状態を増やした場合）でも
+ * 未定義参照で描画ごと落とさず、値そのものを中立の見た目で表示する。
+ * 直接添字すると履歴テーブル全体が描画時例外で白紙になるため、参照は必ず本関数を通す。
+ */
+export function subsidiaryCheckStatusPresentation(
+  status: SubsidiaryCheckStatus,
+): { label: string; icon: Component; className: string } {
+  return SUBSIDIARY_CHECK_STATUSES[status] ?? {
+    label: String(status),
+    icon: LoaderCircle,
+    className: 'bg-slate-100 text-slate-600',
+  }
+}
+
+/**
  * AI 判定の表示カタログ。className は一覧のバッジ、bannerClass は
  * 結果詳細の判定バナー（背景・枠・文字色）に使う。
  */
@@ -196,3 +211,42 @@ export const SUBSIDIARY_PRODUCT_LABEL_MAX_LENGTH = 200
  * （誤判定すると同一チェックの AI 呼出が多重化し、外部有料 API のコストが二重に発生する）。
  */
 export const SUBSIDIARY_PROCESSING_STALE_MS = 20 * 60 * 1000
+
+/**
+ * 画像ギャラリーを取得するときの同時リクエスト数の上限。
+ *
+ * 詳細画面は最大13枚（指示書3＋タグ10）を持つため、無制限に並列取得すると
+ * バックエンドの画像配信枠（SubsidiaryCheckService.MaxConcurrentImageDownloads = 4）を
+ * 1人の閲覧者が占有し、他の閲覧者が順番待ちの上限（30秒）に達して 429 になりうる。
+ * サーバ側の枠より小さい 3 に抑えることで、複数人が同時に開いても枠を分け合える。
+ *
+ * サーバ側の上限が「事故を防ぐ防御層」であるのに対し、こちらは「防御層に触れさせない
+ * ための行儀」であり、値が多少ずれても正しさは損なわれない（429 は1枚単位で
+ * プレースホルダ表示になり、ギャラリー全体は止まらない・原則4）。
+ */
+export const SUBSIDIARY_GALLERY_FETCH_CONCURRENCY = 3
+
+/**
+ * items を最大 limit 件ずつ並行に処理し、入力順で結果を返す。
+ * Promise.all と違い同時実行数を有界化するが、`worker` が投げないことを前提とする
+ * （呼び出し側で try/catch し、失敗も戻り値として表現すること）。
+ */
+export async function mapWithConcurrencyLimit<TIn, TOut>(
+  items: readonly TIn[],
+  limit: number,
+  worker: (item: TIn, index: number) => Promise<TOut>,
+): Promise<TOut[]> {
+  const results = new Array<TOut>(items.length)
+  let next = 0
+  // 取り出しは同期的（await を挟まない）なので、複数のランナーが同じ index を
+  // 引き当てることはない。
+  const runner = async (): Promise<void> => {
+    while (next < items.length) {
+      const index = next++
+      results[index] = await worker(items[index]!, index)
+    }
+  }
+  const runners = Math.max(1, Math.min(limit, items.length))
+  await Promise.all(Array.from({ length: runners }, runner))
+  return results
+}
