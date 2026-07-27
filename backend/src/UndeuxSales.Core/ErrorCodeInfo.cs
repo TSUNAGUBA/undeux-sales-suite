@@ -62,6 +62,26 @@ public static class ErrorCodes
         "取込ファイルのサイズが上限を超えています。",
         "ファイルを分割するか、上限内のサイズにしてアップロードしてください。");
 
+    public static readonly ErrorCodeInfo SubsidiaryImageMissing = new(
+        "UNDX-REQ-004",
+        "副資材チェックの画像が指定されていません。",
+        "指示書画像（1〜3枚）とタグ画像（1〜10枚）の両方をアップロードしてください。");
+
+    public static readonly ErrorCodeInfo SubsidiaryImageInvalidFormat = new(
+        "UNDX-REQ-005",
+        "副資材チェックの画像形式が不正です（JPEG / PNG のみ対応）。",
+        "画像を JPEG または PNG 形式に変換してからアップロードし直してください。");
+
+    public static readonly ErrorCodeInfo SubsidiaryImageTooLarge = new(
+        "UNDX-REQ-006",
+        "副資材チェックの画像サイズが上限（1枚あたり5MB）を超えています。",
+        "画像を縮小・圧縮して5MB以下にしてからアップロードし直してください。");
+
+    public static readonly ErrorCodeInfo SubsidiaryImageTooMany = new(
+        "UNDX-REQ-007",
+        "副資材チェックの画像枚数が上限を超えています。",
+        "指示書画像は3枚以内、タグ画像は10枚以内に減らしてアップロードし直してください。");
+
     public static readonly ErrorCodeInfo DatabaseError = new(
         "UNDX-DATA-001",
         "データベース処理でエラーが発生しました。",
@@ -82,6 +102,11 @@ public static class ErrorCodes
         "指定されたナレッジ（またはマスタ行・原本ファイル）が見つかりません。",
         "一覧を再読み込みして最新の状態を確認してください（他のユーザーが削除した可能性があります）。");
 
+    public static readonly ErrorCodeInfo SubsidiaryCheckNotFound = new(
+        "UNDX-DATA-005",
+        "指定された副資材チェック（または画像）が見つかりません。",
+        "一覧を再読み込みして最新の状態を確認してください。");
+
     public static readonly ErrorCodeInfo AiCallFailed = new(
         "UNDX-AI-001",
         "AI 応答の生成に失敗しました（LLM 呼出エラー/タイムアウト）。",
@@ -91,6 +116,12 @@ public static class ErrorCodes
         "UNDX-AI-008",
         "AI 機能が未設定です（Anthropic API キーが構成されていません）。",
         "運営者が環境変数 Anthropic__ApiKey（ANTHROPIC_API_KEY）を設定してから利用してください。");
+
+    // UNDX-AI-002〜007 は将来機能向けに DD-04（AI/RAG エージェント詳細設計）で予約済みのため 009 を採番。
+    public static readonly ErrorCodeInfo AiResponseUnparseable = new(
+        "UNDX-AI-009",
+        "AI 応答の解析に失敗しました（チェック結果の JSON を読み取れません）。",
+        "再実行してください。繰り返し発生する場合はシステム管理者に連絡してください。");
 
     public static readonly ErrorCodeInfo Unexpected = new(
         "UNDX-SYS-001",
@@ -109,12 +140,18 @@ public static class ErrorCodes
         ImportFormatInvalid,
         ImportRowInvalid,
         ImportFileTooLarge,
+        SubsidiaryImageMissing,
+        SubsidiaryImageInvalidFormat,
+        SubsidiaryImageTooLarge,
+        SubsidiaryImageTooMany,
         DatabaseError,
         ProductNotFound,
         FlagNotFound,
         KnowledgeNotFound,
+        SubsidiaryCheckNotFound,
         AiCallFailed,
         AiNotConfigured,
+        AiResponseUnparseable,
         Unexpected,
     };
 }

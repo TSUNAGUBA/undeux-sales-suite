@@ -633,10 +633,12 @@ export interface MasterProductSku {
   images: MasterProductSkuImage[]
 }
 
-/** 商品マスタ詳細（親 + SKU 一覧）。 */
+/** 商品マスタ詳細（親 + SKU 一覧 + 付属情報）。 */
 export interface MasterProductDetail {
   summary: MasterProductSummary
   skus: MasterProductSku[]
+  /** 副資材の付属情報（m_product_attachment）。未登録の商品は null（下位互換の追加フィールド）。 */
+  attachment: MasterProductAttachment | null
 }
 
 /** 商品マスタ一覧のページ。 */
@@ -1224,4 +1226,132 @@ export interface MartStatus {
   factRows: number
   earliestWeek: string | null
   latestWeek: string | null
+}
+
+// ============================================================
+// 副資材チェック（subsidiary_check。指示書・タグ画像の AI 検品）
+// SoT: バックエンド subsidiary_check テーブル（記録系データ）。
+// ============================================================
+
+/** チェックの処理状態。failed は errorMessage にエラー内容が入る（再実行で回復を試みる）。 */
+export type SubsidiaryCheckStatus = 'processing' | 'completed' | 'failed'
+
+/** AI 判定（completed 時のみ）。fail>0 → fail / warn>0 → warn / それ以外 pass。 */
+export type SubsidiaryCheckJudgment = 'pass' | 'warn' | 'fail'
+
+/** 指摘のカテゴリ（layout=レイアウト / order=順番 / content=内容）。 */
+export type SubsidiaryCheckCategory = 'layout' | 'order' | 'content'
+
+/** 指摘の重要度（fail=要修正 / warn=要確認 / pass=問題なしの確認結果）。 */
+export type SubsidiaryCheckSeverity = 'fail' | 'warn' | 'pass'
+
+/** チェック画像の種別（instruction=指示書 / tag=実物タグ）。 */
+export type SubsidiaryCheckImageKind = 'instruction' | 'tag'
+
+/** チェック履歴一覧の1件。 */
+export interface SubsidiaryCheckSummary {
+  checkId: string
+  productId: string | null
+  /** 表示用スナップショット（品番等。商品未選択時は空文字）。 */
+  productLabel: string
+  status: SubsidiaryCheckStatus
+  judgment: SubsidiaryCheckJudgment | null
+  failCount: number
+  warnCount: number
+  findingCount: number
+  instructionImageCount: number
+  tagImageCount: number
+  aiModel: string | null
+  errorMessage: string | null
+  createdBy: string
+  createdAt: string
+  checkedAt: string | null
+}
+
+/** AI チェックの指摘1件。 */
+export interface SubsidiaryCheckFinding {
+  category: SubsidiaryCheckCategory
+  severity: SubsidiaryCheckSeverity
+  title: string
+  detail: string
+  /** 修正提案（なければ null）。 */
+  suggestion: string | null
+  /** 根拠（指示書のどの記載と比較したか等）。 */
+  evidence: string | null
+}
+
+/** チェックに添付された画像のメタ情報（バイナリは画像取得 API で認証付き取得）。 */
+export interface SubsidiaryCheckImageInfo {
+  imageId: string
+  kind: SubsidiaryCheckImageKind
+  fileName: string
+  contentType: string
+  sizeBytes: number
+  sortOrder: number
+}
+
+/** 商品マスタの付属情報（m_product_attachment。副資材の内容チェックの照合元）。 */
+export interface MasterProductAttachment {
+  /** 組成・混率（例: 綿 100%）。 */
+  composition: string | null
+  /** 原産国（例: 中国製 / MADE IN CHINA）。 */
+  originCountry: string | null
+  /** 洗濯絵表示・取扱い表示の内容。 */
+  careLabels: string | null
+  /** 色落ち表示（有/無・注意文言）。 */
+  colorFastnessNote: string | null
+  /** 表示の順序（例: 品番,サイズ,混率,洗濯表示,色落ち表示等,原産国表示,製造者）。 */
+  displayOrder: string | null
+  /** 注意事項・デメリット表記等。 */
+  qualityNotes: string | null
+  updatedAt: string
+}
+
+/** チェック対象の商品情報（商品マスタ選択時のみ。付属情報があれば同梱）。 */
+export interface SubsidiaryCheckProductInfo {
+  productId: string
+  productName: string
+  productSign: string
+  productTypeCrd: string
+  brand: string | null
+  attachment: MasterProductAttachment | null
+}
+
+/** GET /api/subsidiary-check/{checkId} のレスポンス（結果詳細）。 */
+export interface SubsidiaryCheckDetail {
+  summary: SubsidiaryCheckSummary
+  findings: SubsidiaryCheckFinding[]
+  images: SubsidiaryCheckImageInfo[]
+  product: SubsidiaryCheckProductInfo | null
+}
+
+/** GET /api/subsidiary-check のレスポンス（ページング付き履歴一覧）。 */
+export interface SubsidiaryCheckPage {
+  items: SubsidiaryCheckSummary[]
+  totalCount: number
+  page: number
+  pageSize: number
+}
+
+/** ルールブックの1項目。 */
+export interface SubsidiaryRuleItem {
+  name: string
+  description: string
+  /** 出典（ルール定義の参照元。なければ null）。 */
+  source: string | null
+}
+
+/** ルールブックの1セクション。 */
+export interface SubsidiaryRuleSection {
+  id: string
+  title: string
+  description: string | null
+  items: SubsidiaryRuleItem[]
+}
+
+/** GET /api/subsidiary-check/rules のレスポンス（静的ルールカタログ）。 */
+export interface SubsidiaryRuleBook {
+  sections: SubsidiaryRuleSection[]
+  /** 出典の総括文。 */
+  source: string
 }

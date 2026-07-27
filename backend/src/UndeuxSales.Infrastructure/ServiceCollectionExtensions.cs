@@ -5,6 +5,7 @@ using UndeuxSales.Infrastructure.Database;
 using UndeuxSales.Infrastructure.Import;
 using UndeuxSales.Infrastructure.Queries;
 using UndeuxSales.Infrastructure.Rag;
+using UndeuxSales.Infrastructure.SubsidiaryCheck;
 
 namespace UndeuxSales.Infrastructure;
 
@@ -39,6 +40,10 @@ public static class ServiceCollectionExtensions
         services.AddScoped<KnowledgeSeeder>();
         services.AddScoped<ChatContextService>();
         services.AddSingleton<IAiChatClient, AnthropicAiClient>();
+
+        // 副資材チェック（AI 検品）
+        services.AddScoped<SubsidiaryCheckRepository>();
+        services.AddScoped<SubsidiaryCheckService>();
 
         return services;
     }

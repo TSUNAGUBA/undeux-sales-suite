@@ -264,10 +264,14 @@ public sealed record MasterProductSkuImage(
     string? ImageFileName,
     string ImageUrl);
 
-/// <summary>商品マスタ詳細（親 + SKU 一覧）。</summary>
+/// <summary>
+/// 商品マスタ詳細（親 + SKU 一覧 + 付属情報）。
+/// Attachment は m_product_attachment 未登録時 null（下位互換のため既定値付きで末尾に追加。原則7）。
+/// </summary>
 public sealed record MasterProductDetail(
     MasterProductSummary Summary,
-    IReadOnlyList<MasterProductSku> Skus);
+    IReadOnlyList<MasterProductSku> Skus,
+    UndeuxSales.Core.SubsidiaryCheck.MasterProductAttachment? Attachment = null);
 
 /// <summary>商品マスタ一覧のページ。</summary>
 public sealed record MasterProductPage(

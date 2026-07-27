@@ -34,6 +34,7 @@ import {
   Store,
   Table2,
   Tag,
+  Tags,
   Target,
   Telescope,
   TrendingUp,
@@ -165,12 +166,14 @@ export const NAV_CATEGORIES: NavCategory[] = [
     id: 'data',
     label: 'データ管理',
     icon: Database,
-    description: '予算の登録と、商品マスタ・週次実績データの整備を行う',
+    description: '予算の登録と、商品マスタ・週次実績データの整備、副資材のAIチェックを行う',
     pages: [
       // 予算管理は両ロール（バイヤー=仕入予算/売上予算、サプライヤー=売上予算）。
       { path: '/mart/budget', label: '予算管理', icon: Wallet },
       // 商品マスタ・週次取込は自社データ整備のためサプライヤー（メーカー）向け。
       { path: '/product-master', label: '商品マスタ', icon: Shirt, matchSubroutes: true, roles: ['supplier'] },
+      // 副資材チェックはサプライヤー（メーカー）の出荷前副資材検品（タグ・下げ札・品質表示のAIチェック）。
+      { path: '/subsidiary-check', label: '副資材チェック', icon: Tags, matchSubroutes: true, roles: ['supplier'] },
       { path: '/imports', label: '週次取込', icon: Upload, roles: ['supplier'] },
       // 業態・部門マスタは商談チャットの選択肢や相談受付デスクの SoT 表示のため両ロールに公開する。
       { path: '/org-master', label: '業態・部門マスタ', icon: Building2 },

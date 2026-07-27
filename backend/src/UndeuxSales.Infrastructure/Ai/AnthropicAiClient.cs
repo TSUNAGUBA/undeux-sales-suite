@@ -152,6 +152,69 @@ public sealed class AnthropicAiClient : IAiChatClient
         }
     }
 
+    public async Task<string> AnalyzeImagesAsync(
+        IReadOnlyList<AiImageInput> images,
+        string systemPrompt,
+        string userPrompt,
+        int maxTokens,
+        CancellationToken cancellationToken)
+    {
+        var client = RequireClient();
+
+        // ラベル（テキスト）→画像 の順に並べ、末尾にチェック指示（userPrompt）を置く。
+        var content = new List<ContentBlockParam>();
+        foreach (var image in images)
+        {
+            if (!string.IsNullOrWhiteSpace(image.Label))
+            {
+                content.Add(new TextBlockParam { Text = image.Label });
+            }
+
+            content.Add(new ImageBlockParam
+            {
+                Source = new Base64ImageSource
+                {
+                    Data = Convert.ToBase64String(image.Data),
+                    MediaType = image.MediaType == "image/png"
+                        ? MediaType.ImagePng
+                        : MediaType.ImageJpeg,
+                },
+            });
+        }
+
+        content.Add(new TextBlockParam { Text = userPrompt });
+
+        // チェック精度優先で VisionModel ではなくメインモデル（_options.Model）を使用する。
+        var parameters = new MessageCreateParams
+        {
+            Model = _options.Model,
+            MaxTokens = maxTokens,
+            System = new List<TextBlockParam> { new() { Text = systemPrompt } },
+            Messages =
+            [
+                new MessageParam
+                {
+                    Role = Role.User,
+                    Content = content,
+                },
+            ],
+        };
+
+        try
+        {
+            var response = await client.Messages.Create(parameters, cancellationToken: cancellationToken);
+            var texts = response.Content
+                .Select(block => block.TryPickText(out var text) ? text.Text : null)
+                .Where(text => !string.IsNullOrEmpty(text));
+            return string.Join("\n", texts).Trim();
+        }
+        catch (Exception ex) when (ex is not OperationCanceledException)
+        {
+            _logger.LogWarning(ex, "画像分析応答の生成に失敗しました（モデル: {Model}）", _options.Model);
+            throw new AppException(ErrorCodes.AiCallFailed, StatusCodes502, ex.Message);
+        }
+    }
+
     private const int StatusCodes502 = 502;
 
     private AnthropicClient RequireClient() =>

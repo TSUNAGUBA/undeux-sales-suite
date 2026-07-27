@@ -93,10 +93,13 @@ public sealed class DatabaseFixture : IAsyncLifetime
         // 組織マスタ（m_buyer_section / m_section_department）と knowledge.entry は
         // business_type への FK により CASCADE で消えるが、意図を明示するため列挙する。
         // knowledge.chunk / chunk_embedding は entry の FK CASCADE で消える。
+        // 副資材チェック（subsidiary_check / m_product_attachment）は m_product への FK により
+        // CASCADE で消えるが、同様に意図を明示する（subsidiary_check_image は check の FK CASCADE）。
         await connection.ExecuteAsync("""
             TRUNCATE m_product_sku, m_product, sales_weekly, import_batch, department,
                      customer, business_type, season, inventory_action_flag,
-                     m_buyer_section, m_section_department, m_contact_desk, knowledge.entry
+                     m_buyer_section, m_section_department, m_contact_desk, knowledge.entry,
+                     subsidiary_check, subsidiary_check_image, m_product_attachment
                      RESTART IDENTITY CASCADE;
             """);
     }

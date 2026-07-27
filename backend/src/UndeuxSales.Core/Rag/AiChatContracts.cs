@@ -25,6 +25,14 @@ public sealed record AiStreamEvent(string Type, string? Text, long InputTokens, 
 }
 
 /// <summary>
+/// 画像分析への入力1枚。
+/// </summary>
+/// <param name="Data">画像バイナリ。</param>
+/// <param name="MediaType">image/jpeg または image/png。</param>
+/// <param name="Label">画像の直前に置くテキストブロック（例:「指示書画像（正） 1/2」）。</param>
+public sealed record AiImageInput(byte[] Data, string MediaType, string Label);
+
+/// <summary>
 /// LLM クライアント抽象（実装は Infrastructure の AnthropicAiClient）。
 /// 未設定（API キーなし）の場合、呼出側は UNDX-AI-008 で応答する（グレースフルデグラデーション）。
 /// </summary>
@@ -44,4 +52,15 @@ public interface IAiChatClient
     /// mediaType は image/jpeg または image/png。
     /// </summary>
     Task<string> DescribeImageAsync(byte[] imageData, string mediaType, string? hint, CancellationToken cancellationToken);
+
+    /// <summary>
+    /// 複数画像の分析応答テキストを生成する（副資材チェック等）。
+    /// 各画像はラベル（テキストブロック）→画像ブロックの順で並べ、末尾に userPrompt を置く。
+    /// </summary>
+    Task<string> AnalyzeImagesAsync(
+        IReadOnlyList<AiImageInput> images,
+        string systemPrompt,
+        string userPrompt,
+        int maxTokens,
+        CancellationToken cancellationToken);
 }
