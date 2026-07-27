@@ -364,7 +364,7 @@ Start-Process "https://$FirebaseProjectId.web.app"
 ### ステップ8-2: 副資材チェックを使う場合の追加確認
 
 副資材チェック（`/subsidiary-check`）は画像アップロードと AI 呼出を行うため、
-初回リリース時に次の4点を確認してください（設計の根拠は `docs/design.md` §13.5・§13.6）。
+初回リリース時に次の5点を確認してください（設計の根拠は `docs/design.md` §13.5・§13.6）。
 
 1. **`ANTHROPIC_API_KEY` の登録**（未登録時は当該メニューのみ 503「AI未設定」。他機能は影響なし）
 2. **リバースプロキシのボディサイズ上限。** アップロードは1リクエスト最大 25MB
@@ -586,10 +586,6 @@ sudo journalctl -k --since '-1h' | grep -i 'out of memory' | tail
 > リセットされます**（moby の `setRunning()` が両方を初期化）。無言復帰した後の事後確認には
 > 使えないため、判断は `RestartCount` の増加とカーネルログで行ってください。
 > Ubuntu 24.04 は `kernel.dmesg_restrict=1` が既定のため、`dmesg` には `sudo` が必要です。
-   > Ubuntu 24.04 は `kernel.dmesg_restrict=1` が既定のため、`dmesg` には `sudo` が必要です。
-> **同時実行数を増やしたい場合:** 先に `infra/aws/docker-compose.ec2.yml` の `api` の
-> `memory`（既定 512m）を EC2 の空き容量を確認のうえ引き上げてください。
-> メモリを据え置いたまま同時実行数だけを増やすと OOM の原因になります（`docs/design.md` §13.5）。
 
 ---
 
