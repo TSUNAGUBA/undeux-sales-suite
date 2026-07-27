@@ -361,25 +361,27 @@ Start-Process "https://$FirebaseProjectId.web.app"
 
 ### ステップ8-2: 副資材チェックを使う場合の追加確認
 
-副資材チェック（`/subsidiary-check`）は画像アップロードと同期の AI 呼出を行うため、
+副資材チェック（`/subsidiary-check`）は画像アップロードと AI 呼出を行うため、
 初回リリース時に次の3点を確認してください（設計の根拠は `docs/design.md` §13.5・§13.6）。
 
 1. **`ANTHROPIC_API_KEY` の登録**（未登録時は当該メニューのみ 503「AI未設定」。他機能は影響なし）
-2. **リバースプロキシのタイムアウトとボディサイズ。** AI 呼出は最大約3分（順番待ち30秒＋AI 120秒）
-   かかりうるため、EC2 上の nginx-proxy で `proxy_read_timeout` を **180 秒以上**、
-   `client_max_body_size` を **25MB 以上**に設定します（nginx 既定はそれぞれ60秒・1MB）。
-   不足すると、サーバー側はチェックを正常に確定するのに利用者には 504 が見え、
-   失敗と誤認した再送で重複チェック・重複 AI コストが発生します。
+2. **リバースプロキシのボディサイズ上限。** アップロードは1リクエスト最大 25MB
+   （画像は合計20MB＋multipart のオーバーヘッド）のため、共有 `nginx-proxy` の
+   `client_max_body_size` が **25MB 以上**である必要があります（nginx 既定は 1MB）。
+   RAG のナレッジ原本登録（最大25MB）でも同じ上限を要するため、既に設定済みの場合があります。
+   まず現行値を確認し、不足する場合のみ変更してください。
 
-   ```powershell
-   # 例: nginx-proxy のカスタム設定を配置して再読込
-   ssh -i $KeyPath ec2-user@$ElasticIp
-   sudo tee /etc/nginx/conf.d/undeux-subsidiary.conf > /dev/null <<'EOF'
-   proxy_read_timeout 180s;
-   client_max_body_size 25m;
-   EOF
-   sudo nginx -t && sudo nginx -s reload
-   ```
+   > **タイムアウトの設定は不要です。** AI 実行は**バックグラウンドで非同期実行**し、
+   > POST は即座に応答します（フロントは状態をポーリング）。これは mart 再構築と同じ方式で、
+   > 共有 `nginx-proxy` の読み取りタイムアウト（約60秒）を超える処理を同期で行わないための
+   > 設計です（`docs/star-schema-design.md`「非同期実行・タイムアウトしない設計」／
+   > `docs/design.md` §13.5）。
+   >
+   > **共有プロキシの設定変更は同居する他プロジェクトの全 vhost に波及します。**
+   > `nginx-proxy` は本 compose の管理外（外部管理コンテナ・共有ネットワーク接続。
+   > `infra/aws/README.md` 参照）であり、ホスト側の `/etc/nginx/` を編集しても反映されません。
+   > 変更が必要な場合は、vhost 単位で効く `nginx-proxy` の `vhost.d/<VIRTUAL_HOST>` 機構を用い、
+   > 全体設定（`conf.d`）には手を入れないでください。実施前に共有 EC2 の管理者と調整すること。
 
 3. **RDS ストレージ使用率のアラーム。** チェック記録の画像（1件あたり最大 合計20MB）は
    記録保護のため自動削除されません（`docs/design.md` §13.6）。運用開始時に

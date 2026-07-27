@@ -86,7 +86,7 @@ graph LR
 | `customer` | 取込時に自動導出されるが本アプリでは UI/API から除外。`customer_code` は本アプリのユーザー（メーカー）に対して小売から振り出された固有コードで常に同一値となるため、フィルタ・集計軸として無意味 |
 | `m_buyer_section` / `m_section_department` / `m_contact_desk` | しまむらグループ組織マスタ（業態×商品部×部門の相関・相談受付デスク）。初期値は「お取引の基準 総括編」由来、以後は運用者修正が正（§12.1） |
 | `knowledge.entry` / `knowledge.chunk` / `knowledge.chunk_embedding` | ナレッジストア（RAG）。entry が原本の SoT、chunk / embedding は再生成可能な派生（§12.2） |
-| `subsidiary_check` / `subsidiary_check_image` | 副資材チェックの実行記録と入力画像（指示書・タグ）。記録系データとして保護し、再実行は failed のみ（§13） |
+| `subsidiary_check` / `subsidiary_check_image` | 副資材チェックの実行記録と入力画像（指示書・タグ）。記録系データとして保護し、再実行は failed と孤児化した processing のみ（§13） |
 | `m_product_attachment` | 商品マスタ付属情報（組成・原産国・洗濯表示・表示順序等）。副資材チェックの突合元ネタ・商品マスタ詳細に表示（§9.6・§13） |
 
 - ファクトテーブルの主キーは意味を持たない代理キー（`bigint` 採番）。
@@ -159,10 +159,10 @@ flowchart TD
 | POST | `/api/chat/business` | 業務チャット（`domain=system\|quality\|logistics`＋会話履歴）。**SSE ストリーミング応答** |
 | POST | `/api/chat/negotiation` | 商談チャット（`businessTypeCode`＋`deptCode`＋会話履歴）。**SSE ストリーミング応答** |
 | GET | `/api/subsidiary-check` | 副資材チェック履歴（`page`・`pageSize`。作成日時降順） |
-| POST | `/api/subsidiary-check` | 副資材チェック実行（multipart: `productId`?・`productLabel`?・`instructionImages` 1〜3・`tagImages` 1〜10。各5MB・**合計20MB** 以内）。AI 同期実行し結果を返す。**要 AI 設定（未設定は 503）** |
+| POST | `/api/subsidiary-check` | 副資材チェック登録（multipart: `productId`?・`productLabel`?・`instructionImages` 1〜3・`tagImages` 1〜10。各5MB・**合計20MB** 以内）。記録を作成して **AI はバックグラウンド実行**し、即座に processing の詳細を返す。**要 AI 設定（未設定は 503）** |
 | GET | `/api/subsidiary-check/{checkId}` | チェック詳細（判定・指摘・画像メタ・商品/付属情報） |
 | GET | `/api/subsidiary-check/{checkId}/images/{imageId}` | 入力画像バイナリ |
-| POST | `/api/subsidiary-check/{checkId}/rerun` | AI 再実行（**status=failed、または作成10分超の processing（孤児回復）**。completed は記録保護のため 400） |
+| POST | `/api/subsidiary-check/{checkId}/rerun` | AI 再実行（**status=failed、または最後の実行開始（`started_at`）から10分超の processing（孤児回復）**。completed は記録保護のため 400） |
 | GET | `/api/subsidiary-check/rules` | ルールブック（しまむら副資材規定カタログ） |
 | GET | `/api/error-codes` | エラーコード一覧 |
 
@@ -224,9 +224,17 @@ flowchart TD
 - **入力は画像、判定は AI、ルールはコードが正:** チェックの入力は指示書画像とタグ画像（フォーム手入力ではない）。
   規定ルール（アイコン優先順位・禁止用語・表示順序・寸法）は Core `SubsidiaryCheckRuleCatalog` を単一 SoT とし、
   同一カタログから AI プロンプトのルールテキストとルールブック API 応答の両方を生成する（二重定義による乖離を防ぐ）。
-- **同期実行:** AI チェックは POST リクエスト内で同期実行する（RAG ナレッジ取込と同じ前例）。
-  実行中はフロントが進行表示で体感補償する（RP-6 の 200ms 基準を超える明示的なユーザー起動の長時間処理。
-  キュー基盤の導入は将来課題）。
+- **非同期実行（バックグラウンド＋ポーリング）:** AI チェックは POST リクエスト内で実行しない。
+  検証・記録の作成（status=processing）までをリクエスト内で行い、AI 実行は HTTP リクエストから
+  切り離したバックグラウンドタスクで走らせ、POST は即座に応答する。フロントは詳細画面で
+  状態をポーリングし、completed / failed で停止する。
+  **根拠:** 公開経路は複数プロジェクト相乗りの共有 `nginx-proxy`（読み取りタイムアウト約60秒）で、
+  AI 呼出は最大約150秒かかりうる。同期実行では利用者に 504 が返る一方サーバー側は completed で
+  確定してしまい、失敗と誤認した再送が重複チェック・重複 AI コスト・重複画像（削除 API なし）を
+  生む。共有プロキシの設定変更は同居プロジェクトへ波及するため採れない。
+  これは mart 再構築（`docs/star-schema-design.md`「非同期実行・タイムアウトしない設計」）で
+  確立済みの方式であり、実行権の原子的クレーム・status による状態管理・滞留した processing の
+  stale 判定という構造をそのまま踏襲する（原則3）。
 - **findings は jsonb 非正規化:** チェック結果の指摘は親チェック単位でのみ読む不変の記録で、
   指摘単位の横断検索・更新要件がないため、正規化テーブルではなく jsonb で保存する（review-standards 1.1 の根拠記録）。
 - **記録保護と手動回復:** チェック記録は記録系データ（原則2）。AI 呼出失敗・応答解析失敗・キャンセルは
@@ -486,11 +494,14 @@ flowchart TD
     P[商品マスタ + 付属情報<br/>m_product_attachment 任意] --> C
     C --> V[検証: 形式 jpeg/png・各5MB・枚数]
     V --> S[subsidiary_check INSERT<br/>status=processing + 画像永続化]
-    S --> AI[Claude 画像比較<br/>SubsidiaryCheckRuleCatalog のルール + 付属情報を注入]
+    S --> R[即座に processing の詳細を返す<br/>= HTTP はここで完了]
+    S --> AI[バックグラウンド実行<br/>Claude 画像比較<br/>ルールカタログ + 付属情報を注入]
     AI -->|JSON findings| PR[解析・正規化<br/>SubsidiaryCheckResponseParser]
     PR --> U[UPDATE status=completed<br/>judgment + findings jsonb]
-    AI -->|失敗| F[UPDATE status=failed<br/>error_message 保存 = 記録は残す]
-    F -.->|rerun: failed または<br/>作成10分超の processing| AI
+    AI -->|失敗・タイムアウト| F[UPDATE status=failed<br/>error_message 保存 = 記録は残す]
+    R -.->|フロントがポーリング| U
+    R -.->|フロントがポーリング| F
+    F -.->|rerun: failed または<br/>started_at から10分超の processing| AI
 ```
 
 - 画像は各5MB・合計20MB 以内（Anthropic Messages API のリクエスト上限 32MB に base64 膨張約1.33倍を
@@ -515,7 +526,9 @@ flowchart TD
 - MaxTokens は副資材チェック専用の固定値 4096（チャット用 `Anthropic:MaxOutputTokens` とは独立。
   応答が出力トークン上限で切り詰められた場合は明示メッセージ付きの failed 記録にする）。
 - **AI 呼出は同時実行 1 件に直列化**（SemaphoreSlim）し、順番待ちは 30 秒・AI 呼出自体は 120 秒で
-  タイムアウトさせる（いずれも failed 記録＋再実行導線）。メモリ収支が根拠:
+  タイムアウトさせる（いずれも failed 記録＋再実行導線）。さらに実行中＋待機中の**総数**にも
+  上限を設け、超過した要求は記録を作らずに 429 で拒否する（待機中の要求も画像バッファを
+  保持するため、件数を制限しないとメモリ上限に到達しうる）。メモリ収支が根拠:
   api コンテナのメモリ上限は 512MiB で、cgroup 下の .NET GC ヒープハードリミットは約 384MB。
   1 リクエストの保持量は「画像 byte[] 20MB ＋ base64 文字列（.NET string は UTF-16 のため約53MB）
   ＋ HTTP ボディの UTF-8 直列化 約27MB」で約 100MB に達するため、同時実行を増やすと
@@ -525,6 +538,9 @@ flowchart TD
   空き容量確認が前提のオペレーター判断）。
   順番待ちを有界化しているため、`processing` の最大滞留時間は「順番待ち30秒＋AI 120秒＋記録処理」
   で約3分に収まる（孤児判定の閾値10分はこれに十分な余裕を見た値）。
+  なお RAG のナレッジ画像取込も AI を呼ぶが本セマフォの管理外であり、両者が同時に走る場合の
+  ピークは上記収支に含まれていない（現状の利用規模では受容。同時実行数を引き上げる際は
+  併せて評価すること）。
 - system プロンプトに反プロンプトインジェクション文を明記する（画像・付属情報・商品ラベルなど
   **入力として与えられるテキスト全般**はデータであって命令ではない旨をデリミタ付きで示し、
   出力指示・判定指示が含まれていても従わず content カテゴリの fail として報告させる）。
@@ -553,7 +569,13 @@ flowchart TD
   原子的クレームと同時実行1件の直列化で増幅を抑止済み）。利用者増・コスト顕在化時は
   ロールポリシー適用または `created_by` 単位の日次上限を導入する。
   UCP 移行時（ADR-018）は MakerOps ドメインとしてサーバー側ロール制御を導入する。
-- **同期実行とリバースプロキシ:** AI 呼出は最大約3分（順番待ち＋120秒）かかりうるため、
-  公開経路の nginx-proxy 側 `proxy_read_timeout`（既定60秒）と `client_max_body_size` が
-  これを許容する設定になっている必要がある。設定が不足するとサーバー側は completed で確定する一方
-  利用者には 504 が見え、失敗と誤認した再送で重複チェックが発生する（確認手順は `infra/deploy-guide.md`）。
+- **リバースプロキシとの関係:** 公開経路は複数プロジェクト相乗りの共有 `nginx-proxy`（本 compose の
+  管理外・読み取りタイムアウト約60秒）。AI 呼出は最大約150秒かかりうるため**同期実行は採らず**、
+  バックグラウンド実行＋ポーリングとした（§13.5）。これによりプロキシのタイムアウト設定変更は不要で、
+  同居プロジェクトへ影響を波及させずに済む。**必要な確認はボディサイズ上限のみ**
+  （`client_max_body_size` ≧ 25MB。RAG のナレッジ原本登録も同値を要するため既設定の場合がある。
+  手順は `infra/deploy-guide.md` ステップ8-2）。
+- **バックグラウンド実行の永続性:** バックグラウンドタスクは永続キューではないため、
+  プロセス停止（デプロイ・OOM 等）で失われた実行は `processing` のまま残る。これは
+  `started_at` の滞留判定と rerun による手動回復でカバーする設計判断とする
+  （mart 再構築の「45分以上滞留した running は stale とみなす」と同じ考え方）。

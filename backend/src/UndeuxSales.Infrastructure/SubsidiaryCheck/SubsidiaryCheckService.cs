@@ -244,15 +244,39 @@ public sealed class SubsidiaryCheckService
             throw await BuildRerunRejectedAsync(checkId, cancellationToken);
         }
 
-        // 商品が後から削除されている場合（FK SET NULL）は商品情報なしで再実行する。
-        var product = current.Summary.ProductId is { } productId
-            ? await _repository.GetProductInfoAsync(productId, cancellationToken)
-            : null;
+        // クレーム後は status=processing で実行権を占有している。AI 実行前の準備（DB 読取）で
+        // 失敗した場合もここで failed 記録に落として占有を解放する。無保護にすると、
+        // クライアント切断や DB 障害で processing のまま残り、孤児判定（ProcessingStaleAfter）まで
+        // rerun が拒否される＝回復パス自体が塞がるため（原則4・原則6）。
+        SubsidiaryCheckProductInfo? product;
+        IReadOnlyList<AiImageInput> aiImages;
+        try
+        {
+            // 商品が後から削除されている場合（FK SET NULL）は商品情報なしで再実行する。
+            product = current.Summary.ProductId is { } productId
+                ? await _repository.GetProductInfoAsync(productId, cancellationToken)
+                : null;
 
-        var stored = await _repository.GetImagesWithDataAsync(checkId, cancellationToken);
-        var aiImages = ToAiImages(
-            stored.Where(i => i.Kind == SubsidiaryCheckImageKind.Instruction).ToList(),
-            stored.Where(i => i.Kind == SubsidiaryCheckImageKind.Tag).ToList());
+            var stored = await _repository.GetImagesWithDataAsync(checkId, cancellationToken);
+            aiImages = ToAiImages(
+                stored.Where(i => i.Kind == SubsidiaryCheckImageKind.Instruction).ToList(),
+                stored.Where(i => i.Kind == SubsidiaryCheckImageKind.Tag).ToList());
+        }
+        catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
+        {
+            await RecordFailureAsync(checkId, BuildFailureMessage(
+                ErrorCodes.AiCallFailed, "リクエストが中断されました（クライアント切断）。再実行してください。"));
+            throw;
+        }
+        catch (Exception ex)
+        {
+            _logger.LogWarning(ex, "副資材チェックの再実行準備に失敗しました（checkId: {CheckId}）", checkId);
+            var message = ex is AppException app
+                ? BuildFailureMessage(app.Error, app.Message)
+                : BuildFailureMessage(ErrorCodes.Unexpected, "再実行してください。");
+            await RecordFailureAsync(checkId, message);
+            throw;
+        }
 
         await RunAiAsync(checkId, product, current.Summary.ProductLabel, aiImages, cancellationToken);
 
