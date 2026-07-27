@@ -147,7 +147,7 @@ let polling = false
  * ポーリングの起動口が watch だけだった頃は「Vue が watch を止める＝停止保証」だったが、
  * load() / rerun() からも起動するようになったため、その保証の外側に出た。
  * 離脱後に飛行中だった応答が解決して startPolling を呼ぶと、stopPolling を呼ぶ主体
- * （watch は停止済み・onUnmounted は実行済み）が居らず、止められないループが残る。
+ * （watch は停止済み・onBeforeUnmount は実行済み）が居らず、止められないループが残る。
  * 起動口が増えても安全なように、フラグで一元的に塞ぐ。
  */
 let unmounted = false
@@ -237,8 +237,6 @@ watch(
     else stopPolling()
   },
 )
-
-
 
 // ---- 画像ギャラリー（認証付き fetch + objectURL） ----
 
@@ -449,6 +447,10 @@ function goBack(): void {
 watch(checkId, () => {
   // onBeforeUnmount と対称にする: 世代を進めてから破棄しないと、前チェックの
   // 飛行中の loadImages が世代ガードを通過し、新チェックの画面に前の画像が載る。
+  // ポーリングも必ず止める。止めないと polling が真のままなので load() 内の
+  // startPolling() が早期 return し、前チェックの世代のループが試行回数・連続失敗回数を
+  // 引き継いだまま新チェックを見続ける（新チェックの自動更新が本来より早く打ち切られる）。
+  stopPolling()
   imagesRequestSeq += 1
   revokeGallery()
   void load()
