@@ -362,7 +362,7 @@ Start-Process "https://$FirebaseProjectId.web.app"
 ### ステップ8-2: 副資材チェックを使う場合の追加確認
 
 副資材チェック（`/subsidiary-check`）は画像アップロードと AI 呼出を行うため、
-初回リリース時に次の3点を確認してください（設計の根拠は `docs/design.md` §13.5・§13.6）。
+初回リリース時に次の4点を確認してください（設計の根拠は `docs/design.md` §13.5・§13.6）。
 
 1. **`ANTHROPIC_API_KEY` の登録**（未登録時は当該メニューのみ 503「AI未設定」。他機能は影響なし）
 2. **リバースプロキシのボディサイズ上限。** アップロードは1リクエスト最大 25MB
@@ -398,33 +398,82 @@ Start-Process "https://$FirebaseProjectId.web.app"
      --alarm-actions $SnsTopicArn
    ```
 
-4. **api コンテナのメモリ使用率アラーム。** 副資材チェックは1リクエストで最大約100MBを保持し、
-   コンテナのメモリ上限 512MiB に対する余裕（ヘッドルーム）は約74MB しかありません
+4. **api コンテナのメモリ監視。** 副資材チェックは1リクエストで最大約100MBを保持します。
+   コンテナのメモリ上限は 512MiB で、cgroup 下の .NET GC ヒープハードリミットは約 384MB。
+   収支上の使用量が約310MB のため、**余裕（ヘッドルーム）は約74MB**（384−310）しかありません
    （収支は `docs/design.md` §13.5）。画像配信や DB 読取の一時コピーは収支外のため、
-   **同時アクセスが重なると上限を超える可能性があります**。超過すると OOM でコンテナが再起動し、
-   `restart: unless-stopped` により無言で復帰するため、症状は「チェックがときどき処理中のまま」
-   としてしか現れません。運用開始時にメモリ使用率の監視・アラームを設定してください。
+   **同時アクセスが重なると超過しえます**（詳細画面を同時に2名が開くと到達しうる水準）。
+   超過すると api コンテナが OOM Kill され、`restart: unless-stopped` で無言復帰するため、
+   症状は「チェックがときどき処理中のまま」としてしか現れません。
+
+   > **ホスト全体のメモリ指標では検知できません。** api の上限は自身の cgroup 512MiB ですが、
+   > EC2 は `t3.medium`（4GiB）です。api が上限で OOM されてもホスト全体では十数%にすぎず、
+   > CloudWatch エージェントの `mem_used_percent`（`CWAgent` 名前空間・`InstanceId` 次元）を
+   > 何%に設定しても発火しません。また CloudWatch Container Insights は ECS / EKS 等が対象で、
+   > **素の Docker on EC2（本構成）はサポート外**です。コンテナ粒度の値を自分で発行する必要があります。
+
+   **(1) コンテナのメモリ使用率を CloudWatch へ発行する（EC2 上で cron 登録）**
+
+   `docker stats` の `MemPerc` はコンテナの上限（512MiB）に対する比率なので、そのまま使えます。
+   EC2 に SSH し、次を1回実行してください（インスタンスに `cloudwatch:PutMetricData` を許可した
+   IAM ロールが必要です）。
+
+   ```bash
+   ssh -i "$HOME\.ssh\undeux-ec2" ubuntu@$Ec2Ip
+   sudo tee /usr/local/bin/undeux-api-mem.sh > /dev/null <<'EOF'
+   #!/usr/bin/env bash
+   set -euo pipefail
+   cd /home/ubuntu/undeux-sales-suite/infra/aws
+   # コンテナ名は compose のプロジェクト名に依存するため、ID で解決する（名前をハードコードしない）
+   cid="$(docker compose -f docker-compose.ec2.yml --env-file .env ps -q api)"
+   [ -n "$cid" ] || exit 0
+   pct="$(docker stats --no-stream --format '{{.MemPerc}}' "$cid" | tr -d '%')"
+   iid="$(curl -s -H "X-aws-ec2-metadata-token: $(curl -sX PUT http://169.254.169.254/latest/api/token \
+     -H 'X-aws-ec2-metadata-token-ttl-seconds: 60')" http://169.254.169.254/latest/meta-data/instance-id)"
+   aws cloudwatch put-metric-data --namespace UndeuxSales \
+     --metric-name ApiContainerMemoryPercent --unit Percent --value "$pct" \
+     --dimensions InstanceId="$iid"
+   EOF
+   sudo chmod +x /usr/local/bin/undeux-api-mem.sh
+   # 動作確認（エラーが出ないこと）
+   /usr/local/bin/undeux-api-mem.sh && echo OK
+   # 5分間隔で発行
+   ( crontab -l 2>/dev/null; echo "*/5 * * * * /usr/local/bin/undeux-api-mem.sh" ) | crontab -
+   ```
+
+   **(2) 発行した値にアラームを設定する**
 
    ```powershell
-   # 前提: EC2 に CloudWatch エージェントを導入し、Docker/コンテナメトリクスを送信する設定にしておく
-   #   （最小構成なら EC2 全体の mem_used_percent でも代替可）
-   # 例: メモリ使用率が 85% を超えたら通知（$SnsTopicArn は事前に作成した SNS トピック）
+   # $InstanceId はステップ3-3、$SnsTopicArn は事前に作成した SNS トピック
    aws cloudwatch put-metric-alarm `
      --alarm-name "undeux-api-memory" `
-     --namespace CWAgent --metric-name mem_used_percent `
-     --dimensions Name=InstanceId,Value=$Ec2InstanceId `
+     --namespace UndeuxSales --metric-name ApiContainerMemoryPercent `
+     --dimensions Name=InstanceId,Value=$InstanceId `
      --statistic Average --period 300 --evaluation-periods 2 `
      --threshold 85 --comparison-operator GreaterThanThreshold `
+     --treat-missing-data breaching `
      --alarm-actions $SnsTopicArn
    ```
 
-   あわせて、OOM 再起動が起きていないかを随時確認できます。
+   > `--treat-missing-data breaching` を付けるのは、**メトリクスが届かなくなったこと自体を検知する**
+   > ためです（既定の `missing` では、発行スクリプトが壊れてもアラームは無通知のまま
+   > `INSUFFICIENT_DATA` に留まり、「監視できている」という誤解を招きます）。
 
-   ```powershell
-   ssh -i $KeyPath ubuntu@$ElasticIp
-   # RestartCount が増えていれば再起動が発生している。OOMKilled が true ならメモリ超過が原因
-   docker inspect --format '{{.RestartCount}} {{.State.OOMKilled}}' undeux-api
+   **(3) OOM 再起動が起きたかを事後確認する**
+
+   ```bash
+   ssh -i "$HOME\.ssh\undeux-ec2" ubuntu@$Ec2Ip
+   cd undeux-sales-suite/infra/aws
+   # RestartCount が増えていれば再起動が発生している
+   docker inspect --format '{{.RestartCount}} {{.State.ExitCode}}' \
+     "$(docker compose -f docker-compose.ec2.yml --env-file .env ps -q api)"
+   # 終了コード 137 は SIGKILL（OOM Kill を含む）。ホスト側の記録でも裏取りできる
+   dmesg | grep -i -E 'oom|killed process' | tail
    ```
+
+   > `docker inspect` の `.State.OOMKilled` は**再起動時に false へリセットされる**ため、
+   > 無言復帰した後の事後確認には使えません。`RestartCount` の増加と終了コード 137、
+   > および `dmesg` の記録で判断してください。
 
 > **同時実行数を増やしたい場合:** 先に `infra/aws/docker-compose.ec2.yml` の `api` の
 > `memory`（既定 512m）を EC2 の空き容量を確認のうえ引き上げてください。

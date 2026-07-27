@@ -133,6 +133,10 @@ async function pollDetail(): Promise<void> {
     const result = await get<SubsidiaryCheckDetail>(`/api/subsidiary-check/${checkId.value}`)
     if (seq !== requestSeq) return
     detail.value = result
+    // 取得に成功した時点で、直前の load 失敗で出したエラーは陳腐化している。
+    // ここで消さないと、データは取れているのにエラーパネルが残り、
+    // StatusBlock がスロットごと隠すため再読込ボタンまで消えて固着する。
+    errorMessage.value = null
   } catch (error) {
     console.warn('[subsidiary-check] 処理状況の自動更新に失敗しました（次回再試行します）:', error)
   }
@@ -309,6 +313,10 @@ function goBack(): void {
 }
 
 watch(checkId, () => {
+  // 別チェックへ遷移したら、前のチェックの画像を必ず破棄してから読み直す。
+  // ポーリング応答が後着して detail だけ新チェックに入れ替わると、
+  // ギャラリーが前チェックの画像のまま残る（目視確認の根拠画像の帰属ズレ）。
+  revokeGallery()
   void load()
 })
 
