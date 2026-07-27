@@ -415,15 +415,29 @@ Start-Process "https://$FirebaseProjectId.web.app"
    **(1) コンテナのメモリ使用率を CloudWatch へ発行する（EC2 上で cron 登録）**
 
    `docker stats` の `MemPerc` はコンテナの上限（512MiB）に対する比率なので、そのまま使えます。
-   EC2 に SSH し、次を1回実行してください（インスタンスに `cloudwatch:PutMetricData` を許可した
-   IAM ロールが必要です）。
+
+   > **前提:** EC2 インスタンスに、`cloudwatch:PutMetricData` を許可した IAM ロールを
+   > アタッチしておいてください（未アタッチだと発行が `AccessDenied` で失敗します）。
+   > 手順3-3 でロールを付けていない場合は、IAM でロールを作成し
+   > `aws ec2 associate-iam-instance-profile --instance-id $InstanceId --iam-instance-profile Name=<ロール名>`
+   > で後付けできます。
+
+   まずローカル（PowerShell）から EC2 へ接続します。
+
+   ```powershell
+   ssh -i "$HOME\.ssh\undeux-ec2" ubuntu@$Ec2Ip
+   ```
+
+   以降は **EC2 上（bash）** で実行します。
 
    ```bash
-   ssh -i "$HOME\.ssh\undeux-ec2" ubuntu@$Ec2Ip
    sudo tee /usr/local/bin/undeux-api-mem.sh > /dev/null <<'EOF'
    #!/usr/bin/env bash
    set -euo pipefail
-   cd /home/ubuntu/undeux-sales-suite/infra/aws
+   # cron の PATH は最小限（/usr/bin:/bin）のため、docker / aws の場所を明示的に足す
+   export PATH="/usr/local/bin:/snap/bin:$PATH"
+   # デプロイ先はワークフローが scp する ~/undeux-sales-suite（ユーザーは EC2_USER）
+   cd "$HOME/undeux-sales-suite/infra/aws"
    # コンテナ名は compose のプロジェクト名に依存するため、ID で解決する（名前をハードコードしない）
    cid="$(docker compose -f docker-compose.ec2.yml --env-file .env ps -q api)"
    [ -n "$cid" ] || exit 0
@@ -461,9 +475,14 @@ Start-Process "https://$FirebaseProjectId.web.app"
 
    **(3) OOM 再起動が起きたかを事後確認する**
 
-   ```bash
+   ローカル（PowerShell）から接続し、以降は EC2 上（bash）で実行します。
+
+   ```powershell
    ssh -i "$HOME\.ssh\undeux-ec2" ubuntu@$Ec2Ip
-   cd undeux-sales-suite/infra/aws
+   ```
+
+   ```bash
+   cd ~/undeux-sales-suite/infra/aws
    # RestartCount が増えていれば再起動が発生している
    docker inspect --format '{{.RestartCount}} {{.State.ExitCode}}' \
      "$(docker compose -f docker-compose.ec2.yml --env-file .env ps -q api)"
