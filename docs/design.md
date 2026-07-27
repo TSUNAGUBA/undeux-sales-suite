@@ -86,6 +86,8 @@ graph LR
 | `customer` | 取込時に自動導出されるが本アプリでは UI/API から除外。`customer_code` は本アプリのユーザー（メーカー）に対して小売から振り出された固有コードで常に同一値となるため、フィルタ・集計軸として無意味 |
 | `m_buyer_section` / `m_section_department` / `m_contact_desk` | しまむらグループ組織マスタ（業態×商品部×部門の相関・相談受付デスク）。初期値は「お取引の基準 総括編」由来、以後は運用者修正が正（§12.1） |
 | `knowledge.entry` / `knowledge.chunk` / `knowledge.chunk_embedding` | ナレッジストア（RAG）。entry が原本の SoT、chunk / embedding は再生成可能な派生（§12.2） |
+| `subsidiary_check` / `subsidiary_check_image` | 副資材チェックの実行記録と入力画像（指示書・タグ）。記録系データとして保護し、再実行は failed のみ（§13） |
+| `m_product_attachment` | 商品マスタ付属情報（組成・原産国・洗濯表示・表示順序等）。副資材チェックの突合元ネタ・商品マスタ詳細に表示（§9.6・§13） |
 
 - ファクトテーブルの主キーは意味を持たない代理キー（`bigint` 採番）。
 - 業務複合キー（取込日・取引先コード・業態・品番・単品・商品記号・導入日）は冪等な
@@ -100,6 +102,9 @@ graph LR
 | 取込履歴 | `import_batch` | — |
 | コードマスタ | 売上参照ファクト | `department` 他（取込時に同一トランザクションで導出） |
 | 在庫アクションフラグ（発注停止候補・値下げ候補・対応状況） | `inventory_action_flag`（ユーザー判断の記録。public スキーマ） | なし（mart 非依存。明細表示時に自然キーで都度結合） |
+| 副資材チェック記録（判定・指摘・入力画像） | `subsidiary_check` / `subsidiary_check_image`（AI 実行結果の不変記録） | なし（findings は jsonb で親チェック単位のみ参照） |
+| 商品マスタ付属情報 | 運用部門の管理ファイル → `m_product_attachment`（SQL 直接投入。§9.6） | AI チェックプロンプト・商品マスタ詳細表示 |
+| 副資材チェックルール（アイコン優先順位・禁止用語・表示順序・寸法） | Core `SubsidiaryCheckRuleCatalog`（出典: しまむら規定資料。§13.4） | ルールブック API 応答・AI プロンプトのルールテキスト（同一カタログから生成） |
 
 ## 5. データフロー（取込）
 
@@ -153,6 +158,12 @@ flowchart TD
 | GET | `/api/rag/search` | RAG ハイブリッド検索テスト（`query`・`mode=business\|negotiation`・絞込タグ） |
 | POST | `/api/chat/business` | 業務チャット（`domain=system\|quality\|logistics`＋会話履歴）。**SSE ストリーミング応答** |
 | POST | `/api/chat/negotiation` | 商談チャット（`businessTypeCode`＋`deptCode`＋会話履歴）。**SSE ストリーミング応答** |
+| GET | `/api/subsidiary-check` | 副資材チェック履歴（`page`・`pageSize`。作成日時降順） |
+| POST | `/api/subsidiary-check` | 副資材チェック実行（multipart: `productId`?・`productLabel`?・`instructionImages` 1〜3・`tagImages` 1〜10）。AI 同期実行し結果を返す。**要 AI 設定（未設定は 503）** |
+| GET | `/api/subsidiary-check/{checkId}` | チェック詳細（判定・指摘・画像メタ・商品/付属情報） |
+| GET | `/api/subsidiary-check/{checkId}/images/{imageId}` | 入力画像バイナリ |
+| POST | `/api/subsidiary-check/{checkId}/rerun` | AI 再実行（**status=failed のみ**。completed は記録保護のため 400） |
+| GET | `/api/subsidiary-check/rules` | ルールブック（しまむら副資材規定カタログ） |
 | GET | `/api/error-codes` | エラーコード一覧 |
 
 共通フィルタ（クエリ）: `from`・`to`（取込週）、`departments`・`businessTypes`・`seasons`・`tanawari1`（複数可）、
@@ -208,17 +219,29 @@ flowchart TD
 - 共有の補助として明細の TSV/HTML コピー（クロス集計と同じ `utils/clipboard.ts`）も引き続き提供。
 - 業務定義（滞留・不動の意味と運用）は `.ai-native/domain-context/industry/apparel-inventory-health.md` を参照（実装値の SoT は `InventoryHealthRules.cs`。相互参照）。
 
-## 8. エラーコード
+### 7.x 副資材チェック（AI 画像比較・§13）
+
+- **入力は画像、判定は AI、ルールはコードが正:** チェックの入力は指示書画像とタグ画像（フォーム手入力ではない）。
+  規定ルール（アイコン優先順位・禁止用語・表示順序・寸法）は Core `SubsidiaryCheckRuleCatalog` を単一 SoT とし、
+  同一カタログから AI プロンプトのルールテキストとルールブック API 応答の両方を生成する（二重定義による乖離を防ぐ）。
+- **同期実行:** AI チェックは POST リクエスト内で同期実行する（RAG ナレッジ取込と同じ前例）。
+  実行中はフロントが進行表示で体感補償する（RP-6 の 200ms 基準を超える明示的なユーザー起動の長時間処理。
+  キュー基盤の導入は将来課題）。
+- **findings は jsonb 非正規化:** チェック結果の指摘は親チェック単位でのみ読む不変の記録で、
+  指摘単位の横断検索・更新要件がないため、正規化テーブルではなく jsonb で保存する（review-standards 1.1 の根拠記録）。
+- **記録保護と手動回復:** チェック記録は記録系データ（原則2）。再実行（rerun）は status=failed のみ許可し、
+  completed の上書きは 400 で拒否する。AI 呼出失敗・応答解析失敗・キャンセルは failed 状態＋エラー内容で記録に残し、
+  主要フロー（登録済み記録の参照）を止めない（原則4）。AI 未設定（キーなし）のみ永続化前に 503 で弾く（無駄な記録を作らない）。
 
 形式 `UNDX-{領域}-{連番}`。一覧は `GET /api/error-codes` または `ErrorCodes`（Core）参照。
 
 | 領域 | 例 | 内容 |
 |------|-----|------|
 | AUTH | `UNDX-AUTH-001` | 認証エラー |
-| REQ | `UNDX-REQ-001`〜`003` | リクエスト検証エラー |
+| REQ | `UNDX-REQ-001`〜`007` | リクエスト検証エラー（`004`〜`007` は副資材チェックの画像検証: 未指定/形式不正/サイズ超過/枚数超過） |
 | IMP | `UNDX-IMP-001`〜`005` | 取込処理エラー |
-| DATA / SYS | `UNDX-DATA-001`〜`004` / `UNDX-SYS-001` | データ層 / 商品未登録 / フラグ未存在 / ナレッジ・マスタ未存在 / 想定外エラー |
-| AI | `UNDX-AI-001` / `UNDX-AI-008` | LLM 呼出失敗（502 または SSE error イベント） / AI 未設定（503。DD-04 の `UNDX-AI-*` 領域を継承） |
+| DATA / SYS | `UNDX-DATA-001`〜`005` / `UNDX-SYS-001` | データ層 / 商品未登録 / フラグ未存在 / ナレッジ・マスタ未存在 / 副資材チェック未存在 / 想定外エラー |
+| AI | `UNDX-AI-001` / `UNDX-AI-008` / `UNDX-AI-009` | LLM 呼出失敗（502 または SSE error イベント） / AI 未設定（503。DD-04 の `UNDX-AI-*` 領域を継承） / AI 応答の解析失敗（`002`〜`007` は DD-04 予約済みのため `009` を採番） |
 
 ## 9. 商品マスタ（m_product / m_product_sku）
 
@@ -264,13 +287,25 @@ flowchart TD
 商品分析の「SKU 別在庫」列は商品の自然キー（業態×記号×品番）のみで集計し、ユーザーフィルタ
 （部門）には引きずられない物理在庫を表示する。
 
+### 9.6 付属情報（m_product_attachment）
+
+- 商品1件につき最大1行（`product_id` が PK・FK）。組成（`composition`）・原産国（`origin_country`）・
+  洗濯絵表示（`care_labels`）・色落ち表示（`color_fastness_note`）・表示の順序（`display_order`）・
+  注意事項（`quality_notes`）を保持する。
+- SoT・投入運用は商品マスタ本体（§9.3）と同一: 運用部門の管理ファイルが SoT で、SQL 直接投入。
+  アプリからは読み取りのみ（登録・編集 UI は付属情報の投入運用が確立した後の将来課題）。
+- 未登録でも既存機能・副資材チェックとも壊れない（`GET /api/product-master/{id}` の `attachment` は null、
+  チェックは画像のみで実行）。登録済みの場合は商品マスタ詳細に表示され、副資材チェック（§13）の
+  AI プロンプトに突合元ネタとして注入される。
+
 ## 10. 検証状況
 
-- バックエンド: `dotnet build`（0 警告 / 0 エラー）。ユニット・統合テスト（本改修で `ClimateModel`
+- バックエンド: `dotnet build`（0 警告 / 0 エラー）。ユニット・統合テスト（過去改修で `ClimateModel`
   ユニットと、追加フィルタ（棚割1・平均在庫日数）・クロス集計気温メトリクス・`/api/analysis/*` の
-  統合テストを追加）。
+  統合テストを追加。副資材チェック改修でパーサ・判定・プロンプト・ルールカタログのユニットと、
+  作成→判定→詳細→画像→再実行・検証エラー・AI 未設定・下位互換の統合テストを追加）。
 - フロントエンド: `nuxt typecheck`・`nuxt build` パス。散布図・回帰分析ページ／重回帰シミュレーター
-  ページと関連コンポーネントを追加。
+  ページと関連コンポーネント、副資材チェックページ（3タブ＋詳細）を追加。
 
 ## 11. 気温モデルと分析（散布図・回帰／重回帰）
 
@@ -412,3 +447,60 @@ flowchart TD
 | ナレッジ原本 | `knowledge.entry`（テキスト／ファイル bytea） | `knowledge.chunk` / `chunk_embedding`（再インデックスで再生成） |
 | 分類語彙（scope/category/biz_domain） | Core `KnowledgeTaxonomy` | スキーマ CHECK 制約（同時更新が必要） |
 | チャット会話履歴 | クライアント（画面内保持） | サーバーは無状態（履歴を保存しない設計判断） |
+
+## 13. 副資材チェック（AI 画像比較）
+
+### 13.1 目的と背景
+
+しまむらと取引するメーカーは、商品に付ける副資材（タグ・下げ札・品質表示）をしまむらの規定に
+従って作成し、チェックを受ける義務がある。従来は指示書（工程表 FAX）と実物タグの目視突合で
+行っていたチェックを、AI（Anthropic Claude の画像認識）による比較チェックとして提供する。
+機能設計の原型は subsidiary-materials-agent リポジトリ（ルールエンジン・UX プロトタイプ）で、
+本アプリでは入力を画像に変え、AI 比較として再設計した。
+
+### 13.2 チェックの3要素
+
+| カテゴリ | 内容 |
+|---------|------|
+| `layout`（レイアウト） | タグの構成・配置が指示書・規定どおりか（表面の並び: 商品名→アイコン→サイズ表記 等） |
+| `order`（順番） | 表示の順序が指示書どおりか（品番→サイズ→混率→洗濯表示→色落ち表示等→原産国表示→製造者）、アイコンの優先順位順 |
+| `content`（内容） | 品番・サイズ・混率・原産国・洗濯絵表示等の記載内容が指示書・付属情報と一致するか、禁止用語がないか |
+
+severity は `fail`（規定・指示書との明確な相違）/ `warn`（画像から確証が持てず目視確認が必要）/
+`pass`（確認して問題なし）。判定は fail>0 → `fail`（要修正）、warn>0 → `warn`（要確認）、
+それ以外 → `pass`（合格）。
+
+### 13.3 データフロー
+
+```mermaid
+flowchart TD
+    A[指示書画像 1〜3枚] --> C[POST /api/subsidiary-check]
+    B[タグ画像 1〜10枚] --> C
+    P[商品マスタ + 付属情報<br/>m_product_attachment 任意] --> C
+    C --> V[検証: 形式 jpeg/png・各5MB・枚数]
+    V --> S[subsidiary_check INSERT<br/>status=processing + 画像永続化]
+    S --> AI[Claude 画像比較<br/>SubsidiaryCheckRuleCatalog のルール + 付属情報を注入]
+    AI -->|JSON findings| PR[解析・正規化<br/>SubsidiaryCheckResponseParser]
+    PR --> U[UPDATE status=completed<br/>judgment + findings jsonb]
+    AI -->|失敗| F[UPDATE status=failed<br/>error_message 保存 = 記録は残す]
+    F -.->|rerun は failed のみ| AI
+```
+
+### 13.4 SoT 宣言
+
+| データ | SoT | キャッシュ／派生 |
+|--------|-----|----------------|
+| チェック記録（判定・指摘・画像） | `subsidiary_check` / `subsidiary_check_image` | なし |
+| 規定ルール | Core `SubsidiaryCheckRuleCatalog`（出典: しまむら「アイコンの管理と運用」等の規定資料。原本改訂時はカタログを追随更新） | ルールブック API・AI プロンプト（同一カタログから生成） |
+| 付属情報 | 運用部門の管理ファイル → `m_product_attachment`（§9.6） | AI プロンプト・商品マスタ詳細表示 |
+
+### 13.5 AI 呼出
+
+- モデルはチャットと同じ `Anthropic:Model`（精度優先。画像説明用 `VisionModel` は使わない）。
+- 出力は JSON のみを要求し、コードフェンス・前後説明文を許容する頑健なパーサで解析する。
+  未知の category は `content`、未知の severity は `warn` に正規化（安全側）。解析不能は
+  `UNDX-AI-009` として failed 記録に残す。
+- MaxTokens は `min(4096, Anthropic:MaxOutputTokens)`。**運用推奨: `Anthropic__MaxOutputTokens=4096`**
+  （既定 2048 のままでは指摘が多い場合に応答が切れる可能性がある）。
+- 画像が不鮮明で判読できない項目は fail ではなく warn（目視確認の誘導）として返すよう
+  プロンプトで指示する（AI は目視チェックの補助であり、最終判断は人が行う）。

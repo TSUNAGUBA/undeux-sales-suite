@@ -395,7 +395,7 @@ GitHub の **Actions** タブの「Run workflow」ボタンからも実行でき
 | `EC2_HOST` | EC2 の固定IP | ステップ3-4 |
 | `EC2_USER` | `ubuntu` | 固定 |
 | `EC2_SSH_KEY` | SSH秘密鍵（`undeux-ec2` ファイル全文） | ステップ3-1 |
-| `ANTHROPIC_API_KEY` | Anthropic API キー（AIチャット用・任意。未登録時はチャットのみ「AI未設定」） | Anthropic Console |
+| `ANTHROPIC_API_KEY` | Anthropic API キー（AIチャット・副資材チェック用・任意。未登録時は該当機能のみ「AI未設定」） | Anthropic Console |
 
 ---
 
