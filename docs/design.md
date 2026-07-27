@@ -577,8 +577,10 @@ flowchart TD
 - **LOH（Large Object Heap）の断片化:** 画像 byte[]（20MB）・base64 文字列（約53MB）・
   HTTP ボディ（約27MB）はいずれも LOH に確保され、.NET の既定では LOH は圧縮されない。
   長期稼働で断片化が進むと、総空きが足りていても確保に失敗しうる。単発なら failed 記録に
-  落ちて degrade で済むため現時点では受容し、**運用開始後に GC メトリクスを一定期間観測**して
-  必要なら `GCConserveMemory` / `LargeObjectHeapCompactionMode` の適用を検討する（残課題）。
+  落ちて degrade で済むため現時点では受容する。**当面はコンテナ RSS の監視**
+  （`infra/deploy-guide.md` ステップ8-3）で代替し、RSS の恒常的な上昇が観測された場合に
+  GC メトリクスの詳細観測（`dotnet-counters` 等）と `GCConserveMemory` /
+  `LargeObjectHeapCompactionMode` の適用を検討する（残課題）。
 - 画像が不鮮明で判読できない項目は fail ではなく warn（目視確認の誘導）として返すよう
   プロンプトで指示する（AI は目視チェックの補助であり、最終判断は人が行う）。
 

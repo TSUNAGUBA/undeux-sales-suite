@@ -450,7 +450,7 @@ ssh -i "$HOME\.ssh\undeux-ec2" ubuntu@$Ec2Ip
 以降は **EC2 上（bash）** で実行します。
 
 ```bash
-sudo snap install aws-cli --classic
+sudo snap install aws-cli --classic --channel=v2/stable
 aws --version   # 確認（/snap/bin/aws にインストールされる）
 exit
 ```
@@ -471,7 +471,8 @@ aws iam put-role-policy --role-name undeux-ec2-metrics --policy-name PutUndeuxMe
 # インスタンスプロファイル（EC2 へアタッチできる入れ物。ロールとは別に作成が必要）
 aws iam create-instance-profile --instance-profile-name undeux-ec2-metrics
 aws iam add-role-to-instance-profile --instance-profile-name undeux-ec2-metrics --role-name undeux-ec2-metrics
-Start-Sleep -Seconds 10   # プロファイル作成の反映待ち
+Start-Sleep -Seconds 10   # プロファイル作成の反映待ち（IAM の伝播は保証されないため、
+#   次行が InvalidParameterValue で失敗したら数十秒おいて再実行する）
 aws ec2 associate-iam-instance-profile --instance-id $InstanceId --iam-instance-profile Name=undeux-ec2-metrics
 ```
 
@@ -505,17 +506,22 @@ pct="$(docker stats --no-stream --format '{{.MemPerc}}' "$cid" | tr -d '%')"
 now="$(docker inspect --format '{{.RestartCount}}' "$cid")"
 state="$HOME/.undeux-api-restarts"
 prev="$(cat "$state" 2>/dev/null || echo "$now")"
-printf '%s' "$now" > "$state"
 if [ "$now" -ge "$prev" ]; then delta=$(( now - prev )); else delta=0; fi
 
 iid="$(curl -s -H "X-aws-ec2-metadata-token: $(curl -sX PUT http://169.254.169.254/latest/api/token \
   -H 'X-aws-ec2-metadata-token-ttl-seconds: 60')" http://169.254.169.254/latest/meta-data/instance-id)"
 
-aws cloudwatch put-metric-data --namespace UndeuxSales \
-  --metric-name ApiContainerMemoryPercent --unit Percent --value "$pct" \
-  --dimensions InstanceId="$iid"
+# 再起動の増分を先に発行し、成功してから state を進める。
+# 逆順（state を先に進める）だと、発行が一度でも失敗した時点で増分が消費済みになり、
+# 次回以降は delta=0 に戻る＝OOM の信号が恒久的に失われる（set -e で途中終了するため）。
 aws cloudwatch put-metric-data --namespace UndeuxSales \
   --metric-name ApiContainerRestarts --unit Count --value "$delta" \
+  --dimensions InstanceId="$iid"
+printf '%s' "$now" > "$state"
+
+# メモリ率は時系列の点サンプルであり、失敗しても次の周期で回復するため後段でよい
+aws cloudwatch put-metric-data --namespace UndeuxSales \
+  --metric-name ApiContainerMemoryPercent --unit Percent --value "$pct" \
   --dimensions InstanceId="$iid"
 EOF
 ```
@@ -558,7 +564,10 @@ aws cloudwatch put-metric-alarm `
 ```
 
 > - (A) は**発生の検知**（`Sum > 0`）、(B) は**予兆の検知**です。閾値 75% は GC ヒープ
->   ハードリミット（512MiB の 75% ＝ 384MiB）に合わせています。85% では手遅れになります。
+>   ハードリミット（512MiB の 75%）と同じ比率にしています。85% では手遅れになります。
+>   なお発行している値は**コンテナの RSS ／ 上限**であり、GC のマネージドヒープ使用率ではありません
+>   （RSS はマネージドヒープを含む上位集合）。そのため実際にはハードリミット到達より**早めに**
+>   発火します（安全側）。
 > - (B) の `--treat-missing-data breaching` は、**発行が止まったこと自体を検知する**ためです
 >   （既定の `missing` では、スクリプトが壊れてもアラームは無通知のまま `INSUFFICIENT_DATA` に
 >   留まり、「監視できている」という誤解を招きます）。デプロイ中の一時的な欠測で鳴った場合は
