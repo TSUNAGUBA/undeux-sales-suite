@@ -46,7 +46,11 @@ public sealed class DatabaseFixture : IAsyncLifetime
         catch (Exception ex)
         {
             throw new InvalidOperationException(
-                $"統合テストのDB初期化に失敗しました（段階: {_initStage}、接続先: {SafeConnectionInfo()}）。詳細: {ex}",
+                // 例外は型名＋メッセージに絞る。ToString() のスタックトレースには接続文字列断片が
+                // 載る型の失敗があり、SafeConnectionInfo() で資格情報を除いた意図が相殺されるため。
+                // 元例外は InnerException として保持しており、必要なら参照できる。
+                $"統合テストのDB初期化に失敗しました（段階: {_initStage}、接続先: {SafeConnectionInfo()}）。"
+                + $"詳細: {ex.GetType().Name}: {ex.Message}",
                 ex);
         }
     }

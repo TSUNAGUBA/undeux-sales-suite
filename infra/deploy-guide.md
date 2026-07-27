@@ -151,6 +151,7 @@ aws rds create-db-instance `
   --master-username undeux `
   --master-user-password $DbPassword `
   --allocated-storage 20 `
+  --max-allocated-storage 100 `
   --storage-type gp3 `
   --db-name undeux `
   --vpc-security-group-ids $RdsSgId `
@@ -169,6 +170,13 @@ $RdsEndpoint   # 確認
 $RdsConnectionString = "Host=$RdsEndpoint;Port=5432;Database=undeux;Username=undeux;Password=$DbPassword;Command Timeout=600"
 ```
 
+> **ストレージ自動スケーリング:** `--max-allocated-storage 100` を付けているため、空き容量が
+> 少なくなると RDS が最大 100GiB まで自動拡張します（付けないと 20GiB 固定で、副資材チェックの
+> 画像蓄積により枯渇しうる。`docs/design.md` §13.6 の容量見積りを参照）。枯渇すると RDS は
+> `storage-full` となり**アプリ全体が書込不能**になるため、この指定は省略しないでください。
+> 既存インスタンスに後付けする場合は
+> `aws rds modify-db-instance --db-instance-identifier undeux-db --max-allocated-storage 100 --apply-immediately`。
+>
 > `--engine-version 16` でエラーが出る場合は、`aws rds describe-db-engine-versions --engine postgres --query "DBEngineVersions[].EngineVersion"` で利用可能なバージョンを確認し、その値（例 `16.6`）に変更してください。
 
 ---
@@ -429,6 +437,8 @@ Start-Process "https://$FirebaseProjectId.web.app"
 **変数の再取得**（同じ PowerShell ウィンドウで続けている場合は不要）
 
 ```powershell
+# 付録A でキーペア名を読み替えた場合は Values= を実際の名前に置換すること。
+# 一致しないと None が返り、後続の AWS CLI がパラメータ検証エラーで停止する。
 $InstanceId  = aws ec2 describe-instances --filters "Name=key-name,Values=undeux-ec2" "Name=instance-state-name,Values=running" --query "Reservations[0].Instances[0].InstanceId" --output text
 $Ec2Ip       = aws ec2 describe-instances --instance-ids $InstanceId --query "Reservations[0].Instances[0].PublicIpAddress" --output text
 $SnsTopicArn = aws sns create-topic --name undeux-alerts --query "TopicArn" --output text   # 作成済みなら既存 ARN が返る
@@ -518,11 +528,16 @@ pct="$(docker stats --no-stream --format '{{.MemPerc}}' "$cid" | tr -d '%')"
 # 再起動回数の増分（OOM Kill の確実な信号。値そのものではなく差分を出す）
 now="$(docker inspect --format '{{.RestartCount}}' "$cid")"
 state="$HOME/.undeux-api-restarts"
-prev="$(cat "$state" 2>/dev/null || true)"
-# 空・非数値は「前回値なし」とみなして now に寄せる。ディスク逼迫等で state が
-# 0 バイトになると cat は成功してしまい、数値比較が if 条件内で失敗しても
-# set -e が発動しないまま else（delta=0）へ落ちて増分が無言で消える。
-case "$prev" in ''|*[!0-9]*) prev="$now" ;; esac
+# 「初回（state なし）」と「破損（state はあるが空・非数値）」を区別する。
+# 破損は本来 OOM が起きていたかもしれない状態であり、prev を now に寄せると
+# 増分が 0 になって信号が無言で消える。下の書込方針（過大報告に倒す）と揃え、
+# 破損時は prev=0 として累計を報告し、アラームを鳴らす側へ倒す。
+if [ -f "$state" ]; then
+  prev="$(cat "$state" 2>/dev/null || true)"
+  case "$prev" in ''|*[!0-9]*) prev=0 ;; esac   # 破損 → 過大報告
+else
+  prev="$now"                                   # 初回 → 増分 0
+fi
 if [ "$now" -ge "$prev" ]; then delta=$(( now - prev )); else delta=0; fi
 
 iid="$(curl -s -H "X-aws-ec2-metadata-token: $(curl -sX PUT http://169.254.169.254/latest/api/token \
