@@ -189,15 +189,16 @@ public sealed class SubsidiaryCheckService
     /// （infra/aws/docker-compose.ec2.yml）・ローカル（docker-compose.yml）とも 512m で、
     /// cgroup 制限下の .NET GC ヒープハードリミットは既定でその 75% ＝ 384MiB。
     /// 一方 AI 呼出中の1件（バックグラウンドタスク）が同時に保持する量は、設計上許容された正常系の最大入力
-    /// （<see cref="MaxTotalImageBytes"/> = 20MiB）で概算 <b>約100MiB</b>:
+    /// （<see cref="MaxTotalImageBytes"/> = 20MiB）で概算 <b>約100MiB</b>。
     /// <b>本収支のメモリ量はすべて MiB 表記</b>（上限・ハードリミット・画像上限がいずれも 2 の冪で
-    /// 定義されているため同一単位で突き合わせる。docs/design.md §13.5 と同じ数値）。
+    /// 定義されているため同一単位で突き合わせる。docs/design.md §13.5 と同じ数値）。内訳:
     /// </para>
     /// <list type="bullet">
     ///   <item><description>画像バッファ byte[]: 20MiB</description></item>
-    ///   <item><description>base64 文字列: 20MiB → 約 26.7M 文字。.NET string は UTF-16
+    ///   <item><description>base64 文字列: 20MiB → 約 28.0M 文字。.NET string は UTF-16
     ///     （2バイト/文字）のため約 53MiB</description></item>
-    ///   <item><description>HTTP リクエストボディの UTF-8 直列化: 約 27MiB</description></item>
+    ///   <item><description>HTTP リクエストボディの UTF-8 直列化（base64 は ASCII のため
+    ///     1バイト/文字）: 約 27MiB</description></item>
     /// </list>
     /// <para>
     /// 同時1件なら実行中のピークは 100MiB ＋ ASP.NET Core のベースライン（約100〜150MiB）＝ 約250MiB で、
@@ -243,9 +244,9 @@ public sealed class SubsidiaryCheckService
     /// そのため予約は <see cref="AiCheckSlotLease"/> でコントローラの入口
     /// （<c>file.Length</c> 合算による合計サイズ判定の直後・バッファ確保前）から行う。
     /// なお multipart のフォームバッファリングは予約より前に完了しているが、
-    /// <c>FormOptions.MemoryBufferThreshold</c>（既定 64KB。本リポジトリで上書きなし）を超える
+    /// <c>FormOptions.MemoryBufferThreshold</c>（既定 65,536 バイト ＝ 64KiB。本リポジトリで上書きなし）を超える
     /// ファイルはディスクへ退避されるため、マネージドヒープへの寄与は
-    /// 最大13枚 × 64KB ≒ 0.8MB/リクエストに留まり、上の収支を崩さない。
+    /// 最大13枚 × 64KiB ≒ 0.8MiB/リクエストに留まり、上の収支を崩さない。
     /// </para>
     /// </summary>
     public const int MaxConcurrentAiChecks = 4;

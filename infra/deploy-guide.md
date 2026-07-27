@@ -424,13 +424,15 @@ Start-Process "https://$FirebaseProjectId.web.app"
 
 > **別ウィンドウで再開する場合:** 本ステップは `$InstanceId`（ステップ3-3）・`$Ec2Ip`（ステップ3-4）・
 > `$SnsTopicArn`（ステップ8-2 の項目3）を使います。PowerShell を開き直した場合は、
-> 先に次で取り直してください（値が空のままだと AWS CLI がパラメータ検証エラーで停止します）。
->
-> ```powershell
-> $InstanceId  = aws ec2 describe-instances --filters "Name=key-name,Values=undeux-ec2" "Name=instance-state-name,Values=running" --query "Reservations[0].Instances[0].InstanceId" --output text
-> $Ec2Ip       = aws ec2 describe-instances --instance-ids $InstanceId --query "Reservations[0].Instances[0].PublicIpAddress" --output text
-> $SnsTopicArn = aws sns create-topic --name undeux-alerts --query "TopicArn" --output text   # 作成済みなら既存 ARN が返る
-> ```
+> 下の「変数の再取得」を先に実行してください（値が空のままだと AWS CLI がパラメータ検証エラーで停止します）。
+
+**変数の再取得**（同じ PowerShell ウィンドウで続けている場合は不要）
+
+```powershell
+$InstanceId  = aws ec2 describe-instances --filters "Name=key-name,Values=undeux-ec2" "Name=instance-state-name,Values=running" --query "Reservations[0].Instances[0].InstanceId" --output text
+$Ec2Ip       = aws ec2 describe-instances --instance-ids $InstanceId --query "Reservations[0].Instances[0].PublicIpAddress" --output text
+$SnsTopicArn = aws sns create-topic --name undeux-alerts --query "TopicArn" --output text   # 作成済みなら既存 ARN が返る
+```
 
 副資材チェックは1リクエストで最大約100MiB を保持します。コンテナのメモリ上限は 512MiB で、
 cgroup 下の .NET GC ヒープハードリミットはその 75%（384MiB）。収支上の使用量が約310MiB のため、
