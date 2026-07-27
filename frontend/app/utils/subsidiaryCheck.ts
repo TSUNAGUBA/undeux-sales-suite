@@ -177,8 +177,20 @@ export const SUBSIDIARY_IMAGE_TYPES = ['image/jpeg', 'image/png'] as const
 export const SUBSIDIARY_IMAGE_ACCEPT = SUBSIDIARY_IMAGE_TYPES.join(',')
 
 /**
+ * 商品ラベル（任意入力）の最大文字数。
+ * SoT はバックエンド SubsidiaryCheckService.MaxProductLabelLength（超過は 400 / UNDX-REQ-001）。
+ * 変更時は両者を同期させること。
+ */
+export const SUBSIDIARY_PRODUCT_LABEL_MAX_LENGTH = 200
+
+/**
  * processing のまま経過した場合に「孤児」とみなし再実行導線を出すまでの時間（10分）。
  * SoT はバックエンド SubsidiaryCheckService.ProcessingStaleAfter（rerun の許可条件）。
  * 変更時は両者を同期させること。
+ *
+ * 判定の基準時刻は startedAt（最後に AI 実行を開始した日時）で、バックエンドの
+ * rerun クレーム条件と同一。バックエンド側の滞留時間は
+ * 「順番待ち上限30秒＋AI 呼出タイムアウト120秒＋記録処理」＝実質3分以内に有界化されており、
+ * 10分はそれに対する十分な余裕。実行中のチェックを孤児と誤判定しないことを優先している。
  */
 export const SUBSIDIARY_PROCESSING_STALE_MS = 10 * 60 * 1000

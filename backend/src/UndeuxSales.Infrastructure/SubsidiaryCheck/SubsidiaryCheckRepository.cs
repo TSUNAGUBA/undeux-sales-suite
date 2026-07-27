@@ -56,11 +56,14 @@ public sealed class SubsidiaryCheckRepository
         c.error_message,
         c.created_by,
         c.created_at,
-        c.checked_at
+        c.checked_at,
+        c.started_at
         """;
 
     // LATERAL サブクエリで「対象行の check_id のみ」を ix_subsidiary_check_image_check 経由で集計する
-    // （全行 GROUP BY の派生テーブルだと履歴増加に伴い一覧・詳細のコストが線形に悪化するため）。
+    // （全行 GROUP BY の派生テーブルだと、1件を読むだけの詳細取得でも全画像行を走査することになるため）。
+    // 改善の主眼は詳細取得（1行）と一覧の画像枚数集計。一覧全体は総件数の COUNT(*) OVER () が
+    // LIMIT より下で評価されるため依然 O(N) であり、LATERAL でそこが O(1) になるわけではない。
     private const string ImageCountJoin = """
         LEFT JOIN LATERAL (
             SELECT COUNT(*) FILTER (WHERE i.kind = 'instruction') AS instruction_count,
@@ -194,9 +197,12 @@ public sealed class SubsidiaryCheckRepository
         await using var connection = await _connectionFactory.OpenConnectionAsync(cancellationToken);
         await using var transaction = await connection.BeginTransactionAsync(cancellationToken);
 
+        // started_at は「AI 実行の開始日時」。新規登録は直後に AI を呼ぶため now() で確定させる
+        // （孤児判定・rerun クレームの基準時刻になる）。
         await connection.ExecuteAsync(new CommandDefinition("""
-            INSERT INTO subsidiary_check (check_id, product_id, product_label, status, created_by)
-            VALUES (@checkId, @productId, @productLabel, @status, @createdBy);
+            INSERT INTO subsidiary_check
+                (check_id, product_id, product_label, status, created_by, started_at)
+            VALUES (@checkId, @productId, @productLabel, @status, @createdBy, now());
             """,
             new { checkId, productId, productLabel, status = SubsidiaryCheckStatus.Processing, createdBy },
             transaction, cancellationToken: cancellationToken));
@@ -268,6 +274,46 @@ public sealed class SubsidiaryCheckRepository
             cancellationToken: cancellationToken));
     }
 
+    /// <summary>
+    /// 再実行（rerun）の対象を1回の UPDATE で原子的にクレーム（占有）する。
+    /// <para>
+    /// 許可条件（failed、または滞留超過の processing 孤児）を WHERE 句に含めた
+    /// compare-and-set であり、read-then-act の TOCTOU を排除する。クレーム成立と同時に
+    /// started_at を now() へ進めるため、実行中のチェックは孤児条件（started_at &lt; staleBefore）から
+    /// 外れ、別タブ・別ユーザーからの重複起動が構造的に成立しない。
+    /// completed は条件に含まれないため確定済みの判定結果は保護される（原則2）。
+    /// </para>
+    /// <para>
+    /// started_at が NULL の行（バックフィル未適用の旧データ）は created_at で代替評価し、
+    /// 孤児が永久に回復不能にならないようにする。
+    /// </para>
+    /// </summary>
+    /// <param name="staleBefore">この時刻より前に開始した processing を孤児とみなす（UTC）。</param>
+    /// <returns>クレームできた行数（1 = 実行権を獲得 / 0 = 実行不可）。</returns>
+    public async Task<int> ClaimForRerunAsync(
+        Guid checkId, DateTime staleBefore, CancellationToken cancellationToken = default)
+    {
+        await using var connection = await _connectionFactory.OpenConnectionAsync(cancellationToken);
+        return await connection.ExecuteAsync(new CommandDefinition("""
+            UPDATE subsidiary_check
+               SET status        = @processingStatus,
+                   started_at    = now(),
+                   error_message = NULL
+             WHERE check_id = @checkId
+               AND (status = @failedStatus
+                    OR (status = @processingStatus
+                        AND COALESCE(started_at, created_at) < @staleBefore));
+            """,
+            new
+            {
+                checkId,
+                staleBefore,
+                processingStatus = SubsidiaryCheckStatus.Processing,
+                failedStatus = SubsidiaryCheckStatus.Failed,
+            },
+            cancellationToken: cancellationToken));
+    }
+
     /// <summary>商品情報＋付属情報を取得する（チェック対象商品の突き合わせ用）。未存在は null。</summary>
     public async Task<SubsidiaryCheckProductInfo?> GetProductInfoAsync(
         Guid productId, CancellationToken cancellationToken = default)
@@ -326,7 +372,8 @@ public sealed class SubsidiaryCheckRepository
         row.ErrorMessage,
         row.CreatedBy,
         row.CreatedAt,
-        row.CheckedAt);
+        row.CheckedAt,
+        row.StartedAt);
 
     private static IReadOnlyList<SubsidiaryCheckFinding> DeserializeFindings(string? findingsJson)
     {
@@ -356,6 +403,7 @@ public sealed class SubsidiaryCheckRepository
         string CreatedBy,
         DateTime CreatedAt,
         DateTime? CheckedAt,
+        DateTime? StartedAt,
         int TotalCount,
         string? FindingsJson);
 

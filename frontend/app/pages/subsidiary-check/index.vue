@@ -192,9 +192,14 @@ async function searchProducts(): Promise<void> {
 }
 
 function selectProduct(product: MasterProductSummary): void {
+  // サーバは商品ラベルを SUBSIDIARY_PRODUCT_LABEL_MAX_LENGTH 文字までしか受け付けない
+  // （UNDX-REQ-001）。商品名が長いマスタでも 400 にならないよう、送信前に同値で切り詰める。
   selectedProduct.value = {
     productId: product.productId,
-    label: `${product.productTypeCrd} ${product.productName}`,
+    label: `${product.productTypeCrd} ${product.productName}`.slice(
+      0,
+      SUBSIDIARY_PRODUCT_LABEL_MAX_LENGTH,
+    ),
   }
   // 選択後は候補リストを閉じる（誤タップ防止。再検索でいつでも開き直せる）。
   productResults.value = null

@@ -174,12 +174,15 @@ const rerunError = ref<string | null>(null)
  * processing のまま SUBSIDIARY_PROCESSING_STALE_MS（バックエンド
  * SubsidiaryCheckService.ProcessingStaleAfter と同値）超経過した「孤児」か。
  * プロセスクラッシュ等で結果が確定しない場合の回復導線（rerun）を出す判定に使う。
+ * 基準時刻は startedAt（最後に AI 実行を開始した日時）で、バックエンドの rerun クレーム条件と一致させる
+ * （再実行中は startedAt が進むため、実行中のチェックに再実行導線は出ない）。
+ * startedAt が未設定の旧データは createdAt で代替する（バックエンドの COALESCE と同じ扱い）。
  * 時刻は detail 取得（load / 再読込）時点で評価される（computed は detail 変更で再評価）。
  */
 const isStaleProcessing = computed(() => {
   const s = detail.value?.summary
   if (!s || s.status !== 'processing') return false
-  return Date.now() - new Date(s.createdAt).getTime() >= SUBSIDIARY_PROCESSING_STALE_MS
+  return Date.now() - new Date(s.startedAt ?? s.createdAt).getTime() >= SUBSIDIARY_PROCESSING_STALE_MS
 })
 
 async function rerun(): Promise<void> {

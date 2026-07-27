@@ -16,11 +16,14 @@ namespace UndeuxSales.Api.Controllers;
 public sealed class SubsidiaryCheckController : ControllerBase
 {
     // multipart 全体の transport 層上限（防御層）。
-    // 正当な入力はアプリ層の合計サイズ検証（SubsidiaryCheckService.MaxTotalImageBytes = 20MB）で
-    // 先に拒否されるため、この 60MB（20MB＋メタ情報＋十分な余裕）に到達するのは異常入力のみ。
+    // アプリ層の合計サイズ上限（SubsidiaryCheckService.MaxTotalImageBytes = 20MB）に
+    // multipart のオーバーヘッド（boundary・パートヘッダ・その他フォーム値）分を加えた 25MB とし、
+    // RagController（本体 20MB に対し transport 25MB）と同じ流儀に揃える。
+    // 過大に取ると（旧値 60MB）、アプリ層で拒否される入力をボディ全体受信し切ってからでないと
+    // 拒否できず、無駄な受信帯域とメモリを消費する。
     // 到達時の BadHttpRequestException / InvalidDataException は
     // ExceptionHandlingMiddleware が 413（UNDX-REQ-008）へマップする。
-    private const long HardSizeLimitBytes = 60 * 1024 * 1024;
+    private const long HardSizeLimitBytes = 25 * 1024 * 1024;
 
     // ページング既定値の SoT（ProductMasterController と同じ流儀。Repository は防御的クランプのみ行う）。
     private const int DefaultPage = 1;

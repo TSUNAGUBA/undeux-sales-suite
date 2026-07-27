@@ -1264,8 +1264,16 @@ export interface SubsidiaryCheckSummary {
   aiModel: string | null
   errorMessage: string | null
   createdBy: string
+  /** チェックの登録日時（不変）。 */
   createdAt: string
+  /** 完了（または失敗確定）日時。未確定なら null。 */
   checkedAt: string | null
+  /**
+   * 最後に AI 実行を開始した日時（再実行のたびに更新される）。
+   * 孤児判定（processing の滞留超過）の基準時刻。
+   * started_at 導入前の既存行は createdAt でバックフィル済み（理論上のみ null）。
+   */
+  startedAt: string | null
 }
 
 /** AI チェックの指摘1件。 */

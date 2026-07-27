@@ -49,10 +49,27 @@ public sealed class SubsidiaryCheckService
     public const long MaxTotalImageBytes = 20 * 1024 * 1024;
 
     /// <summary>
+    /// 商品ラベル（クライアント指定の任意テキスト）の最大文字数（200文字）。
+    /// 根拠: 商品ラベルは「品番・商品名相当の短い識別文字列」を想定した表示用スナップショットであり、
+    /// 上限がないと Kestrel の ValueLengthLimit（既定 4MB）まで受理してしまう。
+    /// 巨大テキストの永続化・一覧展開・AI プロンプトへの混入という増幅経路を塞ぐ
+    /// （inventory_action_flag.note を 1,000 文字に制限した先例と同じ方針）。
+    /// フロント（utils/subsidiaryCheck.ts の SUBSIDIARY_PRODUCT_LABEL_MAX_LENGTH）と同期させること。
+    /// </summary>
+    public const int MaxProductLabelLength = 200;
+
+    /// <summary>
     /// processing のまま経過した場合に「孤児（プロセスクラッシュ等で結果が確定しないレコード）」と
-    /// みなして再実行（rerun）を許可するまでの時間。
-    /// 根拠: AI 呼出タイムアウト（<see cref="AiCallTimeout"/> = 120秒）＋記録処理を含めても
-    /// 正常系で10分を超えて processing に留まることはないため、10分超は孤児と判断できる。
+    /// みなして再実行（rerun）を許可するまでの時間。基準時刻は started_at（最後の AI 実行開始日時）。
+    /// <para>
+    /// 根拠: 1リクエストの processing 滞留時間は
+    /// 「セマフォ待機（<see cref="AiCallQueueTimeout"/> = 30秒で打切り）
+    /// ＋ AI 呼出（<see cref="AiCallTimeout"/> = 120秒で打切り）＋ 記録処理（DB 更新・秒オーダ）」で
+    /// <b>有界</b>であり、上限は実質3分以内。待機超過・呼出タイムアウトはいずれも failed 記録で
+    /// 確定するため、これを超えて processing に留まるのはプロセス消失（クラッシュ・強制終了）だけ。
+    /// 有界化された最大滞留時間 約3分に対し十分な余裕を見て10分とする
+    /// （正常に実行待ちのチェックを孤児と誤判定しないことを優先）。
+    /// </para>
     /// フロント（utils/subsidiaryCheck.ts の SUBSIDIARY_PROCESSING_STALE_MS）と同期させること。
     /// </summary>
     public static readonly TimeSpan ProcessingStaleAfter = TimeSpan.FromMinutes(10);
@@ -72,18 +89,74 @@ public sealed class SubsidiaryCheckService
     private static readonly TimeSpan AiCallTimeout = TimeSpan.FromSeconds(120);
 
     /// <summary>
-    /// 同時 AI チェック実行数の上限（3並列）。
-    /// 根拠: 1リクエストで最大 20MB の画像バッファ＋base64 変換（約1.33倍）を保持するため、
-    /// 無制限の並列実行はメモリ圧迫と Anthropic API のレート制限超過を招く。
+    /// 同時 AI チェック実行数の上限（1＝直列化）。
+    /// <para>
+    /// <b>メモリ収支（同時実行数を 1 にした根拠）:</b> api コンテナのメモリ上限は本番
+    /// （infra/aws/docker-compose.ec2.yml）・ローカル（docker-compose.yml）とも 512m で、
+    /// cgroup 制限下の .NET GC ヒープハードリミットは既定でその 75% ＝ 約 384MB。
+    /// 一方 AI 呼出中の1リクエストが同時に保持する量は、設計上許容された正常系の最大入力
+    /// （<see cref="MaxTotalImageBytes"/> = 20MB）で概算 <b>約100MB</b>:
+    /// </para>
+    /// <list type="bullet">
+    ///   <item><description>画像バッファ byte[]: 約 20MB</description></item>
+    ///   <item><description>base64 文字列: 20MB → 約 26.7M 文字。.NET string は UTF-16
+    ///     （2バイト/文字）のため約 53MB</description></item>
+    ///   <item><description>HTTP リクエストボディの UTF-8 直列化: 約 27MB</description></item>
+    /// </list>
+    /// <para>
+    /// 同時1件ならピークは 100MB ＋ ASP.NET Core のベースライン（約100〜150MB）＝ 約250MB で、
+    /// 384MB に対し十分な余裕がある。3並列では約300MB ＋ ベースラインでハードリミットに到達し、
+    /// <b>正常系の入力で OOM → コンテナ再起動（全機能停止）</b>に至るため直列化する。
+    /// 想定利用（日次数件〜10件）に対し同時1件で機能上の問題はない。
+    /// スループットが不足する場合は、同時実行数を上げる前にコンテナのメモリ上限引上げ
+    /// （EC2 インスタンスの空き容量確認が前提のオペレーター判断）を選択肢とすること。
+    /// </para>
+    /// <para>
     /// AI 呼出部分のみを制限し、DB 操作はセマフォの外で行う（DB まで直列化しない）。
+    /// 待機は <see cref="AiCallQueueTimeout"/> で有界化し、待ち行列にバッファを抱えたまま
+    /// 滞留するリクエスト数も抑制する。
+    /// </para>
     /// </summary>
-    private static readonly SemaphoreSlim AiCallSemaphore = new(3);
+    private static readonly SemaphoreSlim AiCallSemaphore = new(1);
 
-    /// <summary>許可する画像 Content-Type（jpeg / png のみ）。</summary>
+    /// <summary>
+    /// AI 呼出の順番待ち（セマフォ待機）の上限（30秒）。
+    /// 根拠: 待機を無制限にすると、画像バッファ（1件あたり約100MB）を保持したままのリクエストが
+    /// 無制限に積み上がり、同時実行数を絞ったメモリ保護（<see cref="AiCallSemaphore"/>）が
+    /// 待ち行列側から破られる。また processing の滞留時間が非有界になり、孤児判定
+    /// （<see cref="ProcessingStaleAfter"/>）の根拠が成り立たなくなる。
+    /// 超過時は AI を呼ばずに failed 記録＋failed Detail で応答し、rerun で回復できる。
+    /// </summary>
+    private static readonly TimeSpan AiCallQueueTimeout = TimeSpan.FromSeconds(30);
+
+    /// <summary>
+    /// 許可する画像 Content-Type（jpeg / png のみ）。
+    /// 比較は大文字小文字非依存で行う（RFC 9110 上 media type は case-insensitive で、
+    /// クライアントが "IMAGE/JPEG" 等を送っても正当な入力のため）。
+    /// </summary>
     private static readonly IReadOnlyList<string> AllowedContentTypes = new[]
     {
         "image/jpeg", "image/png",
     };
+
+    /// <summary>PNG の Content-Type（マジックバイト分岐の判定に使う）。</summary>
+    private const string PngContentType = "image/png";
+
+    // ---- AI 実行スロット制御の内部シーム（統合テスト専用。InternalsVisibleTo=UndeuxSales.Tests） ----
+    // 本番では両オーバーライドとも null で、上の定数どおり（順番待ち30秒 / 呼出120秒）に動作する。
+    // 待機超過・呼出タイムアウトの各経路を実時間で待たずに検証するためだけに用意している。
+
+    /// <summary>順番待ち上限のテスト用オーバーライド（null＝<see cref="AiCallQueueTimeout"/>）。</summary>
+    internal static TimeSpan? AiCallQueueTimeoutOverride;
+
+    /// <summary>AI 呼出タイムアウトのテスト用オーバーライド（null＝<see cref="AiCallTimeout"/>）。</summary>
+    internal static TimeSpan? AiCallTimeoutOverride;
+
+    /// <summary>実行スロットを即時取得できたか（テストから待ち行列状態を作るために使う）。</summary>
+    internal static Task<bool> TryOccupyAiSlotAsync() => AiCallSemaphore.WaitAsync(TimeSpan.Zero);
+
+    /// <summary><see cref="TryOccupyAiSlotAsync"/> で取得したスロットを解放する。</summary>
+    internal static void ReleaseAiSlot() => AiCallSemaphore.Release();
 
     private readonly SubsidiaryCheckRepository _repository;
     private readonly IAiChatClient _aiClient;
@@ -141,25 +214,34 @@ public sealed class SubsidiaryCheckService
 
     /// <summary>
     /// AI を再実行する（手動回復パス）。許可条件は
-    /// 「status=failed」または「status=processing かつ作成から <see cref="ProcessingStaleAfter"/> 超経過
-    /// （プロセスクラッシュ等で結果が確定しない processing 孤児の回復）」。
-    /// completed のチェックは記録保護（原則2）のため 400 を返す。
+    /// 「status=failed」または「status=processing かつ最後の実行開始（started_at）から
+    /// <see cref="ProcessingStaleAfter"/> 超経過（プロセスクラッシュ等で結果が確定しない
+    /// processing 孤児の回復）」。completed のチェックは記録保護（原則2）のため 400 を返す。
+    /// <para>
+    /// 実行権は DB の1回の UPDATE（<see cref="SubsidiaryCheckRepository.ClaimForRerunAsync"/>）で
+    /// 原子的にクレームする。read-then-act では「stale processing の rerun 実行中も status・
+    /// 基準時刻が不変」のため、別タブ・別ユーザーから何度でも起動でき同一 checkId への AI 呼出が
+    /// 多重化するが、クレーム成立と同時に started_at が now() へ進むことで孤児条件から外れ、
+    /// 重複起動が構造的に成立しない。
+    /// </para>
     /// </summary>
     public async Task<SubsidiaryCheckDetail> RerunAsync(
         Guid checkId, CancellationToken cancellationToken = default)
     {
+        // 未存在は 404 で早期に返す（クレーム 0 行と「存在しない」を区別するため）。
         var current = await GetDetailRequiredAsync(checkId, cancellationToken);
-        if (!CanRerun(current.Summary))
-        {
-            throw new AppException(ErrorCodes.InvalidRequest, 400,
-                "再実行できるのは失敗（failed）状態のチェック、または処理中（processing）のまま"
-                + $"{(int)ProcessingStaleAfter.TotalMinutes}分以上経過したチェックのみです"
-                + "（完了済みの判定結果は保護されます）。");
-        }
 
         if (!_aiClient.IsConfigured)
         {
             throw new AppException(ErrorCodes.AiNotConfigured, 503);
+        }
+
+        // 実行権の原子的クレーム。0 行なら「他が実行中」「completed で確定済み」のいずれか。
+        var claimed = await _repository.ClaimForRerunAsync(
+            checkId, DateTime.UtcNow - ProcessingStaleAfter, cancellationToken);
+        if (claimed == 0)
+        {
+            throw await BuildRerunRejectedAsync(checkId, cancellationToken);
         }
 
         // 商品が後から削除されている場合（FK SET NULL）は商品情報なしで再実行する。
@@ -177,12 +259,20 @@ public sealed class SubsidiaryCheckService
         return await GetDetailRequiredAsync(checkId, cancellationToken);
     }
 
-    /// <summary>再実行を許可するか（failed、または作成から一定時間超経過した processing 孤児）。</summary>
-    private static bool CanRerun(SubsidiaryCheckSummary summary)
-        => summary.Status == SubsidiaryCheckStatus.Failed
-           || (summary.Status == SubsidiaryCheckStatus.Processing
-               // created_at は timestamptz（Npgsql は UTC の DateTime を返す）。UtcNow と直接比較できる。
-               && DateTime.UtcNow - summary.CreatedAt >= ProcessingStaleAfter);
+    /// <summary>
+    /// クレームできなかった（0 行）ときの拒否理由を、現在状態を読み直して構築する。
+    /// completed（確定済み）と processing（実行中）でメッセージを出し分ける。
+    /// </summary>
+    private async Task<AppException> BuildRerunRejectedAsync(
+        Guid checkId, CancellationToken cancellationToken)
+    {
+        var latest = await GetDetailRequiredAsync(checkId, cancellationToken);
+        var reason = latest.Summary.Status == SubsidiaryCheckStatus.Completed
+            ? "このチェックは完了（completed）済みのため再実行できません（確定した判定結果は保護されます）。"
+            : "このチェックは現在実行中のため再実行できません。"
+              + $"完了しない場合は{(int)ProcessingStaleAfter.TotalMinutes}分経過後に再実行できます。";
+        return new AppException(ErrorCodes.InvalidRequest, 400, reason);
+    }
 
     /// <summary>詳細を取得する。未存在は 404（UNDX-DATA-005）。</summary>
     public async Task<SubsidiaryCheckDetail> GetDetailRequiredAsync(
@@ -193,6 +283,11 @@ public sealed class SubsidiaryCheckService
     /// <summary>
     /// 画像の枚数・形式・サイズ（各上限＋合計上限）を検証する
     /// （コントローラの事前チェックと二重でも安全な再検証）。
+    /// <para>
+    /// 検証順序は意図的に「不足枚数 → 超過枚数 → 各画像（形式→サイズ→中身）→ 合計サイズ」とする:
+    /// 利用者が最初に直すべき事項（そもそも枚数が足りない／多すぎる）を優先して提示し、
+    /// 個別画像の不備は「合計を減らす」より具体的な指示になるため合計サイズより先に返す。
+    /// </para>
     /// </summary>
     public static void ValidateImages(
         IReadOnlyList<SubsidiaryCheckImageUpload> instructionImages,
@@ -243,7 +338,8 @@ public sealed class SubsidiaryCheckService
     /// </summary>
     public static void EnsureAllowedContentType(string fileName, string contentType)
     {
-        if (!AllowedContentTypes.Contains(contentType))
+        // media type は RFC 9110 上 case-insensitive のため大文字小文字を区別せず比較する。
+        if (!AllowedContentTypes.Contains(contentType, StringComparer.OrdinalIgnoreCase))
         {
             throw new AppException(ErrorCodes.SubsidiaryImageInvalidFormat, 400,
                 $"{fileName} の形式（{contentType}）には対応していません（JPEG / PNG のみ）。");
@@ -271,7 +367,9 @@ public sealed class SubsidiaryCheckService
                 $"{image.FileName} のサイズが上限（{MaxImageSizeBytes / 1024 / 1024}MB）を超えています。");
         }
 
-        var magicValid = image.ContentType == "image/png" ? HasPngMagic(image.Data) : HasJpegMagic(image.Data);
+        // 分岐も Content-Type と同じく大文字小文字非依存で判定する（"IMAGE/PNG" を JPEG 扱いにしない）。
+        var isPng = string.Equals(image.ContentType, PngContentType, StringComparison.OrdinalIgnoreCase);
+        var magicValid = isPng ? HasPngMagic(image.Data) : HasJpegMagic(image.Data);
         if (!magicValid)
         {
             throw new AppException(ErrorCodes.SubsidiaryImageInvalidFormat, 400,
@@ -305,22 +403,42 @@ public sealed class SubsidiaryCheckService
             var systemPrompt = SubsidiaryCheckPromptBuilder.BuildSystemPrompt();
             var userPrompt = SubsidiaryCheckPromptBuilder.BuildUserPrompt(product, productLabel);
 
-            string? responseText = null;
             // AI 呼出のみを同時実行制限・タイムアウトで保護する（DB 操作はセマフォの外で行う）。
-            await AiCallSemaphore.WaitAsync(cancellationToken);
+            // 待機は有界（AiCallQueueTimeout）。待機超過は AI を呼ばずに failed 記録で応答することで、
+            // 画像バッファを保持したまま滞留するリクエスト数を抑える（メモリ保護・CRITICAL）。
+            var queueTimeout = AiCallQueueTimeoutOverride ?? AiCallQueueTimeout;
+            if (!await AiCallSemaphore.WaitAsync(queueTimeout, cancellationToken))
+            {
+                _logger.LogWarning(
+                    "副資材チェックの AI 実行が順番待ちタイムアウトしました"
+                    + "（checkId: {CheckId}、上限: {Timeout}秒）",
+                    checkId, (int)queueTimeout.TotalSeconds);
+                await RecordFailureAsync(checkId, BuildFailureMessage(
+                    ErrorCodes.AiCallFailed,
+                    "AI 実行の順番待ちがタイムアウトしました。時間をおいて再実行してください。"));
+                return;
+            }
+
+            string? responseText = null;
+            var callTimedOut = false;
+            var callTimeout = AiCallTimeoutOverride ?? AiCallTimeout;
             try
             {
                 using var timeoutCts = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
-                timeoutCts.CancelAfter(AiCallTimeout);
+                timeoutCts.CancelAfter(callTimeout);
                 try
                 {
                     responseText = await _aiClient.AnalyzeImagesAsync(
                         aiImages, systemPrompt, userPrompt, CheckMaxOutputTokens, timeoutCts.Token);
                 }
-                catch (OperationCanceledException) when (!cancellationToken.IsCancellationRequested)
+                catch (OperationCanceledException)
+                    when (timeoutCts.IsCancellationRequested && !cancellationToken.IsCancellationRequested)
                 {
-                    // タイムアウト発火（リクエスト側は未キャンセル）: 本物のキャンセル
+                    // 自前のタイムアウト発火（リクエスト側は未キャンセル）: 本物のキャンセル
                     // （クライアント切断）と区別し、throw せず failed 記録へ進む（記録はセマフォ解放後）。
+                    // どちらのトークンも未キャンセルの OperationCanceledException（AI SDK 由来の
+                    // 想定外キャンセル）はここで握らず、下の汎用 catch で failed 記録にする。
+                    callTimedOut = true;
                 }
             }
             finally
@@ -328,25 +446,25 @@ public sealed class SubsidiaryCheckService
                 AiCallSemaphore.Release();
             }
 
-            if (responseText is null)
+            if (callTimedOut)
             {
                 // タイムアウト: failed 記録＋failed Detail の返却で応答する（キャンセル扱いにしない）。
                 _logger.LogWarning(
                     "副資材チェックの AI 呼出がタイムアウトしました（checkId: {CheckId}、上限: {Timeout}秒）",
-                    checkId, (int)AiCallTimeout.TotalSeconds);
-                await RecordFailureAsync(checkId,
-                    $"{ErrorCodes.AiCallFailed.Code}: AI 呼出がタイムアウトしました。再実行してください。");
+                    checkId, (int)callTimeout.TotalSeconds);
+                await RecordFailureAsync(checkId, BuildFailureMessage(
+                    ErrorCodes.AiCallFailed, "AI 呼出がタイムアウトしました。再実行してください。"));
                 return;
             }
 
-            var parsed = SubsidiaryCheckResponseParser.Parse(responseText);
+            var parsed = SubsidiaryCheckResponseParser.Parse(responseText!);
             if (!parsed.Success)
             {
                 _logger.LogWarning(
                     "副資材チェックの AI 応答を解析できませんでした（checkId: {CheckId}）: {Error}",
                     checkId, parsed.Error);
-                await RecordFailureAsync(checkId,
-                    $"{ErrorCodes.AiResponseUnparseable.Code}: {parsed.Error}");
+                await RecordFailureAsync(checkId, BuildFailureMessage(
+                    ErrorCodes.AiResponseUnparseable, parsed.Error));
                 return;
             }
 
@@ -364,10 +482,13 @@ public sealed class SubsidiaryCheckService
                     "副資材チェックは既に completed のため結果を破棄しました（checkId: {CheckId}）", checkId);
             }
         }
-        catch (OperationCanceledException)
+        catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
         {
             // クライアント切断によるキャンセルでも processing 孤児を残さない: failed 記録後に再 throw する。
-            await RecordFailureAsync(checkId, "処理が中断されました（クライアント切断）。再実行してください。");
+            // どちらのトークンも未キャンセルの OperationCanceledException は「キャンセル」ではないため
+            // ここでは扱わず、下の汎用 catch で failed 記録にする（500 を返さない・原則4）。
+            await RecordFailureAsync(checkId, BuildFailureMessage(
+                ErrorCodes.AiCallFailed, "リクエストが中断されました（クライアント切断）。再実行してください。"));
             throw;
         }
         catch (Exception ex)
@@ -377,21 +498,25 @@ public sealed class SubsidiaryCheckService
             // 生の例外メッセージ（SDK 内部文言等）はログに留める（ユーザー露出防止）。
             _logger.LogWarning(ex, "副資材チェックの AI 実行に失敗しました（checkId: {CheckId}）", checkId);
             var message = ex is AppException app
-                ? BuildFailureMessage(app)
-                : $"{ErrorCodes.Unexpected.Code}: {ErrorCodes.Unexpected.Summary} 再実行してください。";
+                ? BuildFailureMessage(app.Error, app.Message)
+                : BuildFailureMessage(ErrorCodes.Unexpected, "再実行してください。");
             await RecordFailureAsync(checkId, message);
         }
     }
 
     /// <summary>
-    /// failed 記録用のエラーメッセージ（採番コード＋概要＋整形済み詳細）を構築する。
-    /// AppException の Message はアプリ側で整形した日本語文言のみが入る前提
-    /// （AnthropicAiClient は SDK の生メッセージを詳細に入れない）。
+    /// failed 記録用のエラーメッセージを全経路で同一形状
+    /// 「<c>{コード}: {概要} {詳細}</c>」に統一して構築する。
+    /// 詳細が空、または概要と同一（<see cref="AppException"/> の detail 未指定時は
+    /// Message＝Summary になる）の場合は重複を避けてコード＋概要のみとする。
     /// </summary>
-    private static string BuildFailureMessage(AppException app)
-        => app.Message == app.Error.Summary
-            ? $"{app.Error.Code}: {app.Error.Summary}"
-            : $"{app.Error.Code}: {app.Error.Summary} {app.Message}";
+    private static string BuildFailureMessage(ErrorCodeInfo error, string? detail)
+    {
+        var head = $"{error.Code}: {error.Summary}";
+        return string.IsNullOrWhiteSpace(detail) || detail.Trim() == error.Summary
+            ? head
+            : $"{head} {detail.Trim()}";
+    }
 
     /// <summary>
     /// failed 記録を書き込む。キャンセル済みでも記録が届くよう CancellationToken.None で実行し、
@@ -417,11 +542,25 @@ public sealed class SubsidiaryCheckService
         }
     }
 
-    private static string ResolveProductLabel(string? productLabel, SubsidiaryCheckProductInfo? product)
+    /// <summary>
+    /// 保存・表示・AI プロンプトに使う商品ラベルを決定する。
+    /// クライアント指定値を優先し、未指定なら商品マスタから導出する。
+    /// クライアント指定値のみ長さ上限（<see cref="MaxProductLabelLength"/>）を課す
+    /// （マスタ由来の値は運用管理下の内部データで、外部からの増幅経路ではないため）。
+    /// </summary>
+    public static string ResolveProductLabel(string? productLabel, SubsidiaryCheckProductInfo? product)
     {
         if (!string.IsNullOrWhiteSpace(productLabel))
         {
-            return productLabel.Trim();
+            var trimmed = productLabel.Trim();
+            if (trimmed.Length > MaxProductLabelLength)
+            {
+                throw new AppException(ErrorCodes.InvalidRequest, 400,
+                    $"商品ラベルは {MaxProductLabelLength} 文字以内で指定してください"
+                    + $"（指定: {trimmed.Length} 文字）。");
+            }
+
+            return trimmed;
         }
 
         return product is null

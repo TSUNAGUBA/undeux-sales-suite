@@ -62,10 +62,15 @@ public static class ErrorCodes
         "取込ファイルのサイズが上限を超えています。",
         "ファイルを分割するか、上限内のサイズにしてアップロードしてください。");
 
-    // REQ-004〜008（副資材チェックの画像検証）:
-    // 枚数・サイズ等の上限値の SoT は SubsidiaryCheckService の定数
-    // （MaxInstructionImages / MaxTagImages / MaxImageSizeBytes / MaxTotalImageBytes）。
-    // 上限値を変更する場合は、以下のメッセージ文言も同時に更新すること。
+    // REQ-004〜007（副資材チェックの画像検証）:
+    //   枚数・サイズ等の上限値の SoT は SubsidiaryCheckService の定数
+    //   （MaxInstructionImages / MaxTagImages / MaxImageSizeBytes）。
+    //   上限値を変更する場合は、以下のメッセージ文言も同時に更新すること。
+    // REQ-008（アップロード共通）:
+    //   合計サイズ超過・transport 層の上限（RequestSizeLimit / MultipartBodyLengthLimit）超過に
+    //   全アップロード API（副資材チェック・RAG 原本登録・週次取込）で共用する。
+    //   そのため Summary / Remedy はエンドポイント非依存の汎用文言にすること
+    //   （画像固有・CSV 固有の誘導は各呼出側が AppException の detail で補う）。
     public static readonly ErrorCodeInfo SubsidiaryImageMissing = new(
         "UNDX-REQ-004",
         "副資材チェックの画像が指定されていません。",
@@ -89,7 +94,7 @@ public static class ErrorCodes
     public static readonly ErrorCodeInfo UploadTotalTooLarge = new(
         "UNDX-REQ-008",
         "アップロードの合計サイズが上限を超えています。",
-        "画像の枚数を減らすか、解像度を下げて再試行してください。");
+        "ファイルのサイズ・件数を減らして再試行してください。");
 
     public static readonly ErrorCodeInfo DatabaseError = new(
         "UNDX-DATA-001",
