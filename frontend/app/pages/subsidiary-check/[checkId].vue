@@ -218,9 +218,13 @@ async function runPolling(generation: number): Promise<void> {
   // 黙って止めずに状況と復帰手段（再読込 → load が startPolling を呼ぶ）を示す。
   // useMart も同じ局面で「このまま待つか、後でページを再読み込みしてください」を出している。
   if (generation === pollGeneration) {
+    // 再実行ボタンは isStaleProcessing のときしか出ない。rerun 直後は startedAt だけが進み
+    // 導線が出ていないことがあるため、出ていない状況で「再実行してください」と案内しない。
     pollStoppedMessage.value =
       '処理状況の自動更新を停止しました（一定時間が経過したため）。'
-      + '完了していない場合は再読込するか、再実行してください。'
+      + (isStaleProcessing.value
+        ? '完了していない場合は再読込するか、下のボタンから再実行してください。'
+        : '完了していない場合は再読込してください。')
     stopPolling()
   }
 }
@@ -234,8 +238,7 @@ watch(
   },
 )
 
-// ページ離脱後に走り続けないよう、アンマウント時に必ず停止する。
-onUnmounted(stopPolling)
+
 
 // ---- 画像ギャラリー（認証付き fetch + objectURL） ----
 
@@ -326,8 +329,12 @@ function retryImages(): void {
   void loadImages(detail.value)
 }
 
+// 離脱時の後始末は1箇所に集約する（停止処理が複数のフックに散ると、
+// 起動口を増やしたときに片方だけ追随して C-13-1 のような取りこぼしが起きる）。
 onBeforeUnmount(() => {
   unmounted = true
+  // 走行中のループを降ろす（世代を進める）。
+  stopPolling()
   // 離脱後に解決した load() / rerun() の続きを、既存の seq ガードで確実に落とす
   // （これが無いと detail 書込やポーリング起動が離脱後に走る）。imagesRequestSeq と対称。
   requestSeq += 1
@@ -540,6 +547,7 @@ onMounted(() => {
         <div
           v-else-if="summary.status === 'processing'"
           class="rounded-xl border border-sky-200 bg-sky-50 p-4 text-sm text-sky-700"
+          role="status"
         >
           <div class="flex flex-wrap items-center gap-3">
             <LoaderCircle

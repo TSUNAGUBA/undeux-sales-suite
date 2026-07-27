@@ -135,7 +135,7 @@ public sealed class SubsidiaryCheckIntegrationTests
     /// <summary>
     /// 画像配信の同時実行数は有界化されており、枠が埋まっている間の要求は
     /// 順番待ち上限で 429（UNDX-REQ-009）になる。
-    /// これが無いと「同時閲覧者数 × 1チェックの画像合計」がそのままピークメモリになり、
+    /// これが無いと「同時閲覧者数 × 約40MiB」がそのままピークメモリになり、
     /// GC ハードリミットに対するヘッドルーム（docs/design.md §13.5）を超えうる。
     /// </summary>
     [Fact]

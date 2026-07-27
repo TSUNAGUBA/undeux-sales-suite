@@ -678,6 +678,7 @@ async function deleteDesk(desk: ContactDesk): Promise<void> {
 
           <div v-if="editorError" class="rounded-lg bg-red-50 p-3 text-sm text-red-700">
             <p class="font-medium">[{{ editorError.errorCode }}] {{ editorError.summary }}</p>
+            <p v-if="editorError.detail" class="text-xs text-red-600">{{ editorError.detail }}</p>
             <p v-if="editorError.remedy" class="text-xs text-red-500">{{ editorError.remedy }}</p>
           </div>
 

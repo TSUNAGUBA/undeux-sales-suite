@@ -774,9 +774,12 @@ public sealed class SubsidiaryCheckService
     /// <see cref="AiCallSemaphore"/> でピークメモリが構造的に有界化されているが、画像配信には
     /// 認証以外の制限が無かった。詳細画面は1回開くだけで最大 13 枚
     /// （<see cref="MaxInstructionImages"/>＋<see cref="MaxTagImages"/>）を並列取得するため、
-    /// 上限が無いと「同時閲覧者数 × 1チェックの画像合計（最大 20MiB）」が
-    /// そのままピークメモリになり、GC ハードリミット 384MiB に対するヘッドルーム
-    /// （約74MiB・<c>docs/design.md</c> §13.5）を 2 名程度の同時閲覧で超えうる。
+    /// 上限が無いと「同時閲覧者数 × 約40MiB」がそのままピークメモリになり
+    /// （1チェックの画像合計は最大 20MiB だが、bytea の読取には Npgsql の
+    /// オーバーサイズバッファが同量程度乗るため、1閲覧あたりの実効は約2倍）、
+    /// GC ハードリミット 384MiB に対するヘッドルーム
+    /// （有界化前は約74MiB・<c>docs/design.md</c> §13.5）を 2 名程度の同時閲覧で超えうる
+    /// （40MiB × 2 = 80MiB &gt; 74MiB）。
     /// </para>
     /// <para>
     /// <b>値の根拠:</b> 1枠のピークは、DB 読取中が「byte[]（最大5MiB）＋ Npgsql の
