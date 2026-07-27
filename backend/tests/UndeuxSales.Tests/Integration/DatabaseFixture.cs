@@ -54,11 +54,22 @@ public sealed class DatabaseFixture : IAsyncLifetime
     /// <summary>初期化の進行段階（失敗時の切り分け用）。</summary>
     private string _initStage = "(未開始)";
 
-    /// <summary>接続情報のうち資格情報を除いた部分（ログ・例外メッセージ用）。</summary>
+    /// <summary>
+    /// 接続情報のうち資格情報を除いた部分（ログ・例外メッセージ用）。
+    /// 解析自体が失敗しても例外を投げない: この関数は初期化失敗の catch から呼ばれるため、
+    /// ここで投げると診断対象である元の例外と段階ラベルを失う。
+    /// </summary>
     private string SafeConnectionInfo()
     {
-        var builder = new Npgsql.NpgsqlConnectionStringBuilder(ConnectionString);
-        return $"Host={builder.Host};Port={builder.Port};Database={builder.Database}";
+        try
+        {
+            var builder = new Npgsql.NpgsqlConnectionStringBuilder(ConnectionString);
+            return $"Host={builder.Host};Port={builder.Port};Database={builder.Database}";
+        }
+        catch (Exception ex)
+        {
+            return $"(接続文字列の解析に失敗: {ex.GetType().Name})";
+        }
     }
 
     private async Task InitializeCoreAsync()

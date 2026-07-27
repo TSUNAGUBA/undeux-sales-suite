@@ -187,20 +187,22 @@ public sealed class SubsidiaryCheckService
     /// <para>
     /// <b>メモリ収支（同時実行数を 1 にした根拠）:</b> api コンテナのメモリ上限は本番
     /// （infra/aws/docker-compose.ec2.yml）・ローカル（docker-compose.yml）とも 512m で、
-    /// cgroup 制限下の .NET GC ヒープハードリミットは既定でその 75% ＝ 約 384MB。
+    /// cgroup 制限下の .NET GC ヒープハードリミットは既定でその 75% ＝ 384MiB。
     /// 一方 AI 呼出中の1件（バックグラウンドタスク）が同時に保持する量は、設計上許容された正常系の最大入力
-    /// （<see cref="MaxTotalImageBytes"/> = 20MB）で概算 <b>約100MB</b>:
+    /// （<see cref="MaxTotalImageBytes"/> = 20MiB）で概算 <b>約100MiB</b>:
+    /// <b>本収支のメモリ量はすべて MiB 表記</b>（上限・ハードリミット・画像上限がいずれも 2 の冪で
+    /// 定義されているため同一単位で突き合わせる。docs/design.md §13.5 と同じ数値）。
     /// </para>
     /// <list type="bullet">
-    ///   <item><description>画像バッファ byte[]: 約 20MB</description></item>
-    ///   <item><description>base64 文字列: 20MB → 約 26.7M 文字。.NET string は UTF-16
-    ///     （2バイト/文字）のため約 53MB</description></item>
-    ///   <item><description>HTTP リクエストボディの UTF-8 直列化: 約 27MB</description></item>
+    ///   <item><description>画像バッファ byte[]: 20MiB</description></item>
+    ///   <item><description>base64 文字列: 20MiB → 約 26.7M 文字。.NET string は UTF-16
+    ///     （2バイト/文字）のため約 53MiB</description></item>
+    ///   <item><description>HTTP リクエストボディの UTF-8 直列化: 約 27MiB</description></item>
     /// </list>
     /// <para>
-    /// 同時1件なら実行中のピークは 100MB ＋ ASP.NET Core のベースライン（約100〜150MB）＝ 約250MB で、
-    /// 384MB に対し余裕がある（待機中の画像バッファ分は <see cref="MaxConcurrentAiChecks"/> の
-    /// 収支に含めて評価している）。3並列では約300MB ＋ ベースラインでハードリミットに到達し、
+    /// 同時1件なら実行中のピークは 100MiB ＋ ASP.NET Core のベースライン（約100〜150MiB）＝ 約250MiB で、
+    /// 384MiB に対し余裕がある（待機中の画像バッファ分は <see cref="MaxConcurrentAiChecks"/> の
+    /// 収支に含めて評価している）。3並列では約300MiB ＋ ベースラインでハードリミットに到達し、
     /// <b>正常系の入力で OOM → コンテナ再起動（全機能停止）</b>に至るため直列化する。
     /// 想定利用（日次数件〜10件）に対し同時1件で機能上の問題はない。
     /// スループットが不足する場合は、同時実行数を上げる前にコンテナのメモリ上限引上げ
@@ -225,19 +227,19 @@ public sealed class SubsidiaryCheckService
     /// <para>
     /// <see cref="AiCallSemaphore"/> は AI 呼出の<b>同時実行数</b>のみを 1 に制限するが、
     /// 順番待ちの件数は制限しない。画像バッファ（1件あたり最大
-    /// <see cref="MaxTotalImageBytes"/> = 20MB）は AI 実行前に確保済みのため、待機 K 件で
-    /// 約 20MB×K が滞留し、GC ヒープハードリミット（約384MB）を待ち行列側から突破しうる。
+    /// <see cref="MaxTotalImageBytes"/> = 20MiB）は AI 実行前に確保済みのため、待機 K 件で
+    /// 20MiB×K が滞留し、GC ヒープハードリミット（384MiB）を待ち行列側から突破しうる。
     /// </para>
     /// <para>
-    /// 実行中1件（AI 呼出中のピーク約100MB）＋待機3件（約20MB×3＝60MB）＝約160MB に
-    /// ASP.NET Core のベースライン（約100〜150MB）を加えても約310MB で、384MB に対し余裕がある
+    /// 実行中1件（AI 呼出中のピーク約100MiB）＋待機3件（20MiB×3＝60MiB）＝約160MiB に
+    /// ASP.NET Core のベースライン（約100〜150MiB）を加えても約310MiB で、384MiB に対し余裕がある
     /// ため 4 とする。超過分は永続化・クレームの<b>前に</b> 429（<see cref="ErrorCodes.AiCheckBusy"/>）で
     /// 拒否し、無駄なレコード・画像や「クレーム直後の failed」で記録を汚さない。
     /// </para>
     /// <para>
     /// <b>この収支が成立する前提:</b> 予約が<b>画像バッファの確保より前</b>に行われること。
-    /// 予約より前にバッファを確保すると、429 で拒否される要求まで 20MB を確保するため
-    /// 「受付枠が満杯＋同時 POST 4本」で +80MB となり収支（約310MB）が崩れる。
+    /// 予約より前にバッファを確保すると、429 で拒否される要求まで 20MiB を確保するため
+    /// 「受付枠が満杯＋同時 POST 4本」で +80MiB となり収支（約310MiB）が崩れる。
     /// そのため予約は <see cref="AiCheckSlotLease"/> でコントローラの入口
     /// （<c>file.Length</c> 合算による合計サイズ判定の直後・バッファ確保前）から行う。
     /// なお multipart のフォームバッファリングは予約より前に完了しているが、

@@ -306,7 +306,7 @@ Get-Content "$HOME\.ssh\undeux-ec2" -Raw    | gh secret set EC2_SSH_KEY --repo $
 gh secret list --repo $Repo
 
 # 機密値を含む PowerShell 変数を消去する（コンソール履歴対策）
-Remove-Variable DbPassword, RdsConnectionString -ErrorAction SilentlyContinue
+Remove-Variable DbPassword, RdsConnectionString, AnthropicApiKey -ErrorAction SilentlyContinue
 ```
 
 ---
@@ -422,6 +422,16 @@ Start-Process "https://$FirebaseProjectId.web.app"
 
 ### ステップ8-3: api コンテナのメモリ監視と OOM 検知（必須）
 
+> **別ウィンドウで再開する場合:** 本ステップは `$InstanceId`（ステップ3-3）・`$Ec2Ip`（ステップ3-4）・
+> `$SnsTopicArn`（ステップ8-2 の項目3）を使います。PowerShell を開き直した場合は、
+> 先に次で取り直してください（値が空のままだと AWS CLI がパラメータ検証エラーで停止します）。
+>
+> ```powershell
+> $InstanceId  = aws ec2 describe-instances --filters "Name=key-name,Values=undeux-ec2" "Name=instance-state-name,Values=running" --query "Reservations[0].Instances[0].InstanceId" --output text
+> $Ec2Ip       = aws ec2 describe-instances --instance-ids $InstanceId --query "Reservations[0].Instances[0].PublicIpAddress" --output text
+> $SnsTopicArn = aws sns create-topic --name undeux-alerts --query "TopicArn" --output text   # 作成済みなら既存 ARN が返る
+> ```
+
 副資材チェックは1リクエストで最大約100MiB を保持します。コンテナのメモリ上限は 512MiB で、
 cgroup 下の .NET GC ヒープハードリミットはその 75%（384MiB）。収支上の使用量が約310MiB のため、
 **余裕（ヘッドルーム）は約74MiB** しかありません（384 − 310。収支は `docs/design.md` §13.5。
@@ -506,7 +516,11 @@ pct="$(docker stats --no-stream --format '{{.MemPerc}}' "$cid" | tr -d '%')"
 # 再起動回数の増分（OOM Kill の確実な信号。値そのものではなく差分を出す）
 now="$(docker inspect --format '{{.RestartCount}}' "$cid")"
 state="$HOME/.undeux-api-restarts"
-prev="$(cat "$state" 2>/dev/null || echo "$now")"
+prev="$(cat "$state" 2>/dev/null || true)"
+# 空・非数値は「前回値なし」とみなして now に寄せる。ディスク逼迫等で state が
+# 0 バイトになると cat は成功してしまい、数値比較が if 条件内で失敗しても
+# set -e が発動しないまま else（delta=0）へ落ちて増分が無言で消える。
+case "$prev" in ''|*[!0-9]*) prev="$now" ;; esac
 if [ "$now" -ge "$prev" ]; then delta=$(( now - prev )); else delta=0; fi
 
 iid="$(curl -s -H "X-aws-ec2-metadata-token: $(curl -sX PUT http://169.254.169.254/latest/api/token \
@@ -518,7 +532,9 @@ iid="$(curl -s -H "X-aws-ec2-metadata-token: $(curl -sX PUT http://169.254.169.2
 aws cloudwatch put-metric-data --namespace UndeuxSales \
   --metric-name ApiContainerRestarts --unit Count --value "$delta" \
   --dimensions InstanceId="$iid"
-printf '%s' "$now" > "$state"
+# アトミックに置き換える。直接リダイレクトすると書込失敗時に 0 バイトのファイルが残るが、
+# この方式なら失敗時は旧値が残り、次回は同じ増分を再送する（過小報告ではなく過大報告に倒す）。
+printf '%s' "$now" > "$state.tmp" && mv -f "$state.tmp" "$state"
 
 # メモリ率は時系列の点サンプルであり、失敗しても次の周期で回復するため後段でよい
 aws cloudwatch put-metric-data --namespace UndeuxSales \
