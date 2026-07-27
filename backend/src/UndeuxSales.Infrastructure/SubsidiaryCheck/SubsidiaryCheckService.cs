@@ -1,5 +1,6 @@
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Logging;
+using Microsoft.Extensions.Logging.Abstractions;
 using UndeuxSales.Core;
 using UndeuxSales.Core.Rag;
 using UndeuxSales.Core.SubsidiaryCheck;
@@ -12,14 +13,89 @@ namespace UndeuxSales.Infrastructure.SubsidiaryCheck;
 public sealed record SubsidiaryCheckImageUpload(string FileName, string ContentType, byte[] Data);
 
 /// <summary>
+/// 受付枠（AI チェックの実行中＋待機中の総数。上限は
+/// <see cref="SubsidiaryCheckService.MaxConcurrentAiChecks"/>）を1つ予約したスコープ。
+/// <para>
+/// <b>なぜスコープ型か:</b> 受付枠は「画像バッファ（1リクエストあたり最大
+/// <see cref="SubsidiaryCheckService.MaxTotalImageBytes"/>＝20MB）を確保する<b>前</b>」に
+/// 予約しないとピークメモリを有界化できない（429 で拒否される要求まで 20MB を確保してしまい、
+/// 受付枠が満杯の状態で同時アップロードが届くと GC ヒープハードリミットを突破しうる）。
+/// そのため予約はコントローラの入口（バッファ確保前）で行うことになり、
+/// 予約から解放までがリクエスト処理の広い範囲＋バックグラウンドタスクに跨る。
+/// 解放漏れは 429 の恒久化（機能停止）、過剰解放はメモリ防御の無効化に直結するため、
+/// <see cref="IDisposable"/> のスコープとして解放を構造的に保証する。
+/// </para>
+/// <para>
+/// <b>解放責務は常に1箇所だけ:</b> 予約したスコープの <see cref="Dispose"/> が解放する。
+/// AI 実行をバックグラウンドへ切り離せた場合のみ <see cref="HandOffToBackground"/> で
+/// 責務を新しいスコープへ移し、元のスコープの <see cref="Dispose"/> は何もしなくなる
+/// （＝リクエスト側の <c>using</c> とバックグラウンドの <c>finally</c> が二重解放しない）。
+/// </para>
+/// </summary>
+public sealed class AiCheckSlotLease : IDisposable
+{
+    private readonly ILogger _logger;
+
+    /// <summary>解放責務を保持しているか（1＝保持、0＝解放済みまたは移譲済み）。</summary>
+    private int _owned;
+
+    /// <summary>
+    /// 予約済みの受付枠を表すスコープを作る（このコンストラクタ自体は枠を消費しない）。
+    /// 枠の消費は <see cref="TryReserve"/>、責務の移譲は <see cref="HandOffToBackground"/> が行う。
+    /// </summary>
+    private AiCheckSlotLease(ILogger logger)
+    {
+        _logger = logger;
+        _owned = 1;
+    }
+
+    /// <summary>受付枠を1つ予約する。上限に達している場合は予約せず null。</summary>
+    internal static AiCheckSlotLease? TryReserve(ILogger logger)
+        => SubsidiaryCheckService.TryReserveAiCheckSlot() ? new AiCheckSlotLease(logger) : null;
+
+    /// <summary>
+    /// 受付枠を1つ予約する。上限に達している場合は 429（<see cref="ErrorCodes.AiCheckBusy"/>）。
+    /// </summary>
+    internal static AiCheckSlotLease Reserve(ILogger logger)
+        => TryReserve(logger)
+           ?? throw new AppException(ErrorCodes.AiCheckBusy, 429,
+               "実行中・待機中の AI チェックが上限"
+               + $"（{SubsidiaryCheckService.MaxConcurrentAiChecks} 件）に達しています。"
+               + "実行中のチェックが完了してから再試行してください。");
+
+    /// <summary>
+    /// 解放責務をバックグラウンドタスク用の新しいスコープへ移す。
+    /// 移譲後、このスコープの <see cref="Dispose"/> は何もしない（二重解放の構造的な防止）。
+    /// </summary>
+    /// <returns>解放責務を引き継いだスコープ（バックグラウンドの finally で必ず Dispose する）。</returns>
+    internal AiCheckSlotLease HandOffToBackground()
+        => TryTakeOwnership()
+            ? new AiCheckSlotLease(_logger)
+            : throw new InvalidOperationException("受付枠の予約は既に解放または移譲されています。");
+
+    /// <summary>予約を解放する（解放済み・移譲済みなら何もしない＝冪等）。</summary>
+    public void Dispose()
+    {
+        if (TryTakeOwnership())
+        {
+            SubsidiaryCheckService.ReleaseAiCheckSlot(_logger);
+        }
+    }
+
+    /// <summary>解放責務を自分のものとして取り出す（成功するのは1スコープにつき1回だけ）。</summary>
+    private bool TryTakeOwnership() => Interlocked.Exchange(ref _owned, 0) == 1;
+}
+
+/// <summary>
 /// 副資材チェックのオーケストレーション。
 /// <para>
-/// フロー: 検証 → 受付枠の予約 → INSERT（processing。SoT への記録が先）→ <b>即時応答</b> →
+/// フロー: 受付枠の予約（コントローラ入口・画像バッファ確保前）→ 検証 →
+/// INSERT（processing。SoT への記録が先）→ <b>即時応答</b> →
 /// （バックグラウンド）AI 呼出 → 応答解析 → UPDATE（completed / failed）。
 /// </para>
 /// <para>
 /// <b>非同期実行の根拠:</b> 公開経路の共用リバースプロキシ（nginx-proxy）のタイムアウトは約60秒で、
-/// AI 呼出（順番待ち最大30秒＋呼出最大120秒）を HTTP リクエスト内で待つと利用者には 504 が返る一方
+/// AI 呼出（順番待ち最大420秒＋呼出最大120秒）を HTTP リクエスト内で待つと利用者には 504 が返る一方
 /// サーバ側は completed で確定し、失敗と誤認した再送が重複チェック・重複 AI コスト・重複画像を招く。
 /// そのため <c>POST /api/mart/rebuild</c>（mart 再構築）と同じ
 /// 「実行権を確定して即応答 → 本体はリクエストから切り離したバックグラウンドタスク →
@@ -78,16 +154,19 @@ public sealed class SubsidiaryCheckService
     /// みなして再実行（rerun）を許可するまでの時間。基準時刻は started_at（最後の AI 実行開始日時）。
     /// <para>
     /// 根拠: 1回のバックグラウンド実行の processing 滞留時間は
-    /// 「セマフォ待機（<see cref="AiCallQueueTimeout"/> = 30秒で打切り）
+    /// 「セマフォ待機（<see cref="AiCallQueueTimeout"/> = 420秒で打切り）
     /// ＋ AI 呼出（<see cref="AiCallTimeout"/> = 120秒で打切り）＋ 記録処理（DB 更新・秒オーダ）」で
-    /// <b>有界</b>であり、上限は実質3分以内。待機超過・呼出タイムアウトはいずれも failed 記録で
-    /// 確定するため、これを超えて processing に留まるのはプロセス消失（クラッシュ・強制終了）だけ。
-    /// 有界化された最大滞留時間 約3分に対し十分な余裕を見て10分とする
-    /// （正常に実行待ちのチェックを孤児と誤判定しないことを優先）。
+    /// <b>有界</b>であり、上限は 420＋120＋α ＝ 約9分。待機超過・呼出タイムアウトはいずれも
+    /// failed 記録で確定するため、これを超えて processing に留まるのは
+    /// <b>プロセス消失（クラッシュ・強制終了）、およびバックグラウンド実行の起動自体の失敗</b>
+    /// （<see cref="StartBackgroundRun"/> のスコープ生成・解決失敗。failed 記録も残せない経路）だけ。
+    /// 有界化された最大滞留時間 約9分に対し十分な余裕を見て20分とする
+    /// （正常に実行待ちのチェックを孤児と誤判定しないことを優先。誤判定すると同一チェックの
+    /// AI 呼出が多重化し、外部有料 API のコストが二重に発生する）。
     /// </para>
     /// フロント（utils/subsidiaryCheck.ts の SUBSIDIARY_PROCESSING_STALE_MS）と同期させること。
     /// </summary>
-    public static readonly TimeSpan ProcessingStaleAfter = TimeSpan.FromMinutes(10);
+    public static readonly TimeSpan ProcessingStaleAfter = TimeSpan.FromMinutes(20);
 
     /// <summary>
     /// AI チェック（画像分析）専用の最大出力トークン数。
@@ -155,26 +234,73 @@ public sealed class SubsidiaryCheckService
     /// ため 4 とする。超過分は永続化・クレームの<b>前に</b> 429（<see cref="ErrorCodes.AiCheckBusy"/>）で
     /// 拒否し、無駄なレコード・画像や「クレーム直後の failed」で記録を汚さない。
     /// </para>
+    /// <para>
+    /// <b>この収支が成立する前提:</b> 予約が<b>画像バッファの確保より前</b>に行われること。
+    /// 予約より前にバッファを確保すると、429 で拒否される要求まで 20MB を確保するため
+    /// 「受付枠が満杯＋同時 POST 4本」で +80MB となり収支（約310MB）が崩れる。
+    /// そのため予約は <see cref="AiCheckSlotLease"/> でコントローラの入口
+    /// （<c>file.Length</c> 合算による合計サイズ判定の直後・バッファ確保前）から行う。
+    /// なお multipart のフォームバッファリングは予約より前に完了しているが、
+    /// <c>FormOptions.MemoryBufferThreshold</c>（既定 64KB。本リポジトリで上書きなし）を超える
+    /// ファイルはディスクへ退避されるため、マネージドヒープへの寄与は
+    /// 最大13枚 × 64KB ≒ 0.8MB/リクエストに留まり、上の収支を崩さない。
+    /// </para>
     /// </summary>
     public const int MaxConcurrentAiChecks = 4;
 
     /// <summary>
-    /// 受付済み（実行中＋バックグラウンド待機中）の AI チェック件数。
-    /// 予約はリクエスト側（永続化・クレームの前）、解放はバックグラウンドタスクの終了時に行い、
-    /// 「受け付けてから実行が終わるまで」を漏れなく囲う。
+    /// 受付済み（実行中＋バックグラウンド待機中）の AI チェック件数を制限するセマフォ。
+    /// 予約はリクエスト側（画像バッファ確保・永続化・クレームのいずれよりも前）、
+    /// 解放はバックグラウンドタスクの終了時に行い、「受け付けてから実行が終わるまで」を漏れなく囲う。
+    /// 予約・解放の対称性は <see cref="AiCheckSlotLease"/>（IDisposable スコープ）で構造的に保証する。
+    /// <para>
+    /// カウンタ変数（Interlocked の増減）ではなく <see cref="AiCallSemaphore"/> と同じ
+    /// <see cref="SemaphoreSlim"/> を使う（原則3）。理由は2つ:
+    /// </para>
+    /// <list type="bullet">
+    ///   <item><description>maxCount を明示できるため、過剰解放が
+    ///     <b>遅くとも全枠が解放される時点までに</b> <see cref="SemaphoreFullException"/> として
+    ///     必ず顕在化する（カウンタ方式では負に沈んだまま気付けず、受付上限が恒久的に緩和される）。
+    ///     ただし他の予約が残っている間の過剰解放は即座には検知されず、
+    ///     例外が出る箇所も原因箇所とは限らない（＝件数ベースの検証と併用する）。</description></item>
+    ///   <item><description>「加算してから超過なら巻き戻す」方式の一時的な超過中に、
+    ///     空き枠があるのに別リクエストが 429 になる誤検知の窓が生じない。</description></item>
+    /// </list>
     /// </summary>
-    private static int _inFlightAiChecks;
+    private static readonly SemaphoreSlim AcceptanceSemaphore =
+        new(MaxConcurrentAiChecks, MaxConcurrentAiChecks);
 
     /// <summary>
-    /// AI 呼出の順番待ち（セマフォ待機）の上限（30秒）。
-    /// 根拠: 待機を無制限にすると、画像バッファ（1件あたり最大20MB）を保持したままの実行が
-    /// 長時間居座り、受付枠（<see cref="MaxConcurrentAiChecks"/>）が解放されず新規受付が
-    /// 429 で塞がり続ける。また processing の滞留時間が非有界になり、孤児判定
+    /// AI 呼出の順番待ち（セマフォ待機）の上限（420秒＝7分）。
+    /// <para>
+    /// <b>値の根拠:</b> 受付上限は <see cref="MaxConcurrentAiChecks"/> ＝ 4件（実行中1＋待機3）で、
+    /// 同時実行は1件・AI 呼出は <see cref="AiCallTimeout"/> ＝ 120秒で打ち切られる。
+    /// したがって受け付けられたチェックの最悪の待ち時間は「先行3件 × 120秒 ＝ 360秒」であり、
+    /// これに余裕を見た 420秒 とする。
+    /// 非同期化により HTTP リクエストはこの待ちを待たないため、
+    /// 上限を「受付上限と整合する値」まで引き上げても利用者を待たせることはない。
+    /// この算式は (1) 待ち行列がおおむね FIFO であること（<see cref="SemaphoreSlim"/> は
+    /// 仕様上 FIFO を保証しないため「おおむね」）、(2) AI 呼出が必ず
+    /// <see cref="AiCallTimeout"/> で打ち切られること、の2点を前提とする。
+    /// 前提が崩れて待ちが 420秒 を超えた場合も failed 記録＋rerun で回復できる（致命的ではない）。
+    /// </para>
+    /// <para>
+    /// <b>短すぎる値にしない理由:</b> 同期実行時代の 30秒 のままだと、2人が同時に実行しただけで
+    /// 2件目が AI を一度も呼ばれずに failed になり、手動 rerun が常態化する
+    /// （原則1「手動ステップを残さない」に抵触）。
+    /// </para>
+    /// <para>
+    /// <b>無制限にしない理由:</b> 待機を無制限にすると、画像バッファ（1件あたり最大20MB）を
+    /// 保持したままの実行が長時間居座り、受付枠（<see cref="MaxConcurrentAiChecks"/>）が解放されず
+    /// 新規受付が 429 で塞がり続ける。また processing の滞留時間が非有界になり、孤児判定
     /// （<see cref="ProcessingStaleAfter"/>）の根拠が成り立たなくなる。
     /// 超過時は AI を呼ばずに failed 記録に落とし、rerun で回復できる
     /// （待機「件数」の上限は <see cref="MaxConcurrentAiChecks"/> が担う）。
+    /// </para>
+    /// <b>変更時は <see cref="ProcessingStaleAfter"/> を再計算すること</b>
+    /// （孤児判定は「順番待ち上限＋AI 呼出上限＋記録処理」の有界性を根拠にしているため）。
     /// </summary>
-    private static readonly TimeSpan AiCallQueueTimeout = TimeSpan.FromSeconds(30);
+    private static readonly TimeSpan AiCallQueueTimeout = TimeSpan.FromSeconds(420);
 
     /// <summary>
     /// 許可する画像 Content-Type（jpeg / png のみ）。
@@ -190,7 +316,7 @@ public sealed class SubsidiaryCheckService
     private const string PngContentType = "image/png";
 
     // ---- AI 実行スロット制御の内部シーム（統合テスト専用。InternalsVisibleTo=UndeuxSales.Tests） ----
-    // 本番では両オーバーライドとも null で、上の定数どおり（順番待ち30秒 / 呼出120秒）に動作する。
+    // 本番では両オーバーライドとも null で、上の定数どおり（順番待ち420秒 / 呼出120秒）に動作する。
     // 待機超過・呼出タイムアウトの各経路を実時間で待たずに検証するためだけに用意している。
 
     /// <summary>順番待ち上限のテスト用オーバーライド（null＝<see cref="AiCallQueueTimeout"/>）。</summary>
@@ -212,11 +338,14 @@ public sealed class SubsidiaryCheckService
     /// <summary><see cref="TryOccupyAiSlotAsync"/> で取得したスロットを解放する。</summary>
     internal static void ReleaseAiSlot() => AiCallSemaphore.Release();
 
-    /// <summary>受付枠を1つ占有する（テストから受付上限に達した状態を作るために使う）。</summary>
-    internal static bool TryReserveAiCheckSlotForTest() => TryReserveAiCheckSlot();
-
-    /// <summary><see cref="TryReserveAiCheckSlotForTest"/> で占有した受付枠を解放する。</summary>
-    internal static void ReleaseAiCheckSlotForTest() => ReleaseAiCheckSlot();
+    /// <summary>
+    /// 受付枠を1つ占有する（テストから受付上限に達した状態を作るために使う）。上限到達時は null。
+    /// 解放は本番と同じ <see cref="AiCheckSlotLease.Dispose"/> で行う（テスト専用の解放経路を作らない）。
+    /// 注意: ロガーは <see cref="NullLogger"/> のため、<b>このリースでの過剰解放はログに出ない</b>
+    /// （テストが保持する枠の対称性は残枠数で検証すること）。
+    /// </summary>
+    internal static AiCheckSlotLease? TryReserveAiCheckSlotForTest()
+        => AiCheckSlotLease.TryReserve(NullLogger.Instance);
 
     private readonly SubsidiaryCheckRepository _repository;
     private readonly IAiChatClient _aiClient;
@@ -247,17 +376,30 @@ public sealed class SubsidiaryCheckService
     /// <para>
     /// 入力検証エラー（枚数・形式・サイズ・ラベル長）は従来どおり同期的に 4xx を返す。
     /// AI 未設定（IsConfigured=false）は永続化前に 503（UNDX-AI-008）、受付上限超過は
-    /// 永続化前に 429（UNDX-REQ-009）を throw する（いずれも無駄なレコード・画像を作らない）。
+    /// <b>画像バッファの確保前</b>に 429（UNDX-REQ-009）を throw する
+    /// （いずれも無駄なレコード・画像を作らない）。
     /// </para>
     /// </summary>
+    /// <param name="reservation">
+    /// コントローラが<b>画像バッファ確保前に</b>取得済みの受付枠（W-1）。
+    /// 受け取った場合はここで再予約しない（二重予約の防止）。解放責務は呼出元の <c>using</c> にあり、
+    /// バックグラウンド起動に成功したときだけ <see cref="StartBackgroundRun"/> が責務を引き取る。
+    /// サービスを直接呼ぶ経路（テスト等。画像は既にメモリ上）では null を渡し、ここで予約する。
+    /// </param>
     public async Task<SubsidiaryCheckDetail> CreateAndStartAsync(
         Guid? productId,
         string? productLabel,
         IReadOnlyList<SubsidiaryCheckImageUpload> instructionImages,
         IReadOnlyList<SubsidiaryCheckImageUpload> tagImages,
         string createdBy,
+        AiCheckSlotLease? reservation = null,
         CancellationToken cancellationToken = default)
     {
+        // 未予約で呼ばれた場合のみ、このスコープで予約して確実に解放する
+        // （予約済みの場合は null なので using は何もしない）。
+        using var ownReservation = reservation is null ? ReserveAiCheckSlotOrThrow() : null;
+        var lease = reservation ?? ownReservation!;
+
         ValidateImages(instructionImages, tagImages);
 
         if (!_aiClient.IsConfigured)
@@ -274,45 +416,39 @@ public sealed class SubsidiaryCheckService
 
         var label = ResolveProductLabel(productLabel, product);
 
-        // 受付枠の予約は永続化より前に行う（超過時に無駄なレコード・画像を作らない）。
-        ReserveAiCheckSlotOrThrow();
-
+        // SoT（subsidiary_check）への記録を先に確定してから AI を呼び出す（原則6）。
+        // ここで失敗してもレコードが作られていないため failed 記録の対象はない
+        // （受付枠は呼出元の using が解放する）。
         var checkId = Guid.NewGuid();
-        try
-        {
-            // SoT（subsidiary_check）への記録を先に確定してから AI を呼び出す（原則6）。
-            await _repository.InsertAsync(
-                checkId, productId, label, createdBy, BuildImageRecords(instructionImages, tagImages),
-                cancellationToken);
-        }
-        catch
-        {
-            // レコードが作られていないので failed 記録の対象もない。予約だけ解放する。
-            ReleaseAiCheckSlot();
-            throw;
-        }
+        await _repository.InsertAsync(
+            checkId, productId, label, createdBy, BuildImageRecords(instructionImages, tagImages),
+            cancellationToken);
 
         SubsidiaryCheckDetail accepted;
+        AiRunInput input;
         try
         {
             // 応答は「受付時点（processing）」の状態にする。バックグラウンド起動より前に読むことで、
             // AI が即座に終わった場合でも応答内容が実行タイミングに左右されない。
             accepted = await GetDetailRequiredAsync(checkId, cancellationToken);
+
+            // AI 実行入力の構築もこの try の内側で行う。呼出の引数式として評価すると
+            // try の外になり、ここでの失敗が failed 記録も解放も伴わない無保護区間になる（監査 I-1）。
+            input = new AiRunInput(product, label, ToAiImages(instructionImages, tagImages));
         }
         catch
         {
             // 登録済みだがバックグラウンドを起動できない区間。processing のまま放置せず
-            // failed を記録してから解放する（孤児判定の10分を待たずに再実行できる・原則4）。
+            // failed を記録する（孤児判定の経過時間を待たずに再実行できる・原則4）。
+            // 受付枠の解放は呼出元の using（未移譲のため有効）が行う。
             await RecordFailureAsync(checkId, BuildFailureMessage(
-                ErrorCodes.Unexpected, "チェックの登録後に応答の生成へ失敗しました。再実行してください。"));
-            ReleaseAiCheckSlot();
+                ErrorCodes.Unexpected, "チェックの登録後に受付処理へ失敗しました。再実行してください。"));
             throw;
         }
 
-        // 以降、予約の解放責務はバックグラウンドタスク側に移る。
+        // 起動に成功した時点で、受付枠の解放責務はバックグラウンドタスク側へ移る。
         // AI 完了を待たずに応答し、フロントは詳細をポーリングして completed / failed を待つ。
-        StartBackgroundRun(
-            checkId, new AiRunInput(product, label, ToAiImages(instructionImages, tagImages)));
+        StartBackgroundRun(checkId, input, lease);
 
         return accepted;
     }
@@ -334,8 +470,12 @@ public sealed class SubsidiaryCheckService
     /// 新規作成と同じく processing の詳細を即座に返す。
     /// </para>
     /// </summary>
+    /// <param name="requestedBy">
+    /// 実行者（<c>RequestIdentity.AuditUserOf</c> の値）。rerun は外部有料 API を起動する書込操作の
+    /// ため、無記名で反復実行できる状態にしない（監査 W-3）。クレーム成立時にログへ記録する。
+    /// </param>
     public async Task<SubsidiaryCheckDetail> RerunAsync(
-        Guid checkId, CancellationToken cancellationToken = default)
+        Guid checkId, string requestedBy, CancellationToken cancellationToken = default)
     {
         // 未存在は 404 で早期に返す（クレーム 0 行と「存在しない」を区別するため）。
         _ = await GetDetailRequiredAsync(checkId, cancellationToken);
@@ -346,40 +486,36 @@ public sealed class SubsidiaryCheckService
         }
 
         // 受付枠の予約はクレームより前に行う（クレームしてから即 failed に落とすと記録を汚すため）。
-        ReserveAiCheckSlotOrThrow();
+        // 以降の全失敗パスでは using が解放し、起動に成功したときだけ責務がバックグラウンドへ移る。
+        using var lease = ReserveAiCheckSlotOrThrow();
 
-        int claimed;
-        try
-        {
-            // 実行権の原子的クレーム。0 行なら「他が実行中」「completed で確定済み」のいずれか。
-            claimed = await _repository.ClaimForRerunAsync(
-                checkId, DateTime.UtcNow - ProcessingStaleAfter, cancellationToken);
-        }
-        catch
-        {
-            ReleaseAiCheckSlot();
-            throw;
-        }
-
+        // 実行権の原子的クレーム。0 行なら「他が実行中」「completed で確定済み」のいずれか。
+        var claimed = await _repository.ClaimForRerunAsync(
+            checkId, DateTime.UtcNow - ProcessingStaleAfter, cancellationToken);
         if (claimed == 0)
         {
-            ReleaseAiCheckSlot();
             throw await BuildRerunRejectedAsync(checkId, cancellationToken);
         }
 
         SubsidiaryCheckDetail accepted;
         try
         {
+            // 実行権を確保した時点で実行者を記録する（外部有料 API を起動する書込操作の帰属・監査 W-3）。
+            // クレーム前に記録すると「拒否された要求」まで実行として残るため、成立後に出す。
+            // クレーム済みの区間なので、この行も try の内側に置く（例外が出ても processing で
+            // 取り残さず failed 記録に落とす。CreateAndStartAsync 側と同じ判断）。
+            _logger.LogInformation(
+                "副資材チェックを再実行します（checkId: {CheckId}、実行者: {User}）", checkId, requestedBy);
+
             // 新規作成と同じく、応答は受付時点（クレーム直後の processing）の状態にする。
             accepted = await GetDetailRequiredAsync(checkId, cancellationToken);
         }
         catch
         {
             // クレーム済みだがバックグラウンドを起動できない区間。実行権を握ったまま放置せず
-            // failed を記録してから解放する（無保護区間を作らない）。
+            // failed を記録する（無保護区間を作らない）。受付枠の解放は using が行う。
             await RecordFailureAsync(checkId, BuildFailureMessage(
                 ErrorCodes.Unexpected, "再実行の受付後に応答の生成へ失敗しました。再実行してください。"));
-            ReleaseAiCheckSlot();
             throw;
         }
 
@@ -388,7 +524,7 @@ public sealed class SubsidiaryCheckService
         // （無保護区間を作らない）。無保護にすると DB 障害等で processing のまま残り、
         // 孤児判定（ProcessingStaleAfter）まで rerun が拒否される＝回復パス自体が塞がるため
         // （原則4・原則6）。以降、予約の解放責務はバックグラウンドタスク側に移る。
-        StartBackgroundRun(checkId, prepared: null);
+        StartBackgroundRun(checkId, prepared: null, lease);
 
         return accepted;
     }
@@ -409,36 +545,53 @@ public sealed class SubsidiaryCheckService
     /// 実行入力。新規作成はリクエストで確保済みの入力を渡す。null（rerun）はバックグラウンド側で
     /// DB から読み直す。
     /// </param>
-    private void StartBackgroundRun(Guid checkId, AiRunInput? prepared)
+    /// <param name="lease">
+    /// 呼出元が保持している受付枠の予約。起動と同時に解放責務をバックグラウンドへ移すため、
+    /// 呼出元の <c>using</c> は以降なにもしない（＝二重解放しない）。
+    /// </param>
+    private void StartBackgroundRun(Guid checkId, AiRunInput? prepared, AiCheckSlotLease lease)
     {
         // シングルトン依存はローカルへ写してから閉じ込める。ラムダが this を捕捉しなくなるため、
         // リクエストスコープのサービス・リポジトリを保持しないことが構造的に保証される。
         var scopeFactory = _scopeFactory;
         var logger = _logger;
 
-        _ = Task.Run(async () =>
+        // 受付枠の解放責務をバックグラウンドへ移す（以降、解放するのは owned だけ）。
+        var owned = lease.HandOffToBackground();
+
+        try
         {
-            try
+            _ = Task.Run(async () =>
             {
-                using var scope = scopeFactory.CreateScope();
-                var service = scope.ServiceProvider.GetRequiredService<SubsidiaryCheckService>();
-                await service.RunBackgroundAsync(checkId, prepared);
-            }
-            catch (Exception ex)
-            {
-                // RunBackgroundAsync は内部で全経路を failed 記録に落とすため、ここへ来るのは
-                // スコープ生成・解決の失敗（プロセス停止時の ObjectDisposedException 等）だけ。
-                // failed 記録もできない状態のため processing のまま残り、
-                // ProcessingStaleAfter 経過後の rerun（孤児回復パス）で回復する。
-                logger.LogError(ex,
-                    "副資材チェックのバックグラウンド実行を開始できませんでした（checkId: {CheckId}）",
-                    checkId);
-            }
-            finally
-            {
-                ReleaseAiCheckSlot();
-            }
-        });
+                try
+                {
+                    using var scope = scopeFactory.CreateScope();
+                    var service = scope.ServiceProvider.GetRequiredService<SubsidiaryCheckService>();
+                    await service.RunBackgroundAsync(checkId, prepared);
+                }
+                catch (Exception ex)
+                {
+                    // RunBackgroundAsync は内部で全経路を failed 記録に落とすため、ここへ来るのは
+                    // スコープ生成・解決の失敗（プロセス停止時の ObjectDisposedException 等）だけ。
+                    // failed 記録もできない状態のため processing のまま残り、
+                    // ProcessingStaleAfter 経過後の rerun（孤児回復パス）で回復する。
+                    logger.LogError(ex,
+                        "副資材チェックのバックグラウンド実行を開始できませんでした（checkId: {CheckId}）",
+                        checkId);
+                }
+                finally
+                {
+                    owned.Dispose();
+                }
+            });
+        }
+        catch
+        {
+            // タスクをスケジュールすらできなかった場合（プロセス停止時等）。
+            // 引き取った解放責務をここで果たす（受付枠を漏らさない）。
+            owned.Dispose();
+            throw;
+        }
     }
 
     /// <summary>
@@ -494,32 +647,56 @@ public sealed class SubsidiaryCheckService
 
     /// <summary>
     /// 受付枠（実行中＋待機中の総数）を1つ予約する。上限に達している場合は予約せず false。
+    /// 呼出は <see cref="AiCheckSlotLease"/> 経由に限る（解放とスコープで対にするため）。
+    /// タイムアウト 0 のため待機せず即座に判定する（受付可否の判定であり、順番待ちではない）。
     /// </summary>
-    private static bool TryReserveAiCheckSlot()
-    {
-        if (Interlocked.Increment(ref _inFlightAiChecks) <= MaxConcurrentAiChecks)
-        {
-            return true;
-        }
+    internal static bool TryReserveAiCheckSlot() => AcceptanceSemaphore.Wait(TimeSpan.Zero);
 
-        // 上限超過時は自分の加算を巻き戻す（カウンタが恒久的にずれないようにする）。
-        Interlocked.Decrement(ref _inFlightAiChecks);
-        return false;
+    /// <summary>
+    /// 予約した受付枠を解放する。呼出は <see cref="AiCheckSlotLease.Dispose"/> 経由に限る
+    /// （1予約につき1回だけ実行されることをスコープ側が保証する）。
+    /// <para>
+    /// 予約と解放の対称性が崩れて過剰解放になった場合、<see cref="AcceptanceSemaphore"/> は
+    /// maxCount を明示しているため（遅くとも全枠が解放される時点までに）
+    /// <see cref="SemaphoreFullException"/> を投げる。
+    /// 受付上限（＝ピークメモリの防御）はセマフォ側で維持されるが、
+    /// 原因調査のためログで顕在化させる（例外が出た解放が原因箇所とは限らない点に注意）。
+    /// <see cref="AiCheckSlotLease.Dispose"/> から例外を投げると
+    /// using の巻き戻し中に本来のエラーを覆い隠す（＋バックグラウンドの finally では
+    /// 未観測例外になる）ため、ここで握り潰す（原則4）。
+    /// </para>
+    /// </summary>
+    internal static void ReleaseAiCheckSlot(ILogger logger)
+    {
+        try
+        {
+            AcceptanceSemaphore.Release();
+        }
+        catch (SemaphoreFullException ex)
+        {
+            try
+            {
+                logger.LogError(ex,
+                    "副資材チェックの受付枠が過剰に解放されました（予約と解放の対称性が崩れています）。");
+            }
+            catch
+            {
+                // ログ基盤側の失敗で解放処理を失敗させない（同上・原則4）。
+            }
+        }
     }
 
-    /// <summary>受付枠を予約する。上限に達している場合は 429（UNDX-REQ-009）。</summary>
-    private static void ReserveAiCheckSlotOrThrow()
-    {
-        if (!TryReserveAiCheckSlot())
-        {
-            throw new AppException(ErrorCodes.AiCheckBusy, 429,
-                $"実行中・待機中の AI チェックが上限（{MaxConcurrentAiChecks} 件）に達しています。"
-                + "実行中のチェックが完了してから再試行してください。");
-        }
-    }
-
-    /// <summary>予約した受付枠を解放する。</summary>
-    private static void ReleaseAiCheckSlot() => Interlocked.Decrement(ref _inFlightAiChecks);
+    /// <summary>
+    /// 受付枠を予約したスコープを返す。上限に達している場合は 429（UNDX-REQ-009）。
+    /// <para>
+    /// <b>画像バッファを確保する前に呼ぶこと。</b> バッファ確保後に呼ぶと、429 で拒否される要求まで
+    /// 1件あたり最大 <see cref="MaxTotalImageBytes"/>（20MB）を確保することになり、
+    /// 受付上限がピークメモリを有界化しなくなる（<see cref="MaxConcurrentAiChecks"/> の収支を参照）。
+    /// </para>
+    /// 返り値は <c>using</c> で囲み、成功時のみ <see cref="StartBackgroundRun"/> が
+    /// 解放責務をバックグラウンドへ移す（それ以外の全経路ではスコープ終了時に解放される）。
+    /// </summary>
+    public AiCheckSlotLease ReserveAiCheckSlotOrThrow() => AiCheckSlotLease.Reserve(_logger);
 
     /// <summary>
     /// クレームできなかった（0 行）ときの拒否理由を、現在状態を読み直して構築する。

@@ -62,7 +62,7 @@ public sealed class SubsidiaryCheckController : ControllerBase
     /// AI 実行はリクエストから切り離したバックグラウンドタスクで行い、フロントは
     /// <c>GET /api/subsidiary-check/{checkId}</c> をポーリングして completed / failed を待つ
     /// （共用リバースプロキシのタイムアウト約60秒を超えないための構造。mart 再構築と同じ流儀）。
-    /// 受付上限超過は 429（UNDX-REQ-009）で拒否する（永続化前）。
+    /// 受付上限超過は 429（UNDX-REQ-009）で拒否する（<b>画像バッファ確保前・永続化前</b>）。
     /// </summary>
     [HttpPost]
     [RequestSizeLimit(HardSizeLimitBytes)]
@@ -97,6 +97,14 @@ public sealed class SubsidiaryCheckController : ControllerBase
         SubsidiaryCheckService.EnsureTotalSizeWithinLimit(
             instructionFiles.Concat(tagFiles).Sum(file => file.Length));
 
+        // 受付枠の予約は「画像バッファ（1リクエストあたり最大20MB）を確保する前」に行う。
+        // バッファ確保後だと、429 で拒否される要求まで 20MB を確保することになり、
+        // 受付上限（SubsidiaryCheckService.MaxConcurrentAiChecks）がピークメモリを有界化しない
+        // （受付枠が満杯の状態で同時 POST が届くと GC ヒープハードリミットを突破しうる）。
+        // using により、以降の全失敗パス（画像読取・検証・永続化・応答生成）で確実に解放される。
+        // 成功時は CreateAndStartAsync が解放責務をバックグラウンドタスクへ移すため二重解放しない。
+        using var slot = _service.ReserveAiCheckSlotOrThrow();
+
         var instructionImages = await ReadImagesAsync(
             instructionFiles, SubsidiaryCheckService.MaxInstructionImages, cancellationToken);
         var tagImages = await ReadImagesAsync(
@@ -108,6 +116,7 @@ public sealed class SubsidiaryCheckController : ControllerBase
             instructionImages,
             tagImages,
             RequestIdentity.AuditUserOf(User),
+            slot,
             cancellationToken);
     }
 
@@ -132,10 +141,11 @@ public sealed class SubsidiaryCheckController : ControllerBase
     /// 一定時間（SubsidiaryCheckService.ProcessingStaleAfter）超経過した孤児チェック。
     /// completed のチェックは記録保護のため 400（UNDX-REQ-001）、受付上限超過は 429（UNDX-REQ-009）。
     /// 新規チェックと同じく AI 実行はバックグラウンドで行い、status=processing の詳細を即座に返す。
+    /// 外部有料 API を起動する書込操作のため、実行者（監査ユーザー）をサービスへ渡して記録する。
     /// </summary>
     [HttpPost("{checkId}/rerun")]
     public Task<SubsidiaryCheckDetail> Rerun(string checkId, CancellationToken cancellationToken)
-        => _service.RerunAsync(ParseId(checkId), cancellationToken);
+        => _service.RerunAsync(ParseId(checkId), RequestIdentity.AuditUserOf(User), cancellationToken);
 
     /// <summary>ルールブック（チェック基準の静的カタログ。AI プロンプトと同一 SoT から生成）。</summary>
     [HttpGet("rules")]

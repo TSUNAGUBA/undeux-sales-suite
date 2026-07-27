@@ -184,13 +184,15 @@ export const SUBSIDIARY_IMAGE_ACCEPT = SUBSIDIARY_IMAGE_TYPES.join(',')
 export const SUBSIDIARY_PRODUCT_LABEL_MAX_LENGTH = 200
 
 /**
- * processing のまま経過した場合に「孤児」とみなし再実行導線を出すまでの時間（10分）。
+ * processing のまま経過した場合に「孤児」とみなし再実行導線を出すまでの時間（20分）。
  * SoT はバックエンド SubsidiaryCheckService.ProcessingStaleAfter（rerun の許可条件）。
  * 変更時は両者を同期させること。
  *
  * 判定の基準時刻は startedAt（最後に AI 実行を開始した日時）で、バックエンドの
  * rerun クレーム条件と同一。バックエンド側の滞留時間は
- * 「順番待ち上限30秒＋AI 呼出タイムアウト120秒＋記録処理」＝実質3分以内に有界化されており、
- * 10分はそれに対する十分な余裕。実行中のチェックを孤児と誤判定しないことを優先している。
+ * 「順番待ち上限420秒（＝受付上限4件のうち先行3件 × AI 呼出上限120秒＝最大360秒に
+ * 余裕を見た値）＋AI 呼出タイムアウト120秒＋記録処理」＝約9分に有界化されており、
+ * 20分はそれに対する十分な余裕。実行中のチェックを孤児と誤判定しないことを優先している
+ * （誤判定すると同一チェックの AI 呼出が多重化し、外部有料 API のコストが二重に発生する）。
  */
-export const SUBSIDIARY_PROCESSING_STALE_MS = 10 * 60 * 1000
+export const SUBSIDIARY_PROCESSING_STALE_MS = 20 * 60 * 1000

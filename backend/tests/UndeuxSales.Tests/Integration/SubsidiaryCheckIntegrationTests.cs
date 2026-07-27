@@ -3,8 +3,10 @@ using System.Net.Http.Headers;
 using System.Net.Http.Json;
 using System.Runtime.CompilerServices;
 using Dapper;
+using Microsoft.AspNetCore.Hosting;
 using Microsoft.AspNetCore.TestHost;
 using Microsoft.Extensions.DependencyInjection;
+using Microsoft.Extensions.Logging;
 using Npgsql;
 using UndeuxSales.Core;
 using UndeuxSales.Core.Rag;
@@ -40,6 +42,14 @@ public sealed class SubsidiaryCheckIntegrationTests
               "detail": "品番・原産国・組成の記載が指示書と一致しています。", "suggestion": null, "evidence": null }
         ] }
         """;
+
+    /// <summary>
+    /// 「孤児（stale processing）」と判定される滞留時間。
+    /// 判定境界（<see cref="SubsidiaryCheckService.ProcessingStaleAfter"/>）から導出し、
+    /// 境界値の変更でテストが意図せず壊れないようにする（境界＋1分の余裕）。
+    /// </summary>
+    private static readonly TimeSpan OrphanAge =
+        SubsidiaryCheckService.ProcessingStaleAfter + TimeSpan.FromMinutes(1);
 
     private readonly DatabaseFixture _fixture;
 
@@ -347,9 +357,9 @@ public sealed class SubsidiaryCheckIntegrationTests
         using var factory = WithSubsidiaryAi(stub);
         using var client = CreateClient(factory);
 
-        // 実行開始から10分超経過した processing 孤児（プロセス消失等の想定。非同期化後は
-        // バックグラウンドタスクごと消えたケース）は再実行で回復できる。
-        var staleId = await InsertProcessingCheckAsync(TimeSpan.FromMinutes(11));
+        // 実行開始から ProcessingStaleAfter 超経過した processing 孤児（プロセス消失等の想定。
+        // 非同期化後はバックグラウンドタスクごと消えたケース）は再実行で回復できる。
+        var staleId = await InsertProcessingCheckAsync(OrphanAge);
         var rerun = await client.PostAsync($"/api/subsidiary-check/{staleId}/rerun", content: null);
         rerun.EnsureSuccessStatusCode();
         var detail = await WaitForSettledAsync(client, staleId);
@@ -371,18 +381,16 @@ public sealed class SubsidiaryCheckIntegrationTests
         using var factory = WithSubsidiaryAi(stub);
         using var client = CreateClient(factory);
 
-        // 登録は11分前だが、直前に再実行が始まっている（started_at が新しい）チェックは
+        // 登録は孤児判定を超える昔だが、直前に再実行が始まっている（started_at が新しい）チェックは
         // 「実行中」であり孤児ではない。基準が created_at のままだと誤って再実行を許してしまう。
-        var runningId = await InsertProcessingCheckAsync(
-            TimeSpan.FromMinutes(11), startedAge: TimeSpan.Zero);
+        var runningId = await InsertProcessingCheckAsync(OrphanAge, startedAge: TimeSpan.Zero);
         var rejected = await client.PostAsync($"/api/subsidiary-check/{runningId}/rerun", content: null);
         Assert.Equal(HttpStatusCode.BadRequest, rejected.StatusCode);
         Assert.Contains("UNDX-REQ-001", await rejected.Content.ReadAsStringAsync());
         Assert.Equal(0, stub.AnalyzeCallCount);
 
-        // 逆に、登録は直前でも実行開始が11分前なら孤児として回復できる。
-        var orphanId = await InsertProcessingCheckAsync(
-            TimeSpan.Zero, startedAge: TimeSpan.FromMinutes(11));
+        // 逆に、登録は直前でも実行開始が孤児判定を超えていれば回復できる。
+        var orphanId = await InsertProcessingCheckAsync(TimeSpan.Zero, startedAge: OrphanAge);
         var accepted = await client.PostAsync($"/api/subsidiary-check/{orphanId}/rerun", content: null);
         accepted.EnsureSuccessStatusCode();
         var detail = await WaitForSettledAsync(client, orphanId);
@@ -395,10 +403,10 @@ public sealed class SubsidiaryCheckIntegrationTests
     {
         // クレーム UPDATE は compare-and-set。1回目で実行権を取ると started_at が now() へ進み、
         // 同じ孤児条件では2回目がクレームできない（重複起動が構造的に不可能）。
-        var staleId = await InsertProcessingCheckAsync(TimeSpan.FromMinutes(11));
+        var staleId = await InsertProcessingCheckAsync(OrphanAge);
         using var scope = _fixture.Factory.Services.CreateScope();
         var repository = scope.ServiceProvider.GetRequiredService<SubsidiaryCheckRepository>();
-        var staleBefore = DateTime.UtcNow - TimeSpan.FromMinutes(10);
+        var staleBefore = DateTime.UtcNow - SubsidiaryCheckService.ProcessingStaleAfter;
 
         Assert.Equal(1, await repository.ClaimForRerunAsync(staleId, staleBefore));
         Assert.Equal(0, await repository.ClaimForRerunAsync(staleId, staleBefore));
@@ -524,7 +532,7 @@ public sealed class SubsidiaryCheckIntegrationTests
     [Fact]
     public async Task Create_AiQueueWaitTimeout_RecordsFailedDetail_WithoutCallingAi()
     {
-        // 同時実行スロット（SemaphoreSlim(1)）が塞がっている間の順番待ちは有界（既定30秒）。
+        // 同時実行スロット（SemaphoreSlim(1)）が塞がっている間の順番待ちは有界（既定420秒）。
         // 待機超過時は AI を呼ばずに failed 記録＋failed Detail で応答する（メモリ保護）。
         var stub = new SubsidiaryCheckFakeAiClient { ResponseText = AllPassResponse };
         using var factory = WithSubsidiaryAi(stub);
@@ -534,7 +542,8 @@ public sealed class SubsidiaryCheckIntegrationTests
         AddImage(form, "instructionImages", "instruction.jpg", "image/jpeg", JpegBytes(0x01));
         AddImage(form, "tagImages", "tag.png", "image/png", PngBytes(0x01));
 
-        Assert.True(await SubsidiaryCheckService.TryOccupyAiSlotAsync());
+        // スロットの取得はリトライ付きで行う（直前のテストの解放待ち。内部の解放順序に依存しない）。
+        await OccupyAiSlotAsync();
         SubsidiaryCheckService.AiCallQueueTimeoutOverride = TimeSpan.FromMilliseconds(50);
         try
         {
@@ -636,6 +645,156 @@ public sealed class SubsidiaryCheckIntegrationTests
     }
 
     [Fact]
+    public async Task Create_WhenAcceptanceLimitReached_RejectsBeforeReadingImages()
+    {
+        // 受付枠の判定は「画像バッファ（1件あたり最大20MB）の確保より前」に行う必要がある
+        // （バッファ確保後だと、429 で拒否される要求までピークメモリへ寄与してしまう）。
+        // 画像の読取・検証（ReadImagesAsync）まで進んでいれば形式エラーの 400（UNDX-REQ-005）に
+        // なる要求が 429 で返ることで、アプリ層の画像バッファ（new byte[file.Length]）を
+        // 1バイトも確保せずに拒否していることを観測できる。
+        var stub = new SubsidiaryCheckFakeAiClient { ResponseText = AllPassResponse };
+        using var factory = WithSubsidiaryAi(stub);
+        using var client = CreateClient(factory);
+
+        var reserved = await OccupyAllAcceptanceSlotsAsync();
+        try
+        {
+            using var form = new MultipartFormDataContent();
+            AddImage(form, "instructionImages", "instruction.gif", "image/gif", new byte[] { 1 });
+            AddImage(form, "tagImages", "tag.png", "image/png", PngBytes(0x01));
+
+            var response = await client.PostAsync("/api/subsidiary-check", form);
+
+            Assert.Equal(HttpStatusCode.TooManyRequests, response.StatusCode);
+            Assert.Contains("UNDX-REQ-009", await response.Content.ReadAsStringAsync());
+        }
+        finally
+        {
+            ReleaseAcceptanceSlots(reserved);
+        }
+
+        // 上限が解消されれば、同じ要求は本来の形式エラー（＝画像を読んだ結果）で拒否される。
+        using var retryForm = new MultipartFormDataContent();
+        AddImage(retryForm, "instructionImages", "instruction.gif", "image/gif", new byte[] { 1 });
+        AddImage(retryForm, "tagImages", "tag.png", "image/png", PngBytes(0x01));
+        var retry = await client.PostAsync("/api/subsidiary-check", retryForm);
+        Assert.Equal(HttpStatusCode.BadRequest, retry.StatusCode);
+        Assert.Contains("UNDX-REQ-005", await retry.Content.ReadAsStringAsync());
+    }
+
+    [Fact]
+    public async Task Create_ValidationFailureAiUnconfiguredAndSuccess_ReleaseAcceptanceSlots()
+    {
+        // 受付枠の予約はコントローラ入口（バッファ確保前）へ移ったため、成功・失敗を問わず
+        // 全経路で対称に解放される必要がある。漏れると 429 が恒久化して機能停止し、
+        // 過剰解放するとピークメモリの防御（受付上限）が無効化される。
+        // 予約後の代表的な3経路（画像検証エラー・AI 未設定 503・成功）を上限より多い回数だけ通し、
+        // 「上限ちょうどを占有できる（＝漏れなし）」「過剰解放のログが出ていない」で対称性を確認する。
+        var stub = new SubsidiaryCheckFakeAiClient { ResponseText = AllPassResponse };
+        var logs = new CapturingLoggerProvider();
+        using var factory = WithSubsidiaryAi(stub, logs);
+        using var client = CreateClient(factory);
+
+        for (var i = 0; i <= SubsidiaryCheckService.MaxConcurrentAiChecks; i++)
+        {
+            // 予約後・永続化前の失敗（画像の形式検証エラー）。
+            using (var invalidForm = new MultipartFormDataContent())
+            {
+                AddImage(invalidForm, "instructionImages", "bad.jpg", "image/jpeg", PngBytes(0x01));
+                AddImage(invalidForm, "tagImages", "tag.png", "image/png", PngBytes(0x01));
+                using var invalid = await client.PostAsync("/api/subsidiary-check", invalidForm);
+                Assert.Equal(HttpStatusCode.BadRequest, invalid.StatusCode);
+            }
+
+            // 予約後・永続化前の失敗（AI 未設定 503）。検証を通過してからの別経路。
+            stub.Configured = false;
+            using (var unconfiguredForm = new MultipartFormDataContent())
+            {
+                AddImage(unconfiguredForm, "instructionImages", "i.jpg", "image/jpeg", JpegBytes(0x01));
+                AddImage(unconfiguredForm, "tagImages", "tag.png", "image/png", PngBytes(0x01));
+                using var unconfigured = await client.PostAsync("/api/subsidiary-check", unconfiguredForm);
+                Assert.Equal(HttpStatusCode.ServiceUnavailable, unconfigured.StatusCode);
+            }
+
+            stub.Configured = true;
+
+            // 成功経路（解放責務がバックグラウンドタスクへ移る）。
+            using (var validForm = new MultipartFormDataContent())
+            {
+                AddImage(validForm, "instructionImages", "instruction.jpg", "image/jpeg", JpegBytes(0x01));
+                AddImage(validForm, "tagImages", "tag.png", "image/png", PngBytes(0x01));
+                using var valid = await client.PostAsync("/api/subsidiary-check", validForm);
+                valid.EnsureSuccessStatusCode();
+                var accepted = await valid.Content.ReadFromJsonAsync<SubsidiaryCheckDetail>();
+                Assert.NotNull(accepted);
+                await WaitForSettledAsync(client, accepted!.Summary.CheckId);
+            }
+        }
+
+        // 漏れていれば上限数ちょうどを占有できない。
+        var reserved = await OccupyAllAcceptanceSlotsAsync();
+        ReleaseAcceptanceSlots(reserved);
+
+        // 過剰解放は「上限数を占有できる」だけでは検出できない（セマフォ側で頭打ちになるため）。
+        // セマフォ（SemaphoreSlim(Max, Max)）は遅くとも全枠が解放される時点までに必ず検知して
+        // ログへ出すので、枠数の確認とログの不在の両方で対称性を担保する。
+        Assert.DoesNotContain(logs.Snapshot(), m => m.Contains("受付枠が過剰に解放されました"));
+    }
+
+    [Fact]
+    public async Task AcceptanceSlotLease_HandOffAndRepeatedDispose_ReleaseExactlyOnce()
+    {
+        // 受付枠の解放は「1予約につき1回」。移譲後の元スコープの Dispose（リクエスト側の using）と、
+        // 引継ぎ先スコープの二重 Dispose のいずれも余分な解放を起こさないこと。
+        var reserved = await OccupyAllAcceptanceSlotsAsync();
+        try
+        {
+            // 満杯なので追加予約はできない。
+            Assert.Null(SubsidiaryCheckService.TryReserveAiCheckSlotForTest());
+
+            var lease = reserved[0];
+            var handed = lease.HandOffToBackground();
+            lease.Dispose();
+            lease.Dispose();
+            Assert.Null(SubsidiaryCheckService.TryReserveAiCheckSlotForTest());
+
+            // 引継ぎ先の Dispose で初めて1枠空く。二重 Dispose では2枠目は空かない。
+            handed.Dispose();
+            handed.Dispose();
+            var freed = SubsidiaryCheckService.TryReserveAiCheckSlotForTest();
+            Assert.NotNull(freed);
+            Assert.Null(SubsidiaryCheckService.TryReserveAiCheckSlotForTest());
+
+            // 後始末は再取得した予約に引き継ぐ（解放数と予約数を一致させる）。
+            reserved[0] = freed!;
+        }
+        finally
+        {
+            ReleaseAcceptanceSlots(reserved);
+        }
+    }
+
+    [Fact]
+    public async Task Rerun_LogsRequestingUser()
+    {
+        // rerun は外部有料 API を起動する書込操作のため、実行者を記録して無記名の反復実行を防ぐ
+        // （新規作成は created_by として永続化される。rerun の恒久的な永続化は後続課題）。
+        var stub = new SubsidiaryCheckFakeAiClient { ResponseText = AllPassResponse };
+        var logs = new CapturingLoggerProvider();
+        using var factory = WithSubsidiaryAi(stub, logs);
+        using var client = CreateClient(factory);
+
+        var staleId = await InsertProcessingCheckAsync(OrphanAge);
+        using var rerun = await client.PostAsync($"/api/subsidiary-check/{staleId}/rerun", content: null);
+        rerun.EnsureSuccessStatusCode();
+        await WaitForSettledAsync(client, staleId);
+
+        var entry = Assert.Single(logs.Snapshot(), m => m.Contains("副資材チェックを再実行します"));
+        Assert.Contains(staleId.ToString(), entry);
+        Assert.Contains("tester@example.com", entry);
+    }
+
+    [Fact]
     public async Task Rerun_WhenAcceptanceLimitReached_Returns429_WithoutClaiming()
     {
         // rerun はクレーム前に判定する（クレームしてから即 failed に落とすと記録を汚すため）。
@@ -643,7 +802,7 @@ public sealed class SubsidiaryCheckIntegrationTests
         using var factory = WithSubsidiaryAi(stub);
         using var client = CreateClient(factory);
 
-        var staleId = await InsertProcessingCheckAsync(TimeSpan.FromMinutes(11));
+        var staleId = await InsertProcessingCheckAsync(OrphanAge);
         var reserved = await OccupyAllAcceptanceSlotsAsync();
         try
         {
@@ -681,7 +840,7 @@ public sealed class SubsidiaryCheckIntegrationTests
         using var factory = WithSubsidiaryAi(stub);
         using var client = CreateClient(factory);
 
-        var staleId = await InsertProcessingCheckAsync(TimeSpan.FromMinutes(11));
+        var staleId = await InsertProcessingCheckAsync(OrphanAge);
         SubsidiaryCheckService.RerunPrepareFailureOverride =
             id => id == staleId ? new InvalidOperationException("準備失敗の注入") : null;
         try
@@ -747,23 +906,43 @@ public sealed class SubsidiaryCheckIntegrationTests
     }
 
     /// <summary>
+    /// AI 実行スロット（同時実行1のセマフォ）を占有して「順番待ちが発生する」状態を作る。
+    /// 直前のテストのバックグラウンド実行が解放し切るまで少し待つため、取得できるまでリトライする
+    /// （「RunAiAsync がセマフォを解放してから status を更新する」という内部順序に依存しない）。
+    /// 解放は <see cref="SubsidiaryCheckService.ReleaseAiSlot"/> で行う。
+    /// </summary>
+    private static async Task OccupyAiSlotAsync()
+    {
+        var deadline = DateTime.UtcNow + TimeSpan.FromSeconds(10);
+        while (!await SubsidiaryCheckService.TryOccupyAiSlotAsync())
+        {
+            Assert.True(DateTime.UtcNow < deadline,
+                "AI 実行スロットが解放されず、順番待ち状態を作れませんでした。");
+            await Task.Delay(25);
+        }
+    }
+
+    /// <summary>
     /// 受付枠（実行中＋待機中の上限）をすべて占有して「満杯」状態を作る。
     /// 直前のテストのバックグラウンドタスクが解放し切るまで少し待つため、
     /// 上限数ちょうどを確保できるまでリトライする（部分占有のまま先へ進んで取りこぼさない）。
+    /// 「ちょうど上限数」であることは、受付枠に解放漏れがないこと（少なく取れる）の検証も兼ねる。
+    /// 過剰解放はセマフォが頭打ちにするため件数では検出できないので、
+    /// アプリ経路の対称性はログ（「受付枠が過剰に解放されました」の不在）と併せて検証する。
     /// </summary>
-    /// <returns>占有した枠数（<see cref="ReleaseAcceptanceSlots"/> へ渡す）。</returns>
-    private static async Task<int> OccupyAllAcceptanceSlotsAsync()
+    /// <returns>占有した予約スコープ（<see cref="ReleaseAcceptanceSlots"/> へ渡す）。</returns>
+    private static async Task<List<AiCheckSlotLease>> OccupyAllAcceptanceSlotsAsync()
     {
         var deadline = DateTime.UtcNow + TimeSpan.FromSeconds(10);
         while (true)
         {
-            var reserved = 0;
-            while (SubsidiaryCheckService.TryReserveAiCheckSlotForTest())
+            var reserved = new List<AiCheckSlotLease>();
+            while (SubsidiaryCheckService.TryReserveAiCheckSlotForTest() is { } lease)
             {
-                reserved++;
+                reserved.Add(lease);
             }
 
-            if (reserved == SubsidiaryCheckService.MaxConcurrentAiChecks)
+            if (reserved.Count == SubsidiaryCheckService.MaxConcurrentAiChecks)
             {
                 return reserved;
             }
@@ -775,20 +954,34 @@ public sealed class SubsidiaryCheckIntegrationTests
     }
 
     /// <summary><see cref="OccupyAllAcceptanceSlotsAsync"/> で占有した受付枠を解放する。</summary>
-    private static void ReleaseAcceptanceSlots(int count)
+    private static void ReleaseAcceptanceSlots(IEnumerable<AiCheckSlotLease> leases)
     {
-        for (var i = 0; i < count; i++)
+        foreach (var lease in leases)
         {
-            SubsidiaryCheckService.ReleaseAiCheckSlotForTest();
+            lease.Dispose();
         }
     }
 
-    /// <summary>IAiChatClient を副資材チェック用スタブへ差し替えたファクトリを生成する。</summary>
+    /// <summary>
+    /// IAiChatClient を副資材チェック用スタブへ差し替えたファクトリを生成する。
+    /// <paramref name="logs"/> を渡すと、アプリのログ出力を検証できる（実行者の記録の検証等）。
+    /// </summary>
     private Microsoft.AspNetCore.Mvc.Testing.WebApplicationFactory<Program> WithSubsidiaryAi(
-        SubsidiaryCheckFakeAiClient stub)
+        SubsidiaryCheckFakeAiClient stub, CapturingLoggerProvider? logs = null)
         => _fixture.Factory.WithWebHostBuilder(builder =>
-            builder.ConfigureTestServices(services =>
-                services.AddSingleton<IAiChatClient>(stub)));
+        {
+            builder.ConfigureTestServices(services => services.AddSingleton<IAiChatClient>(stub));
+            if (logs is not null)
+            {
+                builder.ConfigureLogging(logging =>
+                {
+                    logging.AddProvider(logs);
+                    // appsettings のログレベル設定に左右されないよう、このプロバイダ限定で
+                    // Information 以上を必ず受け取る（プロバイダ指定のルールが最も具体的で優先される）。
+                    logging.AddFilter<CapturingLoggerProvider>(category: null, LogLevel.Information);
+                });
+            }
+        });
 
     private static HttpClient CreateClient(
         Microsoft.AspNetCore.Mvc.Testing.WebApplicationFactory<Program> factory,
@@ -884,6 +1077,54 @@ public sealed class SubsidiaryCheckIntegrationTests
             """, new { productId, productSign = uniqueSign });
 
         return productId;
+    }
+}
+
+/// <summary>
+/// ログ出力をメモリに溜めて検証するテスト用 ILoggerProvider。
+/// 「実行者を記録している」ようなログ由来の要件を、公開 API 経由の実行で検証するために使う。
+/// </summary>
+public sealed class CapturingLoggerProvider : ILoggerProvider
+{
+    private readonly List<string> _messages = new();
+
+    /// <summary>これまでに記録されたメッセージのスナップショット（レンダリング済み本文）。</summary>
+    public IReadOnlyList<string> Snapshot()
+    {
+        lock (_messages)
+        {
+            return _messages.ToArray();
+        }
+    }
+
+    public ILogger CreateLogger(string categoryName) => new CapturingLogger(this);
+
+    public void Dispose()
+    {
+    }
+
+    private void Add(string message)
+    {
+        lock (_messages)
+        {
+            _messages.Add(message);
+        }
+    }
+
+    private sealed class CapturingLogger : ILogger
+    {
+        private readonly CapturingLoggerProvider _owner;
+
+        public CapturingLogger(CapturingLoggerProvider owner) => _owner = owner;
+
+        public IDisposable? BeginScope<TState>(TState state) where TState : notnull => null;
+
+        public bool IsEnabled(LogLevel logLevel) => true;
+
+        public void Log<TState>(
+            LogLevel logLevel, EventId eventId, TState state, Exception? exception,
+            Func<TState, Exception?, string> formatter)
+            => _owner.Add(formatter(state, exception));
     }
 }
 

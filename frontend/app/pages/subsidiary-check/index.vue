@@ -5,6 +5,7 @@ import {
   History,
   ImagePlus,
   LoaderCircle,
+  RefreshCw,
   Search,
   Sparkles,
   Trash2,
@@ -456,10 +457,37 @@ onMounted(() => {
     </nav>
 
     <!-- ============ チェック履歴 ============ -->
-    <section v-if="activeTab === 'history'" aria-label="チェック履歴">
-      <!-- loading は「未取得（マウント直後の取得開始前）」も含める（空状態の一瞬表示を防ぐ）。 -->
+    <section v-if="activeTab === 'history'" aria-label="チェック履歴" class="space-y-3">
+      <!--
+        AI 実行の非同期化により「一覧に processing 行が並ぶ」ことが常態になったが、一覧は
+        タブ単位の遅延ロードで1回しか取得しない。一覧に留まる利用者が完了を確認できるよう
+        手動更新の導線を置く（自動ポーリングは詳細ページが担う。一覧の全件ポーリングは無駄が大きい）。
+        StatusBlock の外に置き、読込中・0件でも押せる位置を保つ。
+      -->
+      <div class="flex justify-end">
+        <button
+          type="button"
+          class="inline-flex items-center gap-1.5 rounded-lg border border-slate-200 bg-white px-3 py-1.5 text-xs font-medium text-slate-600 transition-colors hover:border-indigo-300 hover:text-indigo-700 disabled:cursor-not-allowed disabled:opacity-40"
+          :disabled="historyLoading"
+          @click="loadHistory"
+        >
+          <RefreshCw
+            class="h-3.5 w-3.5 shrink-0"
+            :class="historyLoading ? 'animate-spin' : ''"
+            aria-hidden="true"
+          />
+          {{ historyLoading ? '更新中...' : '更新' }}
+        </button>
+      </div>
+
+      <!--
+        loading は「初回未取得（マウント直後の取得開始前・取得中）」だけにする
+        （空状態の一瞬表示は防ぎつつ、更新・ページ送りの読み込み中は既存行を残す）。
+        再取得中であることはボタン側のスピナで示す。
+        なお再取得が失敗した場合は historyError により行がエラー表示へ置き換わる（従来と同じ）。
+      -->
       <StatusBlock
-        :loading="historyLoading || (!historyLoaded && !historyError)"
+        :loading="!historyLoaded && !historyError"
         :error="historyError"
         :empty="(history?.items.length ?? 0) === 0"
         empty-message="チェック履歴がありません。「新規チェック」タブから実行できます。"
@@ -521,7 +549,7 @@ onMounted(() => {
             <button
               type="button"
               class="rounded-lg border border-slate-200 bg-white px-3 py-1.5 text-xs font-medium text-slate-600 transition-colors hover:border-indigo-300 disabled:cursor-not-allowed disabled:opacity-40"
-              :disabled="historyPage <= 1"
+              :disabled="historyPage <= 1 || historyLoading"
               @click="moveHistoryPage(-1)"
             >
               ← 前へ
@@ -530,7 +558,7 @@ onMounted(() => {
             <button
               type="button"
               class="rounded-lg border border-slate-200 bg-white px-3 py-1.5 text-xs font-medium text-slate-600 transition-colors hover:border-indigo-300 disabled:cursor-not-allowed disabled:opacity-40"
-              :disabled="!hasNextHistoryPage"
+              :disabled="!hasNextHistoryPage || historyLoading"
               @click="moveHistoryPage(1)"
             >
               次へ →

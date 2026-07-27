@@ -162,7 +162,7 @@ flowchart TD
 | POST | `/api/subsidiary-check` | 副資材チェック登録（multipart: `productId`?・`productLabel`?・`instructionImages` 1〜3・`tagImages` 1〜10。各5MB・**合計20MB** 以内）。記録を作成して **AI はバックグラウンド実行**し、即座に processing の詳細を返す。**要 AI 設定（未設定は 503）／受付上限超過は 429（`UNDX-REQ-009`）** |
 | GET | `/api/subsidiary-check/{checkId}` | チェック詳細（判定・指摘・画像メタ・商品/付属情報） |
 | GET | `/api/subsidiary-check/{checkId}/images/{imageId}` | 入力画像バイナリ |
-| POST | `/api/subsidiary-check/{checkId}/rerun` | AI 再実行（**status=failed、または最後の実行開始（`started_at`）から10分超の processing（孤児回復）**。completed は記録保護のため 400／受付上限超過は 429） |
+| POST | `/api/subsidiary-check/{checkId}/rerun` | AI 再実行（**status=failed、または最後の実行開始（`started_at`）から20分超の processing（孤児回復）**。completed は記録保護のため 400／受付上限超過は 429） |
 | GET | `/api/subsidiary-check/rules` | ルールブック（しまむら副資材規定カタログ） |
 | GET | `/api/error-codes` | エラーコード一覧 |
 
@@ -501,7 +501,7 @@ flowchart TD
     AI -->|失敗・タイムアウト| F[UPDATE status=failed<br/>error_message 保存 = 記録は残す]
     R -.->|フロントがポーリング| U
     R -.->|フロントがポーリング| F
-    F -.->|rerun: failed または<br/>started_at から10分超の processing| AI
+    F -.->|rerun: failed または<br/>started_at から20分超の processing| AI
 ```
 
 - 画像は各5MB・合計20MB 以内（Anthropic Messages API のリクエスト上限 32MB に base64 膨張約1.33倍を
@@ -525,7 +525,7 @@ flowchart TD
   `UNDX-AI-009` として failed 記録に残す。
 - MaxTokens は副資材チェック専用の固定値 4096（チャット用 `Anthropic:MaxOutputTokens` とは独立。
   応答が出力トークン上限で切り詰められた場合は明示メッセージ付きの failed 記録にする）。
-- **AI 呼出は同時実行 1 件に直列化**（SemaphoreSlim）し、順番待ちは 30 秒・AI 呼出自体は 120 秒で
+- **AI 呼出は同時実行 1 件に直列化**（SemaphoreSlim）し、順番待ちは 420 秒（7分）・AI 呼出自体は 120 秒で
   タイムアウトさせる（いずれも failed 記録＋再実行導線）。さらに実行中＋待機中の**総数を4件**に
   制限し、超過した要求は記録を作らずに 429（`UNDX-REQ-009`）で拒否する（待機中の要求も画像バッファを
   保持するため、件数を制限しないとメモリ上限に到達しうる。内訳: 実行中1件 約100MB ＋ 待機3件 約60MB
@@ -538,8 +538,10 @@ flowchart TD
   想定利用（日次数件〜10件）では直列化で支障がない。**スループットが不足する場合は
   同時実行数ではなく先に api コンテナのメモリ上限引上げを検討する**（EC2 インスタンスの
   空き容量確認が前提のオペレーター判断）。
-  順番待ちを有界化しているため、`processing` の最大滞留時間は「順番待ち30秒＋AI 120秒＋記録処理」
-  で約3分に収まる（孤児判定の閾値10分はこれに十分な余裕を見た値）。
+  順番待ちを有界化しているため、`processing` の最大滞留時間は「順番待ち420秒＋AI 120秒＋記録処理」
+  で約9分に収まる（孤児判定の閾値20分はこれに十分な余裕を見た値）。順番待ちの420秒は
+  「受付上限4件＝実行中1＋待機3 × AI 呼出上限120秒＝最悪360秒」に余裕を見た値であり、
+  同時実行時に後続が AI を呼ばれないまま失敗して手動再実行が常態化するのを防ぐ。
   なお RAG のナレッジ画像取込も AI を呼ぶが本セマフォの管理外であり、両者が同時に走る場合の
   ピークは上記収支に含まれていない（現状の利用規模では受容。同時実行数を引き上げる際は
   併せて評価すること）。
@@ -571,6 +573,9 @@ flowchart TD
   原子的クレームと同時実行1件の直列化で増幅を抑止済み）。利用者増・コスト顕在化時は
   ロールポリシー適用または `created_by` 単位の日次上限を導入する。
   UCP 移行時（ADR-018）は MakerOps ドメインとしてサーバー側ロール制御を導入する。
+  **残課題:** 再実行（rerun）の実行者は現状ログにのみ記録し、レコードには残していない
+  （`created_by` は新規作成時の実行者）。上記の「`created_by` 単位の日次上限」を rerun にも
+  適用するには、`subsidiary_check` へ `last_rerun_by` / `rerun_count` を additive に追加する必要がある。
 - **リバースプロキシとの関係:** 公開経路は複数プロジェクト相乗りの共有 `nginx-proxy`（本 compose の
   管理外・読み取りタイムアウト約60秒）。AI 呼出は最大約150秒かかりうるため**同期実行は採らず**、
   バックグラウンド実行＋ポーリングとした（§13.5）。これによりプロキシのタイムアウト設定変更は不要で、

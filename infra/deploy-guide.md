@@ -456,6 +456,8 @@ GitHub の **Actions** タブの「Run workflow」ボタンからも実行でき
 | `deploy-frontend` が `Failed to authenticate` で失敗 | firebase-tools は CI で `GOOGLE_APPLICATION_CREDENTIALS` を取りこぼす既知不具合があるため（firebase-tools#10726 等）、本ワークフローは**公式アクション `FirebaseExtended/action-hosting-deploy`（channelId: live）**で SA 認証を行う。なお残る可能性は: ①`FIREBASE_SERVICE_ACCOUNT` が空/不正JSON → 鍵JSONの全文を登録し直す（ステップ1-4。事前検証ステップが `project_id`/`client_email` をログ出力） ②`project_id` 不一致の警告 → 鍵と `FIREBASE_PROJECT_ID` のプロジェクトを揃える ③検証は通るが失敗 → SA に **Firebase Hosting 管理者** ロール、対象プロジェクトで **Firebase Hosting API** 有効化を確認 |
 | ログインできない | Firebase の Authentication でメール/パスワードが有効か、利用者が登録済みか確認 |
 | 取込が 403 になる | 取込する利用者に `role=admin` カスタムクレームが必要（`infra/README.md` 参照） |
+| 副資材チェックが「処理中」のまま進まない | AI 実行はバックグラウンドタスクで動くため、**デプロイ・コンテナ再起動・プロセス異常終了で実行が失われる**と処理中のまま残る（永続キューを持たない設計判断。`docs/design.md` §13.6）。滞留判定の時間が経過すると詳細画面に再実行ボタンが出るので、利用者に再実行してもらう。デプロイ直後に複数件が該当する場合は、実行中だったチェックが巻き込まれた可能性が高い |
+| 副資材チェックが 429（受付上限）になる | 実行中＋待機中のチェックが上限に達している。AI 呼出は同時1件に直列化しているため（メモリ上限が根拠。`docs/design.md` §13.5）、先行分の完了を待ってから再試行する。恒常的に発生する場合は api コンテナのメモリ上限引上げを検討する（同時実行数だけを増やすと OOM の原因になる） |
 | EC2 上のログを見たい | `ssh -i "$HOME\.ssh\undeux-ec2" ubuntu@<EC2IP>` で接続し `cd undeux-sales-suite/infra/aws; docker compose -f docker-compose.ec2.yml --env-file .env logs api` |
 | `deploy-backend` の SSH 認証が失敗する | `EC2_SSH_KEY` シークレットを `Get-Content -Raw` で登録し直す（改行コード混入時の対処） |
 | `puttygen` で `unrecognised option '-O'` エラー | Windows の `puttygen.exe`（GUI 版）はコマンドライン変換に非対応。**付録A** の GUI 手順で `.ppk` を変換する |
