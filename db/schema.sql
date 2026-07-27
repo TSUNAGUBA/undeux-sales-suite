@@ -916,6 +916,93 @@ WHERE NOT EXISTS (SELECT 1 FROM m_contact_desk)
 ON CONFLICT (topic) DO NOTHING;
 
 -- ============================================================
+--  副資材チェック（サプライヤーの出荷前 TAG 検品）
+-- ------------------------------------------------------------
+--  subsidiary_check       : AI チェックの実行記録。SoT は本テーブル（記録系データ。
+--                           再実行で既存の判定・履歴を巻き戻さない・原則2）。
+--  subsidiary_check_image : チェック対象の画像原本（指示書・タグ）。チェックに従属し、
+--                           チェック削除で連鎖削除される。
+--  m_product_attachment   : 商品マスタ付属情報。SoT は運用部門の管理ファイル→SQL投入
+--                           （商品マスタ本体と同じ運用。アプリからは読み取りのみ）。
+--  uuid PK はアプリ側生成（m_product と同じ流儀。Dapper INSERT 時に Guid.NewGuid()）。
+-- ============================================================
+CREATE TABLE IF NOT EXISTS subsidiary_check (
+    check_id       uuid PRIMARY KEY,
+    product_id     uuid REFERENCES m_product(product_id) ON DELETE SET NULL,
+    product_label  text NOT NULL DEFAULT '',
+    status         text NOT NULL DEFAULT 'processing'
+                       CHECK (status IN ('processing', 'completed', 'failed')),
+    judgment       text CHECK (judgment IN ('pass', 'warn', 'fail')),
+    fail_count     int  NOT NULL DEFAULT 0,
+    warn_count     int  NOT NULL DEFAULT 0,
+    findings       jsonb,
+    ai_model       text,
+    error_message  text,
+    created_by     text NOT NULL DEFAULT '',
+    created_at     timestamptz NOT NULL DEFAULT now(),
+    checked_at     timestamptz
+);
+
+COMMENT ON TABLE  subsidiary_check IS '副資材チェックの実行記録（SoT: 本テーブル。AIチェックの記録系データ。再実行での巻き戻し禁止）';
+COMMENT ON COLUMN subsidiary_check.product_id    IS '対象商品（任意）。商品マスタ削除時も記録は温存する（SET NULL）';
+COMMENT ON COLUMN subsidiary_check.product_label IS '表示用スナップショット（品番等）。商品マスタ削除後も履歴表示できるよう保持する';
+COMMENT ON COLUMN subsidiary_check.status        IS 'チェック状態: processing / completed / failed';
+COMMENT ON COLUMN subsidiary_check.judgment      IS '判定: pass=合格 / warn=要確認 / fail=要修正（completed 時のみ）';
+COMMENT ON COLUMN subsidiary_check.findings      IS '指摘配列（API ワイヤ形式と同一の JSON）。※非正規化の根拠: チェック結果は親チェック単位でのみ読む不変の記録で、指摘単位の横断検索要件がない';
+COMMENT ON COLUMN subsidiary_check.ai_model      IS 'チェックに使用した AI モデル ID（表示用）';
+COMMENT ON COLUMN subsidiary_check.checked_at    IS 'AI チェックの完了（または失敗確定）日時';
+
+-- AI 実行開始日時（冪等に追加）。
+-- created_at（登録日時）・checked_at（完了/失敗確定日時）とは役割が異なり、再実行（rerun）の
+-- クレーム UPDATE で now() に更新される。孤児判定（processing のまま滞留超過）の基準時刻でもある。
+ALTER TABLE subsidiary_check
+    ADD COLUMN IF NOT EXISTS started_at timestamptz;
+COMMENT ON COLUMN subsidiary_check.started_at IS '最後に AI 実行を開始した日時。孤児判定（滞留超過）とクレームの基準時刻';
+
+-- 既存行のバックフィル（冪等）。started_at 導入前の行は登録＝実行開始とみなす。
+-- 2回目以降は対象行が無く 0 行更新（再適用しても値は巻き戻らない・原則2）。
+UPDATE subsidiary_check SET started_at = created_at WHERE started_at IS NULL;
+
+CREATE INDEX IF NOT EXISTS ix_subsidiary_check_created ON subsidiary_check (created_at DESC);
+
+CREATE TABLE IF NOT EXISTS subsidiary_check_image (
+    image_id      uuid PRIMARY KEY,
+    check_id      uuid NOT NULL REFERENCES subsidiary_check(check_id) ON DELETE CASCADE,
+    kind          text NOT NULL CHECK (kind IN ('instruction', 'tag')),
+    file_name     text NOT NULL,
+    content_type  text NOT NULL,
+    size_bytes    bigint NOT NULL,
+    data          bytea NOT NULL,
+    sort_order    int NOT NULL DEFAULT 0
+);
+
+COMMENT ON TABLE  subsidiary_check_image IS '副資材チェックの画像原本。チェック（subsidiary_check）に従属し連鎖削除される';
+COMMENT ON COLUMN subsidiary_check_image.kind         IS '画像種別: instruction=指示書（正） / tag=タグ（検査対象）';
+COMMENT ON COLUMN subsidiary_check_image.content_type IS 'image/jpeg または image/png';
+COMMENT ON COLUMN subsidiary_check_image.sort_order   IS '同一種別内の表示順（アップロード順）';
+
+CREATE INDEX IF NOT EXISTS ix_subsidiary_check_image_check ON subsidiary_check_image (check_id);
+
+CREATE TABLE IF NOT EXISTS m_product_attachment (
+    product_id          uuid PRIMARY KEY REFERENCES m_product(product_id) ON DELETE CASCADE,
+    composition         text,
+    origin_country      text,
+    care_labels         text,
+    color_fastness_note text,
+    display_order       text,
+    quality_notes       text,
+    updated_at          timestamptz NOT NULL DEFAULT now()
+);
+
+COMMENT ON TABLE  m_product_attachment IS '商品マスタ付属情報（SoT: 運用部門の管理ファイル→SQL投入。商品マスタ本体と同じ運用。アプリからは読み取りのみ）';
+COMMENT ON COLUMN m_product_attachment.composition         IS '組成・混率（例: 綿 100%）';
+COMMENT ON COLUMN m_product_attachment.origin_country      IS '原産国（例: 中国製 / MADE IN CHINA）';
+COMMENT ON COLUMN m_product_attachment.care_labels         IS '洗濯絵表示・取扱い表示の内容';
+COMMENT ON COLUMN m_product_attachment.color_fastness_note IS '色落ち表示（有/無・注意文言）';
+COMMENT ON COLUMN m_product_attachment.display_order       IS '表示の順序（例: 品番,サイズ,混率,洗濯表示,色落ち表示等,原産国表示,製造者）';
+COMMENT ON COLUMN m_product_attachment.quality_notes       IS '注意事項・デメリット表記等';
+
+-- ============================================================
 --  ナレッジストア（RAG）: knowledge スキーマ
 -- ------------------------------------------------------------
 --  設計思想は docs/platform-design/detailed-design/DD-04（根拠必須・SoT→派生の

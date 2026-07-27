@@ -703,6 +703,30 @@ const showNoSalesNotice = computed(() => analyticsNoData.value || (analytics.val
           </div>
         </div>
 
+        <!-- 付属情報（m_product_attachment。副資材チェックの内容照合元。登録がある商品のみ表示） -->
+        <div
+          v-if="detail.attachment"
+          class="rounded-xl border border-slate-200 bg-white p-4 shadow-sm"
+        >
+          <div class="flex flex-wrap items-baseline justify-between gap-2">
+            <h2 class="text-sm font-semibold text-slate-700">付属情報（副資材・品質表示）</h2>
+            <span class="text-[11px] text-slate-400">
+              更新: {{ formatDateTime(detail.attachment.updatedAt) }}
+            </span>
+          </div>
+          <p class="mt-0.5 text-xs text-slate-400">
+            副資材チェック（タグ・下げ札の内容照合）に使用する登録情報です。
+          </p>
+          <dl class="mt-3 grid grid-cols-1 gap-x-3 gap-y-2 border-t border-slate-100 pt-3 text-xs sm:grid-cols-2 lg:grid-cols-3">
+            <div v-for="field in SUBSIDIARY_ATTACHMENT_FIELDS" :key="field.key">
+              <dt class="text-slate-400">{{ field.label }}</dt>
+              <dd class="whitespace-pre-wrap font-medium text-slate-700">
+                {{ detail.attachment[field.key] ?? '—' }}
+              </dd>
+            </div>
+          </dl>
+        </div>
+
         <!-- Alert Strip（aria-live で SR にも検知させる） -->
         <div v-if="alerts.length > 0" class="flex flex-col gap-2" aria-live="polite">
           <div

@@ -151,6 +151,7 @@ aws rds create-db-instance `
   --master-username undeux `
   --master-user-password $DbPassword `
   --allocated-storage 20 `
+  --max-allocated-storage 100 `
   --storage-type gp3 `
   --db-name undeux `
   --vpc-security-group-ids $RdsSgId `
@@ -169,6 +170,13 @@ $RdsEndpoint   # 確認
 $RdsConnectionString = "Host=$RdsEndpoint;Port=5432;Database=undeux;Username=undeux;Password=$DbPassword;Command Timeout=600"
 ```
 
+> **ストレージ自動スケーリング:** `--max-allocated-storage 100` を付けているため、空き容量が
+> 少なくなると RDS が最大 100GiB まで自動拡張します（付けないと 20GiB 固定で、副資材チェックの
+> 画像蓄積により枯渇しうる。`docs/design.md` §13.6 の容量見積りを参照）。枯渇すると RDS は
+> `storage-full` となり**アプリ全体が書込不能**になるため、この指定は省略しないでください。
+> 既存インスタンスに後付けする場合は
+> `aws rds modify-db-instance --db-instance-identifier undeux-db --max-allocated-storage 100 --apply-immediately`。
+>
 > `--engine-version 16` でエラーが出る場合は、`aws rds describe-db-engine-versions --engine postgres --query "DBEngineVersions[].EngineVersion"` で利用可能なバージョンを確認し、その値（例 `16.6`）に変更してください。
 
 ---
@@ -293,7 +301,9 @@ gh secret set FRONTEND_ORIGIN      --repo $Repo --body "https://$FirebaseProject
 gh secret set RDS_CONNECTION_STRING --repo $Repo --body $RdsConnectionString
 gh secret set EC2_HOST             --repo $Repo --body $Ec2Ip
 gh secret set EC2_USER             --repo $Repo --body "ubuntu"
-# AIチャット（業務/商談）を有効化する場合のみ（未登録でもデプロイは成功し、チャットのみ「AI未設定」になる）
+# AI機能（AIチャット・副資材チェック）を有効化する場合のみ
+# （未登録でもデプロイは成功し、該当機能のみ「AI未設定」になる）
+$AnthropicApiKey = "（Anthropic Console で発行したAPIキー）"
 gh secret set ANTHROPIC_API_KEY    --repo $Repo --body $AnthropicApiKey
 
 # ファイルから登録するもの（サービスアカウントJSON・SSH秘密鍵）
@@ -304,7 +314,7 @@ Get-Content "$HOME\.ssh\undeux-ec2" -Raw    | gh secret set EC2_SSH_KEY --repo $
 gh secret list --repo $Repo
 
 # 機密値を含む PowerShell 変数を消去する（コンソール履歴対策）
-Remove-Variable DbPassword, RdsConnectionString -ErrorAction SilentlyContinue
+Remove-Variable DbPassword, RdsConnectionString, AnthropicApiKey -ErrorAction SilentlyContinue
 ```
 
 ---
@@ -359,6 +369,359 @@ Start-Process "https://$FirebaseProjectId.web.app"
 > **取込機能を使う利用者** には、取込権限ロール（`role=admin`）の付与が必要です。
 > 詳細は `infra/README.md` の「認証」を参照してください。
 
+### ステップ8-2: 副資材チェックを使う場合の追加確認
+
+副資材チェック（`/subsidiary-check`）は画像アップロードと AI 呼出を行うため、
+初回リリース時に次の5点を確認してください（設計の根拠は `docs/design.md` §13.5・§13.6）。
+
+1. **`ANTHROPIC_API_KEY` の登録**（未登録時は当該メニューのみ 503「AI未設定」。他機能は影響なし）
+2. **リバースプロキシのボディサイズ上限。** 共有 `nginx-proxy` の `client_max_body_size` が
+   **50MB 以上**である必要があります（nginx 既定は 1MB）。まず現行値を確認し、
+   不足する場合のみ変更してください。
+
+   本アプリのアップロード経路と、それぞれが必要とする上限は次のとおりです。
+   **最大値である週次取込の 50MB に合わせないと、副資材チェックは通っても既存の週次取込が
+   nginx 層の 413 で失敗します**（アプリに到達しないためエラーコードによる切り分けもできません）。
+
+   | 経路 | 必要な上限 | 実装上の SoT |
+   |------|-----------|-------------|
+   | 週次売上の取込（`POST /api/imports`） | **50MB** | `ImportsController.HardSizeLimitBytes` |
+   | RAG のナレッジ原本登録 | 25MB | `RagController` の transport 上限 |
+   | 副資材チェック（`POST /api/subsidiary-check`） | 25MB | `SubsidiaryCheckController.HardSizeLimitBytes`（画像合計20MB＋multipart のオーバーヘッド） |
+
+   > **タイムアウトの設定は不要です。** AI 実行は**バックグラウンドで非同期実行**し、
+   > POST は即座に応答します（フロントは状態をポーリング）。これは mart 再構築と同じ方式で、
+   > 共有 `nginx-proxy` の読み取りタイムアウト（約60秒）を超える処理を同期で行わないための
+   > 設計です（`docs/star-schema-design.md`「非同期実行・タイムアウトしない設計」／
+   > `docs/design.md` §13.5）。
+   >
+   > **共有プロキシの設定変更は同居する他プロジェクトの全 vhost に波及します。**
+   > `nginx-proxy` は本 compose の管理外（外部管理コンテナ・共有ネットワーク接続。
+   > `infra/aws/README.md` 参照）であり、ホスト側の `/etc/nginx/` を編集しても反映されません。
+   > 変更が必要な場合は、vhost 単位で効く `nginx-proxy` の `vhost.d/<VIRTUAL_HOST>` 機構を用い、
+   > 全体設定（`conf.d`）には手を入れないでください。実施前に共有 EC2 の管理者と調整すること。
+
+3. **監視の通知先（SNS トピック）を用意する。** 以降のアラームはすべてこのトピックへ通知します。
+
+   > **項目3〜5に必要な操作権限:** ステップ0で作業用 IAM ユーザーの権限を EC2・RDS に絞った場合、
+   > ここから先は `AccessDenied` になります。以下を追加で付与してください。
+   > `sns:CreateTopic` / `sns:Subscribe` / `sns:ListSubscriptionsByTopic`（項目3）、
+   > `cloudwatch:PutMetricAlarm`（項目4・ステップ8-3-4）。
+   > これらが無いと、**必須と明記した監視（ステップ8-3）が一つも設定されないまま
+   > リリースされる**ことになります。ステップ8-3-2 ではさらに IAM 系の権限が必要です（同節に記載）。
+
+   ```powershell
+   $SnsTopicArn = aws sns create-topic --name undeux-alerts --query "TopicArn" --output text
+   aws sns subscribe --topic-arn $SnsTopicArn --protocol email --notification-endpoint "運用担当のメールアドレス"
+   ```
+
+   > 購読直後に確認メールが届きます。**本文のリンクを承認するまで通知は届きません。**
+   > `aws sns list-subscriptions-by-topic --topic-arn $SnsTopicArn` の `SubscriptionArn` が
+   > `PendingConfirmation` でなくなれば有効です。
+
+4. **RDS ストレージ使用率のアラーム。** チェック記録の画像（1件あたり最大 合計20MB）は
+   記録保護のため自動削除されません（`docs/design.md` §13.6）。空き容量のアラームを設定します。
+
+   ```powershell
+   # DB 識別子はステップ2で undeux-db として作成済み
+   $RdsInstanceId = "undeux-db"
+
+   # 空き容量が 1.5GiB を 30分継続で下回ったら通知（閾値の根拠は下記）
+   aws cloudwatch put-metric-alarm `
+     --alarm-name "undeux-rds-free-storage" `
+     --namespace AWS/RDS --metric-name FreeStorageSpace `
+     --dimensions Name=DBInstanceIdentifier,Value=$RdsInstanceId `
+     --statistic Average --period 300 --evaluation-periods 6 `
+     --threshold 1610612736 --comparison-operator LessThanThreshold `
+     --alarm-actions $SnsTopicArn --ok-actions $SnsTopicArn
+   ```
+
+   > **閾値の根拠（ストレージ自動スケーリング有効時）。** ステップ2で
+   > `--max-allocated-storage 100` を付けているため、空き容量が減るとボリュームは
+   > 最大 100GiB まで自動拡張されます。AWS の自動拡張が発動する条件は
+   > **「空き容量が割当の10%以下」かつ「その状態が5分以上継続」かつ「前回の変更から6時間経過」** です。
+   >
+   > つまり「空きが減ってきた」こと自体は異常ではなく、**自動拡張が面倒を見る領域**です。
+   > アラームで捉えたいのはその外側、すなわち**自動拡張が働くはずなのに空きが戻らない**状態だけです。
+   > 閾値 1.5GiB は、初期割当 20GiB のときの発動点（20 × 10% ＝ 2GiB）**より下**に置いてあります。
+   > 割当が増えるほど発動点は上がる（100GiB なら 10GiB）ので、**どの割当サイズでも
+   > 「自動拡張が一度は試みたはずの後」にしか鳴りません**。
+   >
+   > - **鳴ってすぐ OK に戻った場合** → 自動拡張が働いた正常な挙動。対応不要
+   >   （`--ok-actions` を付けているのは、この収束を通知で確認するためです）
+   > - **30分続けて鳴り止まない場合** → まず現状を確認します:
+   >   `aws rds describe-db-instances --db-instance-identifier undeux-db --query "DBInstances[0].[AllocatedStorage,MaxAllocatedStorage]"`
+   >     - `AllocatedStorage` が `MaxAllocatedStorage` に達している → 上限が原因。引上げます:
+   >       `aws rds modify-db-instance --db-instance-identifier undeux-db --max-allocated-storage 200 --apply-immediately`
+   >     - 達していない → 上限は原因ではありません（引上げても効果がない）。直前6時間以内に
+   >       拡張済み（クールダウン中）か、ストレージ変更が進行中の可能性があります。
+   >       `describe-db-instances` の `StatusInfo` / イベント履歴を確認してください。
+   >
+   > 閾値を「割当の何割」ではなく絶対値にしているのは、`AllocatedStorage` が CloudWatch の
+   > メトリクスではなく、割合をアラーム条件に直接書けないためです。
+   > **閾値を大きく取ってはいけません**（例: 10GiB にすると、初期割当 20GiB のうち半分を
+   > 使った時点で鳴り始めますが、その時点では発動点 2GiB に達しておらず自動拡張は動きません。
+   > 上限を引き上げても何も変わらない＝**打つ手のない通知**になり、アラーム疲れを招きます）。
+   >
+   > 1.5GiB の猶予: チェック1件あたり最大 20MiB なので約76件ぶん。想定利用（日次10件程度）で
+   > 1週間以上あり、自動拡張のクールダウン6時間に対して十分です。
+
+5. **api コンテナのメモリ監視と OOM 検知。** 手順が長いため、次の「ステップ8-3」に分けて記載します。
+   **この設定は必須です**（`docs/design.md` §13.5 が受容したメモリリスクの検知手段そのものであるため）。
+
+> **同時実行数を増やしたい場合:** 先に `infra/aws/docker-compose.ec2.yml` の `api` の
+> `memory`（既定 512m）を EC2 の空き容量を確認のうえ引き上げてください。
+> メモリを据え置いたまま同時実行数だけを増やすと OOM の原因になります（`docs/design.md` §13.5）。
+
+### ステップ8-3: api コンテナのメモリ監視と OOM 検知（必須）
+
+> **別ウィンドウで再開する場合:** 本ステップは `$InstanceId`（ステップ3-3）・`$Ec2Ip`（ステップ3-4）・
+> `$SnsTopicArn`（ステップ8-2 の項目3）を使います。PowerShell を開き直した場合は、
+> 下の「変数の再取得」を先に実行してください（値が空のままだと AWS CLI がパラメータ検証エラーで停止します）。
+
+**変数の再取得**（同じ PowerShell ウィンドウで続けている場合は不要）
+
+```powershell
+# 付録A でキーペア名を読み替えた場合は Values= を実際の名前に置換すること。
+# 一致しないと None が返り、後続の AWS CLI がパラメータ検証エラーで停止する。
+$InstanceId  = aws ec2 describe-instances --filters "Name=key-name,Values=undeux-ec2" "Name=instance-state-name,Values=running" --query "Reservations[0].Instances[0].InstanceId" --output text
+$Ec2Ip       = aws ec2 describe-instances --instance-ids $InstanceId --query "Reservations[0].Instances[0].PublicIpAddress" --output text
+$SnsTopicArn = aws sns create-topic --name undeux-alerts --query "TopicArn" --output text   # 作成済みなら既存 ARN が返る
+```
+
+副資材チェックは1リクエストで最大約100MiB を保持します。コンテナのメモリ上限は 512MiB で、
+cgroup 下の .NET GC ヒープハードリミットはその 75%（384MiB）。収支は AI 実行が約310MiB、
+画像配信が上限約40MiB（同時4件に有界化済み）で、**合計約350MiB・余裕（ヘッドルーム）は
+約34MiB** です（384 − 350。収支の内訳は `docs/design.md` §13.5。メモリ量はすべて MiB 表記で統一）。
+画像配信は同時実行数を制限しているため閲覧者数に比例しませんが、**ヘッドルームは 34MiB と薄く**、
+超過すると api コンテナが OOM Kill され、`restart: unless-stopped` で無言復帰するため、
+症状は「チェックがときどき処理中のまま」としてしか現れません。
+
+> **ホスト全体のメモリ指標では検知できません。** api の上限は自身の cgroup 512MiB ですが、
+> EC2 は `t3.medium`（4GiB）です。api が上限で OOM されてもホスト全体では十数%にすぎず、
+> `mem_used_percent`（`CWAgent` 名前空間・`InstanceId` 次元）を何%に設定しても発火しません。
+> また CloudWatch Container Insights は ECS / EKS 等が対象で、**素の Docker on EC2（本構成）は
+> サポート外**です。コンテナ粒度の値を自分で発行する必要があります。
+>
+> **メモリ使用率の監視だけでは足りません。** 超過は数秒〜十数秒の瞬間バーストで起き、
+> OOM Kill 後は再起動で使用量がリセットされるため、点サンプルには痕跡が残りません。
+> **確実な信号は「コンテナが再起動したこと」そのもの**なので、再起動回数も併せて発行します。
+
+#### 8-3-1. EC2 に AWS CLI を導入する
+
+ローカル（PowerShell）から接続します。
+
+```powershell
+ssh -i "$HOME\.ssh\undeux-ec2" ubuntu@$Ec2Ip
+```
+
+以降は **EC2 上（bash）** で実行します。
+
+```bash
+sudo snap install aws-cli --classic --channel=v2/stable
+aws --version   # 確認（/snap/bin/aws にインストールされる）
+exit
+```
+
+#### 8-3-2. EC2 にメトリクス発行権限（IAM インスタンスプロファイル）を付与する
+
+ステップ3-3 の `run-instances` ではロールを付けていないため、ここで作成して後付けします。
+権限は本用途の名前空間に限定します（最小権限の原則）。**ローカル（PowerShell）** で実行します。
+
+> **このステップに必要な操作権限:** ステップ0で作業用 IAM ユーザーの権限を EC2・RDS に絞った場合、
+> ここで `AccessDenied` になります。以下を追加で付与してください。
+> `iam:CreateRole` / `iam:PutRolePolicy` / `iam:CreateInstanceProfile` /
+> `iam:AddRoleToInstanceProfile` / `ec2:AssociateIamInstanceProfile`、および
+> **`iam:PassRole`**（対象リソース `arn:aws:iam::<アカウントID>:role/undeux-ec2-metrics`）。
+> `iam:PassRole` は EC2 権限には含まれず、これが無いと最終行の associate だけが失敗します。
+
+```powershell
+# 信頼ポリシー（EC2 がこのロールを引き受けられるようにする）
+'{"Version":"2012-10-17","Statement":[{"Effect":"Allow","Principal":{"Service":"ec2.amazonaws.com"},"Action":"sts:AssumeRole"}]}' | Set-Content -Path trust.json -NoNewline
+# 許可ポリシー（UndeuxSales 名前空間への PutMetricData のみ）
+'{"Version":"2012-10-17","Statement":[{"Effect":"Allow","Action":"cloudwatch:PutMetricData","Resource":"*","Condition":{"StringEquals":{"cloudwatch:namespace":"UndeuxSales"}}}]}' | Set-Content -Path metrics-policy.json -NoNewline
+
+aws iam create-role --role-name undeux-ec2-metrics --assume-role-policy-document file://trust.json
+aws iam put-role-policy --role-name undeux-ec2-metrics --policy-name PutUndeuxMetrics --policy-document file://metrics-policy.json
+# インスタンスプロファイル（EC2 へアタッチできる入れ物。ロールとは別に作成が必要）
+aws iam create-instance-profile --instance-profile-name undeux-ec2-metrics
+aws iam add-role-to-instance-profile --instance-profile-name undeux-ec2-metrics --role-name undeux-ec2-metrics
+Start-Sleep -Seconds 10   # プロファイル作成の反映待ち（IAM の伝播は保証されないため、
+#   次行が InvalidParameterValue で失敗したら数十秒おいて再実行する）
+aws ec2 associate-iam-instance-profile --instance-id $InstanceId --iam-instance-profile Name=undeux-ec2-metrics
+
+# 一時ファイルを残さない（内容は機密ではないが、作業ディレクトリを汚さない）
+Remove-Item trust.json, metrics-policy.json
+```
+
+> **再実行した場合:** `create-role` / `create-instance-profile` / `add-role-to-instance-profile` は
+> 2回目以降 `EntityAlreadyExists`（または `LimitExceeded`）で失敗しますが、**すでに目的の状態に
+> なっているため無視して構いません**。`put-role-policy` と `associate-iam-instance-profile` は
+> 上書き・再関連付けなので何度実行しても安全です。関連付け済みかどうかは
+> `aws ec2 describe-iam-instance-profile-associations --filters Name=instance-id,Values=$InstanceId`
+> で確認できます。
+
+#### 8-3-3. メトリクスを発行する（EC2 上で cron 登録）
+
+`docker stats` の `MemPerc` はコンテナの上限（512MiB）に対する比率です。
+あわせて、前回実行からの**再起動回数の増分**を発行します。
+
+```powershell
+ssh -i "$HOME\.ssh\undeux-ec2" ubuntu@$Ec2Ip
+```
+
+以降は **EC2 上（bash）** で実行します。以下はそのまま貼り付けてください
+（ヒアドキュメントの終端 `EOF` は行頭から始める必要があります）。
+
+```bash
+sudo tee /usr/local/bin/undeux-api-mem.sh > /dev/null <<'EOF'
+#!/usr/bin/env bash
+set -euo pipefail
+# cron の PATH は最小限（/usr/bin:/bin）のため、docker / aws の場所を明示的に足す
+export PATH="/usr/local/bin:/snap/bin:$PATH"
+# デプロイ先はワークフローが scp する ~/undeux-sales-suite（ユーザーは EC2_USER）
+cd "$HOME/undeux-sales-suite/infra/aws"
+# コンテナ名は compose のプロジェクト名に依存するため、ID で解決する（名前をハードコードしない）
+cid="$(docker compose -f docker-compose.ec2.yml --env-file .env ps -q api)"
+[ -n "$cid" ] || exit 0
+
+pct="$(docker stats --no-stream --format '{{.MemPerc}}' "$cid" | tr -d '%')"
+# 再起動直後は docker stats が "--" を返す。そのまま --value に渡すと毎分エラーになるため、
+# 数値でなければメモリ率は諦める（再起動メトリクスは下で必ず先に発行される）。
+case "$pct" in ''|*[!0-9.]*) pct="" ;; esac
+
+# 再起動回数の増分（OOM Kill の確実な信号。値そのものではなく差分を出す）
+now="$(docker inspect --format '{{.RestartCount}}' "$cid")"
+state="$HOME/.undeux-api-restarts"
+# 「初回（state なし）」と「破損（state はあるが空・非数値）」を区別する。
+# 破損は本来 OOM が起きていたかもしれない状態であり、prev を now に寄せると
+# 増分が 0 になって信号が無言で消える。下の書込方針（過大報告に倒す）と揃え、
+# 破損時は prev=0 として累計を報告し、アラームを鳴らす側へ倒す。
+if [ -f "$state" ]; then
+  prev="$(cat "$state" 2>/dev/null || true)"
+  case "$prev" in ''|*[!0-9]*) prev=0 ;; esac   # 破損 → 過大報告
+else
+  prev="$now"                                   # 初回 → 増分 0
+fi
+if [ "$now" -ge "$prev" ]; then delta=$(( now - prev )); else delta=0; fi
+
+# IMDSv2 のトークンはリージョン・インスタンスID の双方で使うため一度だけ取得する
+# IMDS はリンクローカル宛だが、経路が DROP されると応答が返らない。cron で毎分起動するため
+# タイムアウトを付けてプロセスの滞留を防ぐ（到達不能なら curl が非0で終了し set -e で止まる）。
+imds_token="$(curl -s --connect-timeout 2 --max-time 5 -X PUT \
+  http://169.254.169.254/latest/api/token \
+  -H 'X-aws-ec2-metadata-token-ttl-seconds: 60')"
+imds() { curl -s --connect-timeout 2 --max-time 5 \
+  -H "X-aws-ec2-metadata-token: $imds_token" \
+  "http://169.254.169.254/latest/meta-data/$1"; }
+
+# AWS CLI は「リージョン」を IMDS から自動解決しない。8-3-2 のインスタンスプロファイルが
+# 供給するのは資格情報のみで、リージョンは別系統の設定値である。未設定だと
+# put-metric-data が毎回 "You must specify a region." で失敗し、メトリクスが1件も
+# 発行されない＝再起動アラームが永久に INSUFFICIENT_DATA となり OOM を検知できない。
+# AZ 名の末尾1文字を落としてリージョンを得る方式は AWS SDK 本体
+# （botocore の InstanceMetadataRegionFetcher）と同一で、IMDS の版差に影響されない。
+az="$(imds placement/availability-zone)"
+export AWS_DEFAULT_REGION="${az%[a-z]}"
+case "$AWS_DEFAULT_REGION" in
+  ''|*[!a-z0-9-]*)
+    echo "IMDS からリージョンを取得できませんでした（取得値: '$az'）。" >&2
+    exit 1 ;;
+esac
+iid="$(imds instance-id)"
+
+# 再起動の増分を先に発行し、成功してから state を進める。
+# 逆順（state を先に進める）だと、発行が一度でも失敗した時点で増分が消費済みになり、
+# 次回以降は delta=0 に戻る＝OOM の信号が恒久的に失われる（set -e で途中終了するため）。
+aws cloudwatch put-metric-data --namespace UndeuxSales \
+  --metric-name ApiContainerRestarts --unit Count --value "$delta" \
+  --dimensions InstanceId="$iid"
+# アトミックに置き換える。直接リダイレクトすると書込失敗時に 0 バイトのファイルが残るが、
+# この方式なら失敗時は旧値が残り、次回は同じ増分を再送する（過小報告ではなく過大報告に倒す）。
+printf '%s' "$now" > "$state.tmp" && mv -f "$state.tmp" "$state"
+
+# メモリ率は時系列の点サンプルであり、失敗しても次の周期で回復するため後段でよい
+if [ -n "$pct" ]; then
+  aws cloudwatch put-metric-data --namespace UndeuxSales \
+    --metric-name ApiContainerMemoryPercent --unit Percent --value "$pct" \
+    --dimensions InstanceId="$iid"
+fi
+EOF
+```
+
+続けて、実行権限の付与・動作確認・cron 登録を行います。
+
+```bash
+sudo chmod +x /usr/local/bin/undeux-api-mem.sh
+# 動作確認（エラーが出ないこと。出たら権限・CLI 導入を見直す）
+/usr/local/bin/undeux-api-mem.sh && echo OK
+# 1分間隔で発行（瞬間バーストを取りこぼさないため）。
+# 既存の同一エントリを除いてから足すので、再実行しても重複登録されない（原則2: 冪等性）。
+( crontab -l 2>/dev/null | grep -Fv '/usr/local/bin/undeux-api-mem.sh'
+  echo "* * * * * /usr/local/bin/undeux-api-mem.sh" ) | crontab -
+crontab -l | grep undeux-api-mem   # 1行だけ表示されることを確認
+exit
+```
+
+#### 8-3-4. アラームを設定する
+
+**ローカル（PowerShell）** で実行します。
+
+```powershell
+# (A) 再起動の検知（OOM Kill の確実な信号）。1回でも起きたら通知する
+aws cloudwatch put-metric-alarm `
+  --alarm-name "undeux-api-restart" `
+  --namespace UndeuxSales --metric-name ApiContainerRestarts `
+  --dimensions Name=InstanceId,Value=$InstanceId `
+  --statistic Sum --period 300 --evaluation-periods 1 `
+  --threshold 0 --comparison-operator GreaterThanThreshold `
+  --treat-missing-data notBreaching `
+  --alarm-actions $SnsTopicArn --ok-actions $SnsTopicArn
+
+# (B) メモリ逼迫の予兆。GC ハードリミット（上限の75%）に達したら通知する
+aws cloudwatch put-metric-alarm `
+  --alarm-name "undeux-api-memory" `
+  --namespace UndeuxSales --metric-name ApiContainerMemoryPercent `
+  --dimensions Name=InstanceId,Value=$InstanceId `
+  --statistic Maximum --period 60 --evaluation-periods 2 `
+  --threshold 75 --comparison-operator GreaterThanThreshold `
+  --treat-missing-data breaching `
+  --alarm-actions $SnsTopicArn --ok-actions $SnsTopicArn
+```
+
+> - (A) は**発生の検知**（`Sum > 0`）、(B) は**予兆の検知**です。閾値 75% は GC ヒープ
+>   ハードリミット（512MiB の 75%）と同じ比率にしています。85% では手遅れになります。
+>   なお発行している値は**コンテナの RSS ／ 上限**であり、GC のマネージドヒープ使用率ではありません
+>   （RSS はマネージドヒープを含む上位集合）。そのため実際にはハードリミット到達より**早めに**
+>   発火します（安全側）。
+> - (B) の `--treat-missing-data breaching` は、**発行が止まったこと自体を検知する**ためです
+>   （既定の `missing` では、スクリプトが壊れてもアラームは無通知のまま `INSUFFICIENT_DATA` に
+>   留まり、「監視できている」という誤解を招きます）。デプロイ中の一時的な欠測で鳴った場合は
+>   `--ok-actions` の復旧通知で収束を確認できます。
+
+#### 8-3-5. OOM だったかを事後確認する
+
+```powershell
+ssh -i "$HOME\.ssh\undeux-ec2" ubuntu@$Ec2Ip
+```
+
+以降は **EC2 上（bash）** で実行します。
+
+```bash
+cd ~/undeux-sales-suite/infra/aws
+# 再起動回数（増えていれば再起動が発生している）
+docker inspect --format '{{.RestartCount}}' \
+  "$(docker compose -f docker-compose.ec2.yml --env-file .env ps -q api)"
+# OOM だったかはカーネルログで判断する（要 sudo）
+sudo dmesg -T | grep -i 'memory cgroup out of memory' | tail
+sudo journalctl -k --since '-1h' | grep -i 'out of memory' | tail
+```
+
+> `docker inspect` の `.State.OOMKilled` と `.State.ExitCode` は、**いずれもコンテナ再起動時に
+> リセットされます**（moby の `setRunning()` が両方を初期化）。無言復帰した後の事後確認には
+> 使えないため、判断は `RestartCount` の増加とカーネルログで行ってください。
+> Ubuntu 24.04 は `kernel.dmesg_restrict=1` が既定のため、`dmesg` には `sudo` が必要です。
+
 ---
 
 ## 2回目以降のデプロイ
@@ -395,7 +758,7 @@ GitHub の **Actions** タブの「Run workflow」ボタンからも実行でき
 | `EC2_HOST` | EC2 の固定IP | ステップ3-4 |
 | `EC2_USER` | `ubuntu` | 固定 |
 | `EC2_SSH_KEY` | SSH秘密鍵（`undeux-ec2` ファイル全文） | ステップ3-1 |
-| `ANTHROPIC_API_KEY` | Anthropic API キー（AIチャット用・任意。未登録時はチャットのみ「AI未設定」） | Anthropic Console |
+| `ANTHROPIC_API_KEY` | Anthropic API キー（AIチャット・副資材チェック用・任意。未登録時は該当機能のみ「AI未設定」） | Anthropic Console |
 
 ---
 
@@ -412,6 +775,12 @@ GitHub の **Actions** タブの「Run workflow」ボタンからも実行でき
 | `deploy-frontend` が `Failed to authenticate` で失敗 | firebase-tools は CI で `GOOGLE_APPLICATION_CREDENTIALS` を取りこぼす既知不具合があるため（firebase-tools#10726 等）、本ワークフローは**公式アクション `FirebaseExtended/action-hosting-deploy`（channelId: live）**で SA 認証を行う。なお残る可能性は: ①`FIREBASE_SERVICE_ACCOUNT` が空/不正JSON → 鍵JSONの全文を登録し直す（ステップ1-4。事前検証ステップが `project_id`/`client_email` をログ出力） ②`project_id` 不一致の警告 → 鍵と `FIREBASE_PROJECT_ID` のプロジェクトを揃える ③検証は通るが失敗 → SA に **Firebase Hosting 管理者** ロール、対象プロジェクトで **Firebase Hosting API** 有効化を確認 |
 | ログインできない | Firebase の Authentication でメール/パスワードが有効か、利用者が登録済みか確認 |
 | 取込が 403 になる | 取込する利用者に `role=admin` カスタムクレームが必要（`infra/README.md` 参照） |
+| 副資材チェックが「処理中」のまま進まない | AI 実行はバックグラウンドタスクで動くため、**デプロイ・コンテナ再起動・プロセス異常終了で実行が失われる**と処理中のまま残る（永続キューを持たない設計判断。`docs/design.md` §13.6）。滞留判定の時間が経過すると詳細画面に再実行ボタンが出るので、利用者に再実行してもらう。デプロイ直後に複数件が該当する場合は、実行中だったチェックが巻き込まれた可能性が高い |
+| 副資材チェックの**実行**が 429 になる（`UNDX-REQ-009`。新規登録・再実行時） | 実行中＋待機中のチェックが上限（4件）に達している。AI 呼出は同時1件に直列化しているため（メモリ上限が根拠。`docs/design.md` §13.5）、先行分の完了を待ってから再試行する。恒常的に発生する場合は api コンテナのメモリ上限引上げを検討する（同時実行数だけを増やすと OOM の原因になる） |
+| 副資材チェックの**画像表示**が 429 になる（`UNDX-REQ-009`。結果詳細画面で枠が「取得に失敗しました」になる） | 上と同じコードだが**別の要因**。画像配信は同時4件に制限しており（`MaxConcurrentImageDownloads`）、順番待ちが30秒を超えると 429 になる。枠は応答の書き出し完了まで保持するため、本文の引き取りが遅い経路があると1枠を長く占有する（`docs/design.md` §13.5 で受容したトレードオフ）。利用者は画像ギャラリーの「画像を再取得」ボタンで復帰できる。恒常的に発生する場合は同時閲覧者数を確認し、上限引上げはメモリ収支（§13.5）を再計算してから行う |
+| 監視スクリプトが `You must specify a region.` で失敗（ステップ8-3-3 の動作確認で `OK` が出ない） | AWS CLI はリージョンを IMDS から自動解決しない（インスタンスプロファイルが供給するのは資格情報のみ）。スクリプト内で `AWS_DEFAULT_REGION` を IMDS の `placement/availability-zone` から確定させているので、この行が欠けていないか確認する。**何も出力されずに終了する場合**（IMDS へ到達できず curl 自体が失敗）も含め、IMDS への到達性（`curl -sX PUT http://169.254.169.254/latest/api/token -H 'X-aws-ec2-metadata-token-ttl-seconds: 60'` がトークンを返すか）を確認する |
+| 監視スクリプトが `AccessDenied`（`cloudwatch:PutMetricData`）で失敗 | ステップ8-3-2 のインスタンスプロファイルが関連付いていない。`aws ec2 describe-iam-instance-profile-associations --filters Name=instance-id,Values=$InstanceId` で確認し、未関連なら associate を再実行する（IAM の伝播に数十秒かかることがある） |
+| CloudWatch に `UndeuxSales` のメトリクスが出ない | まず EC2 上で `/usr/local/bin/undeux-api-mem.sh && echo OK` を手で実行してエラーを確認する（上2行が該当しやすい）。cron 登録は `crontab -l \| grep undeux-api-mem` で1行あることを確認する。api コンテナが停止していると発行しない仕様（`ps -q api` が空なら正常終了する） |
 | EC2 上のログを見たい | `ssh -i "$HOME\.ssh\undeux-ec2" ubuntu@<EC2IP>` で接続し `cd undeux-sales-suite/infra/aws; docker compose -f docker-compose.ec2.yml --env-file .env logs api` |
 | `deploy-backend` の SSH 認証が失敗する | `EC2_SSH_KEY` シークレットを `Get-Content -Raw` で登録し直す（改行コード混入時の対処） |
 | `puttygen` で `unrecognised option '-O'` エラー | Windows の `puttygen.exe`（GUI 版）はコマンドライン変換に非対応。**付録A** の GUI 手順で `.ppk` を変換する |

@@ -884,6 +884,7 @@ async function downloadFile(item: KnowledgeItem): Promise<void> {
             <!-- ダイアログ内エラー -->
             <div v-if="dialogError" class="rounded-lg bg-red-50 p-3 text-sm text-red-700">
               <p class="font-medium">[{{ dialogError.errorCode }}] {{ dialogError.summary }}</p>
+              <p v-if="dialogError.detail" class="text-xs text-red-600">{{ dialogError.detail }}</p>
               <p v-if="dialogError.remedy" class="text-xs text-red-500">{{ dialogError.remedy }}</p>
               <ul
                 v-if="dialogError.details && dialogError.details.length > 0"
@@ -919,6 +920,7 @@ async function downloadFile(item: KnowledgeItem): Promise<void> {
             class="rounded-lg bg-red-50 p-3 text-sm text-red-700"
           >
             <p class="font-medium">[{{ dialogError.errorCode }}] {{ dialogError.summary }}</p>
+            <p v-if="dialogError.detail" class="text-xs text-red-600">{{ dialogError.detail }}</p>
             <p v-if="dialogError.remedy" class="text-xs text-red-500">{{ dialogError.remedy }}</p>
           </div>
         </template>

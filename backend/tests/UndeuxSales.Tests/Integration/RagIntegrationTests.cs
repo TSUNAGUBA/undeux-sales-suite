@@ -417,4 +417,12 @@ public sealed class FakeAiChatClient : IAiChatClient
     public Task<string> DescribeImageAsync(
         byte[] imageData, string mediaType, string? hint, CancellationToken cancellationToken)
         => Task.FromResult("テスト画像の説明");
+
+    public Task<string> AnalyzeImagesAsync(
+        IReadOnlyList<AiImageInput> images, string systemPrompt, string userPrompt,
+        int maxTokens, CancellationToken cancellationToken)
+        => Task.FromResult("""
+            { "findings": [ { "category": "content", "severity": "pass",
+                "title": "テスト確認", "detail": "テスト応答", "suggestion": null, "evidence": null } ] }
+            """);
 }

@@ -294,6 +294,20 @@ public sealed class ProductMasterRepository
         var skuImageRows = (await connection.QueryAsync<MasterProductSkuRawRow>(
             new CommandDefinition(skuSql, parameters, commandTimeout: QueryCommandTimeoutSeconds, cancellationToken: cancellationToken))).ToList();
 
+        // 付属情報（m_product_attachment）。未登録の商品は null（下位互換の追加フィールド）。
+        var attachment = await connection.QuerySingleOrDefaultAsync<Core.SubsidiaryCheck.MasterProductAttachment>(
+            new CommandDefinition("""
+                SELECT composition,
+                       origin_country,
+                       care_labels,
+                       color_fastness_note,
+                       display_order,
+                       quality_notes,
+                       updated_at
+                FROM m_product_attachment
+                WHERE product_id = @productId;
+                """, parameters, commandTimeout: QueryCommandTimeoutSeconds, cancellationToken: cancellationToken));
+
         // 同一 SKU（unit_cd × color × size）に複数の画像（image_index）が紐づくケースを集約する。
         var skus = skuImageRows
             .GroupBy(r => (r.UnitCd, r.ColorName, r.SizeName))
@@ -317,7 +331,7 @@ public sealed class ProductMasterRepository
             })
             .ToList();
 
-        return new MasterProductDetail(ToSummary(head), skus);
+        return new MasterProductDetail(ToSummary(head), skus, attachment);
     }
 
     private static MasterProductSummary ToSummary(MasterProductRawRow row) => new(

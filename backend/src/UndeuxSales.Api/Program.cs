@@ -32,11 +32,15 @@ builder.Services.Configure<ApiBehaviorOptions>(options =>
                 $"{entry.Key}: {string.Join(" / ", entry.Value!.Errors.Select(e => e.ErrorMessage))}")
             .ToList();
 
+        // detail は summary（「リクエストパラメータが不正です。」）と重複しない情報にする。
+        // 同義の文を並べると、detail を表示する UI で同じ内容が2行続く。
+        // フィールド別の内訳は details が持つため、ここは件数の集計に留める
+        // （ImportsController の UNDX-IMP-004 と同じ詰め方）。
         var apiError = new ApiError(
             ErrorCodes.InvalidRequest.Code,
             ErrorCodes.InvalidRequest.Summary,
             ErrorCodes.InvalidRequest.Remedy,
-            "リクエストパラメータの検証に失敗しました。",
+            $"{errors.Count} 件のパラメータが検証に失敗しました。",
             errors);
 
         return new BadRequestObjectResult(apiError);

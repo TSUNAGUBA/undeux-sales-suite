@@ -62,6 +62,58 @@ public static class ErrorCodes
         "取込ファイルのサイズが上限を超えています。",
         "ファイルを分割するか、上限内のサイズにしてアップロードしてください。");
 
+    // REQ-004〜007（副資材チェックの画像検証）:
+    //   枚数・サイズ等の上限値の SoT は SubsidiaryCheckService の定数
+    //   （MaxInstructionImages / MaxTagImages / MaxImageSizeBytes）。
+    //   上限値を変更する場合は、以下のメッセージ文言も同時に更新すること。
+    // REQ-008（アップロード共通）:
+    //   transport 層の上限（RequestSizeLimit / MultipartBodyLengthLimit）超過は
+    //   ExceptionHandlingMiddleware が全アップロード API 共通で本コードへマップする。
+    //   アプリ層の合計サイズ超過で本コードを投げているのは副資材チェックのみ
+    //   （週次取込は UNDX-IMP-005、RAG 原本登録はアプリ層の合計検証を持たない）。
+    //   いずれにせよ Summary / Remedy はエンドポイント非依存の汎用文言にすること
+    //   （画像固有・CSV 固有の誘導は各呼出側が AppException の detail で補う）。
+    public static readonly ErrorCodeInfo SubsidiaryImageMissing = new(
+        "UNDX-REQ-004",
+        "副資材チェックの画像が指定されていません。",
+        "指示書画像（1〜3枚）とタグ画像（1〜10枚）の両方をアップロードしてください。");
+
+    public static readonly ErrorCodeInfo SubsidiaryImageInvalidFormat = new(
+        "UNDX-REQ-005",
+        "副資材チェックの画像形式が不正です（JPEG / PNG のみ対応）。",
+        "画像を JPEG または PNG 形式に変換してからアップロードし直してください。");
+
+    public static readonly ErrorCodeInfo SubsidiaryImageTooLarge = new(
+        "UNDX-REQ-006",
+        "副資材チェックの画像サイズが上限（1枚あたり5MB）を超えています。",
+        "画像を縮小・圧縮して5MB以下にしてからアップロードし直してください。");
+
+    public static readonly ErrorCodeInfo SubsidiaryImageTooMany = new(
+        "UNDX-REQ-007",
+        "副資材チェックの画像枚数が上限を超えています。",
+        "指示書画像は3枚以内、タグ画像は10枚以内に減らしてアップロードし直してください。");
+
+    public static readonly ErrorCodeInfo UploadTotalTooLarge = new(
+        "UNDX-REQ-008",
+        "アップロードの合計サイズが上限を超えています。",
+        "ファイルのサイズ・件数を減らして再試行してください。");
+
+    // REQ-009（副資材チェックの同時実行の上限。混雑による一時的な拒否）:
+    //   次の2経路で使う。いずれもピークメモリを有界化するための構造的な上限であり、
+    //   「待てば復帰する」という性質が共通する（恒久的な失敗ではない）。
+    //     1. AI チェックの受付上限 — 実行中＋バックグラウンド待機中の総数が
+    //        SubsidiaryCheckService.MaxConcurrentAiChecks に達しているとき（新規登録・rerun）
+    //     2. 画像配信の順番待ち超過 — 同時取得数が
+    //        SubsidiaryCheckService.MaxConcurrentImageDownloads に達した状態が
+    //        ImageDownloadQueueTimeout を超えたとき
+    //   上限値の SoT はいずれも同クラスの定数。REQ-001〜008 と衝突しない次番として 009 を採番した。
+    //   複数経路で共用するため、Summary / Remedy は REQ-008 と同じくエンドポイント非依存の
+    //   汎用文言にする（どちらの経路かは各呼出側が AppException の detail で補う）。
+    public static readonly ErrorCodeInfo AiCheckBusy = new(
+        "UNDX-REQ-009",
+        "副資材チェックが混み合っています（同時に実行・取得できる上限に達しています）。",
+        "しばらく待ってから再試行してください。");
+
     public static readonly ErrorCodeInfo DatabaseError = new(
         "UNDX-DATA-001",
         "データベース処理でエラーが発生しました。",
@@ -82,6 +134,11 @@ public static class ErrorCodes
         "指定されたナレッジ（またはマスタ行・原本ファイル）が見つかりません。",
         "一覧を再読み込みして最新の状態を確認してください（他のユーザーが削除した可能性があります）。");
 
+    public static readonly ErrorCodeInfo SubsidiaryCheckNotFound = new(
+        "UNDX-DATA-005",
+        "指定された副資材チェック（または画像）が見つかりません。",
+        "一覧を再読み込みして最新の状態を確認してください。");
+
     public static readonly ErrorCodeInfo AiCallFailed = new(
         "UNDX-AI-001",
         "AI 応答の生成に失敗しました（LLM 呼出エラー/タイムアウト）。",
@@ -91,6 +148,12 @@ public static class ErrorCodes
         "UNDX-AI-008",
         "AI 機能が未設定です（Anthropic API キーが構成されていません）。",
         "運営者が環境変数 Anthropic__ApiKey（ANTHROPIC_API_KEY）を設定してから利用してください。");
+
+    // UNDX-AI-002〜007 は将来機能向けに DD-04（AI/RAG エージェント詳細設計）で予約済みのため 009 を採番。
+    public static readonly ErrorCodeInfo AiResponseUnparseable = new(
+        "UNDX-AI-009",
+        "AI 応答の解析に失敗しました（チェック結果の JSON を読み取れません）。",
+        "再実行してください。繰り返し発生する場合はシステム管理者に連絡してください。");
 
     public static readonly ErrorCodeInfo Unexpected = new(
         "UNDX-SYS-001",
@@ -109,12 +172,20 @@ public static class ErrorCodes
         ImportFormatInvalid,
         ImportRowInvalid,
         ImportFileTooLarge,
+        SubsidiaryImageMissing,
+        SubsidiaryImageInvalidFormat,
+        SubsidiaryImageTooLarge,
+        SubsidiaryImageTooMany,
+        UploadTotalTooLarge,
+        AiCheckBusy,
         DatabaseError,
         ProductNotFound,
         FlagNotFound,
         KnowledgeNotFound,
+        SubsidiaryCheckNotFound,
         AiCallFailed,
         AiNotConfigured,
+        AiResponseUnparseable,
         Unexpected,
     };
 }

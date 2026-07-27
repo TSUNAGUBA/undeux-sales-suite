@@ -126,7 +126,7 @@ public sealed class AnthropicAiClient : IAiChatClient
                             Source = new Base64ImageSource
                             {
                                 Data = Convert.ToBase64String(imageData),
-                                MediaType = mediaType == "image/png"
+                                MediaType = string.Equals(mediaType, "image/png", StringComparison.OrdinalIgnoreCase)
                                     ? MediaType.ImagePng
                                     : MediaType.ImageJpeg,
                             },
@@ -147,9 +147,92 @@ public sealed class AnthropicAiClient : IAiChatClient
         }
         catch (Exception ex) when (ex is not OperationCanceledException)
         {
+            // SDK の生メッセージ（内部文言）はログのみに残し、ユーザー向け詳細は汎用文言にする。
             _logger.LogWarning(ex, "画像説明の生成に失敗しました（モデル: {Model}）", _options.VisionModel);
-            throw new AppException(ErrorCodes.AiCallFailed, StatusCodes502, ex.Message);
+            throw new AppException(ErrorCodes.AiCallFailed, StatusCodes502,
+                "AI 呼出に失敗しました。時間をおいて再試行してください。");
         }
+    }
+
+    public async Task<string> AnalyzeImagesAsync(
+        IReadOnlyList<AiImageInput> images,
+        string systemPrompt,
+        string userPrompt,
+        int maxTokens,
+        CancellationToken cancellationToken)
+    {
+        var client = RequireClient();
+
+        // ラベル（テキスト）→画像 の順に並べ、末尾にチェック指示（userPrompt）を置く。
+        var content = new List<ContentBlockParam>();
+        foreach (var image in images)
+        {
+            if (!string.IsNullOrWhiteSpace(image.Label))
+            {
+                content.Add(new TextBlockParam { Text = image.Label });
+            }
+
+            content.Add(new ImageBlockParam
+            {
+                Source = new Base64ImageSource
+                {
+                    Data = Convert.ToBase64String(image.Data),
+                    // media type は RFC 9110 上 case-insensitive で、副資材チェックの
+                    // 入力検証も OrdinalIgnoreCase で受理する（"IMAGE/PNG" 等）。完全一致で
+                    // 比較すると PNG を JPEG と宣言して送ることになり、Messages API に
+                    // 拒否されて恒久的に失敗する（再実行しても保存済みの値は変わらない）。
+                    MediaType = string.Equals(image.MediaType, "image/png", StringComparison.OrdinalIgnoreCase)
+                        ? MediaType.ImagePng
+                        : MediaType.ImageJpeg,
+                },
+            });
+        }
+
+        content.Add(new TextBlockParam { Text = userPrompt });
+
+        // チェック精度優先で VisionModel ではなくメインモデル（_options.Model）を使用する。
+        var parameters = new MessageCreateParams
+        {
+            Model = _options.Model,
+            MaxTokens = maxTokens,
+            System = new List<TextBlockParam> { new() { Text = systemPrompt } },
+            Messages =
+            [
+                new MessageParam
+                {
+                    Role = Role.User,
+                    Content = content,
+                },
+            ],
+        };
+
+        Message response;
+        try
+        {
+            response = await client.Messages.Create(parameters, cancellationToken: cancellationToken);
+        }
+        catch (Exception ex) when (ex is not OperationCanceledException)
+        {
+            // SDK の生メッセージ（内部文言）はログのみに残し、ユーザー向け詳細は汎用文言にする。
+            _logger.LogWarning(ex, "画像分析応答の生成に失敗しました（モデル: {Model}）", _options.Model);
+            throw new AppException(ErrorCodes.AiCallFailed, StatusCodes502,
+                "AI 呼出に失敗しました。時間をおいて再試行してください。");
+        }
+
+        if (response.StopReason == StopReason.MaxTokens)
+        {
+            // 出力上限で切り詰められた JSON は解析不能なため、解析前に明示メッセージで失敗させる。
+            _logger.LogWarning(
+                "画像分析応答が最大出力トークン（{MaxTokens}）で切り詰められました（モデル: {Model}）",
+                maxTokens, _options.Model);
+            throw new AppException(ErrorCodes.AiCallFailed, StatusCodes502,
+                "AI 応答が出力トークン上限で切り詰められました。画像の枚数を減らして再実行してください。");
+        }
+
+        var texts = response.Content
+            .Select(block => block.TryPickText(out var text) ? text.Text : null)
+            .Where(text => !string.IsNullOrEmpty(text));
+        return string.Join("\n", texts).Trim();
     }
 
     private const int StatusCodes502 = 502;

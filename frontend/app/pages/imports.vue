@@ -196,6 +196,9 @@ onMounted(loadHistory)
             <p class="font-medium">
               [{{ uploadError.errorCode }}] {{ uploadError.summary }}
             </p>
+            <p v-if="uploadError.detail" class="text-xs text-red-600">
+              {{ uploadError.detail }}
+            </p>
             <p v-if="uploadError.remedy" class="text-xs text-red-500">
               {{ uploadError.remedy }}
             </p>

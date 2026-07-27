@@ -257,7 +257,10 @@ public sealed class KnowledgeIngestionService
             scope, category, Normalize(businessTypeCode), Normalize(deptCode), Normalize(bizDomain));
         if (errors.Count > 0)
         {
-            throw new AppException(ErrorCodes.InvalidRequest, 400, errors[0], errors);
+            // detail に errors[0] を入れると、details（全件）の1行目と同じ文が2行続く。
+            // detail は集計に留め、内訳は details に委ねる（ImportsController と同じ流儀）。
+            throw new AppException(
+                ErrorCodes.InvalidRequest, 400, $"{errors.Count} 件の分類エラーがあります。", errors);
         }
     }
 
