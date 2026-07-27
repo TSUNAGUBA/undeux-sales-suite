@@ -355,8 +355,9 @@ async function runCheck(): Promise<void> {
     for (const image of tagImages.value) {
       formData.append('tagImages', image.file, image.file.name)
     }
-    // AI 失敗時もサーバは failed 状態の Detail を返す（記録は残る）ため、
-    // 成功・AI失敗いずれも結果詳細へ遷移して結果（またはエラーと再実行導線）を見せる。
+    // POST は登録（レコード＋画像の永続化）だけを同期で行い、status=processing の Detail を
+    // 即座に返す（AI 実行はバックグラウンド。共用リバースプロキシのタイムアウト回避）。
+    // 結果詳細へ遷移し、そちらの自動ポーリングで completed / failed（＋再実行導線）を見せる。
     const detail = await post<SubsidiaryCheckDetail>('/api/subsidiary-check', formData)
     await navigateTo(`/subsidiary-check/${detail.summary.checkId}`)
   } catch (error) {
@@ -734,10 +735,10 @@ onMounted(() => {
         >
           <LoaderCircle v-if="submitting" class="h-4 w-4 animate-spin" />
           <Sparkles v-else class="h-4 w-4" />
-          {{ submitting ? 'AIチェック実行中…（数十秒かかることがあります）' : 'AIチェックを実行' }}
+          {{ submitting ? '登録中…' : 'AIチェックを実行' }}
         </button>
         <p v-if="!submitting" class="text-xs text-slate-400">
-          実行すると画像が保存され、完了後に結果詳細へ移動します。
+          実行すると画像が保存され、すぐに結果詳細へ移動します（AIチェックはバックグラウンドで実行され、結果は自動で表示されます）。
         </p>
       </div>
     </section>

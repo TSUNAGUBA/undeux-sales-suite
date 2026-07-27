@@ -1,3 +1,4 @@
+using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Logging;
 using UndeuxSales.Core;
 using UndeuxSales.Core.Rag;
@@ -13,10 +14,24 @@ public sealed record SubsidiaryCheckImageUpload(string FileName, string ContentT
 /// <summary>
 /// 副資材チェックのオーケストレーション。
 /// <para>
-/// フロー: 検証 → INSERT（processing。SoT への記録が先）→ AI 呼出 → 応答解析 → UPDATE（completed / failed）。
-/// AI 呼出・解析の失敗は例外にせず failed 記録＋エラー格納で握り、failed 状態の詳細を返す
+/// フロー: 検証 → 受付枠の予約 → INSERT（processing。SoT への記録が先）→ <b>即時応答</b> →
+/// （バックグラウンド）AI 呼出 → 応答解析 → UPDATE（completed / failed）。
+/// </para>
+/// <para>
+/// <b>非同期実行の根拠:</b> 公開経路の共用リバースプロキシ（nginx-proxy）のタイムアウトは約60秒で、
+/// AI 呼出（順番待ち最大30秒＋呼出最大120秒）を HTTP リクエスト内で待つと利用者には 504 が返る一方
+/// サーバ側は completed で確定し、失敗と誤認した再送が重複チェック・重複 AI コスト・重複画像を招く。
+/// そのため <c>POST /api/mart/rebuild</c>（mart 再構築）と同じ
+/// 「実行権を確定して即応答 → 本体はリクエストから切り離したバックグラウンドタスク →
+/// status で状態管理 → フロントがポーリング → 滞留した processing は孤児として再実行許可」
+/// 構造に揃える（原則3。docs/star-schema-design.md「非同期実行・タイムアウトしない設計」）。
+/// </para>
+/// <para>
+/// AI 呼出・解析の失敗、AI 呼出タイムアウト、順番待ち超過、再実行準備（DB 読取）の失敗は
+/// すべて例外にせず failed 記録＋エラー格納に落とす
 /// （グレースフルデグラデーション・原則4。登録済み記録は残り、再実行（rerun）で回復できる）。
-/// キャンセル（OperationCanceledException）も failed 記録にしてから再 throw し、processing 孤児を残さない。
+/// バックグラウンドタスクごと消えるケース（プロセスクラッシュ）は processing のまま残るが、
+/// <see cref="ProcessingStaleAfter"/> 経過後の rerun で回復できる。
 /// </para>
 /// </summary>
 public sealed class SubsidiaryCheckService
@@ -62,7 +77,7 @@ public sealed class SubsidiaryCheckService
     /// processing のまま経過した場合に「孤児（プロセスクラッシュ等で結果が確定しないレコード）」と
     /// みなして再実行（rerun）を許可するまでの時間。基準時刻は started_at（最後の AI 実行開始日時）。
     /// <para>
-    /// 根拠: 1リクエストの processing 滞留時間は
+    /// 根拠: 1回のバックグラウンド実行の processing 滞留時間は
     /// 「セマフォ待機（<see cref="AiCallQueueTimeout"/> = 30秒で打切り）
     /// ＋ AI 呼出（<see cref="AiCallTimeout"/> = 120秒で打切り）＋ 記録処理（DB 更新・秒オーダ）」で
     /// <b>有界</b>であり、上限は実質3分以内。待機超過・呼出タイムアウトはいずれも failed 記録で
@@ -84,7 +99,7 @@ public sealed class SubsidiaryCheckService
     /// <summary>
     /// AI 呼出1回のタイムアウト（120秒）。
     /// 根拠: 最大13枚の画像分析でも通常応答は数十秒であり、ネットワーク断・API 側の張り付き等の
-    /// 異常時にリクエストスレッドと processing 状態が無期限に滞留するのを防ぐ余裕値。
+    /// 異常時にバックグラウンドタスクと processing 状態が無期限に滞留するのを防ぐ余裕値。
     /// </summary>
     private static readonly TimeSpan AiCallTimeout = TimeSpan.FromSeconds(120);
 
@@ -94,7 +109,7 @@ public sealed class SubsidiaryCheckService
     /// <b>メモリ収支（同時実行数を 1 にした根拠）:</b> api コンテナのメモリ上限は本番
     /// （infra/aws/docker-compose.ec2.yml）・ローカル（docker-compose.yml）とも 512m で、
     /// cgroup 制限下の .NET GC ヒープハードリミットは既定でその 75% ＝ 約 384MB。
-    /// 一方 AI 呼出中の1リクエストが同時に保持する量は、設計上許容された正常系の最大入力
+    /// 一方 AI 呼出中の1件（バックグラウンドタスク）が同時に保持する量は、設計上許容された正常系の最大入力
     /// （<see cref="MaxTotalImageBytes"/> = 20MB）で概算 <b>約100MB</b>:
     /// </para>
     /// <list type="bullet">
@@ -104,8 +119,9 @@ public sealed class SubsidiaryCheckService
     ///   <item><description>HTTP リクエストボディの UTF-8 直列化: 約 27MB</description></item>
     /// </list>
     /// <para>
-    /// 同時1件ならピークは 100MB ＋ ASP.NET Core のベースライン（約100〜150MB）＝ 約250MB で、
-    /// 384MB に対し十分な余裕がある。3並列では約300MB ＋ ベースラインでハードリミットに到達し、
+    /// 同時1件なら実行中のピークは 100MB ＋ ASP.NET Core のベースライン（約100〜150MB）＝ 約250MB で、
+    /// 384MB に対し余裕がある（待機中の画像バッファ分は <see cref="MaxConcurrentAiChecks"/> の
+    /// 収支に含めて評価している）。3並列では約300MB ＋ ベースラインでハードリミットに到達し、
     /// <b>正常系の入力で OOM → コンテナ再起動（全機能停止）</b>に至るため直列化する。
     /// 想定利用（日次数件〜10件）に対し同時1件で機能上の問題はない。
     /// スループットが不足する場合は、同時実行数を上げる前にコンテナのメモリ上限引上げ
@@ -113,19 +129,50 @@ public sealed class SubsidiaryCheckService
     /// </para>
     /// <para>
     /// AI 呼出部分のみを制限し、DB 操作はセマフォの外で行う（DB まで直列化しない）。
-    /// 待機は <see cref="AiCallQueueTimeout"/> で有界化し、待ち行列にバッファを抱えたまま
-    /// 滞留するリクエスト数も抑制する。
+    /// 待機時間は <see cref="AiCallQueueTimeout"/> で有界化する。ただしセマフォが制限するのは
+    /// <b>同時実行数だけで待機中の件数ではない</b>ため、待ち行列に画像バッファを抱えたまま滞留する
+    /// 件数は <see cref="MaxConcurrentAiChecks"/>（実行中＋待機中の総数の上限）で別途抑制する。
+    /// </para>
+    /// <para>
+    /// maxCount を 1 に明示する（<c>new SemaphoreSlim(1)</c> では上限が int.MaxValue になり、
+    /// 余分な Release が1回でも起きると「同時1件」という唯一のメモリ防御が無言で緩和される）。
+    /// 対称性が崩れた場合は <see cref="SemaphoreFullException"/> で即座に顕在化させる。
     /// </para>
     /// </summary>
-    private static readonly SemaphoreSlim AiCallSemaphore = new(1);
+    private static readonly SemaphoreSlim AiCallSemaphore = new(1, 1);
+
+    /// <summary>
+    /// 受け付ける AI チェックの総数（実行中＋バックグラウンド待機中）の上限。
+    /// <para>
+    /// <see cref="AiCallSemaphore"/> は AI 呼出の<b>同時実行数</b>のみを 1 に制限するが、
+    /// 順番待ちの件数は制限しない。画像バッファ（1件あたり最大
+    /// <see cref="MaxTotalImageBytes"/> = 20MB）は AI 実行前に確保済みのため、待機 K 件で
+    /// 約 20MB×K が滞留し、GC ヒープハードリミット（約384MB）を待ち行列側から突破しうる。
+    /// </para>
+    /// <para>
+    /// 実行中1件（AI 呼出中のピーク約100MB）＋待機3件（約20MB×3＝60MB）＝約160MB に
+    /// ASP.NET Core のベースライン（約100〜150MB）を加えても約310MB で、384MB に対し余裕がある
+    /// ため 4 とする。超過分は永続化・クレームの<b>前に</b> 429（<see cref="ErrorCodes.AiCheckBusy"/>）で
+    /// 拒否し、無駄なレコード・画像や「クレーム直後の failed」で記録を汚さない。
+    /// </para>
+    /// </summary>
+    public const int MaxConcurrentAiChecks = 4;
+
+    /// <summary>
+    /// 受付済み（実行中＋バックグラウンド待機中）の AI チェック件数。
+    /// 予約はリクエスト側（永続化・クレームの前）、解放はバックグラウンドタスクの終了時に行い、
+    /// 「受け付けてから実行が終わるまで」を漏れなく囲う。
+    /// </summary>
+    private static int _inFlightAiChecks;
 
     /// <summary>
     /// AI 呼出の順番待ち（セマフォ待機）の上限（30秒）。
-    /// 根拠: 待機を無制限にすると、画像バッファ（1件あたり約100MB）を保持したままのリクエストが
-    /// 無制限に積み上がり、同時実行数を絞ったメモリ保護（<see cref="AiCallSemaphore"/>）が
-    /// 待ち行列側から破られる。また processing の滞留時間が非有界になり、孤児判定
+    /// 根拠: 待機を無制限にすると、画像バッファ（1件あたり最大20MB）を保持したままの実行が
+    /// 長時間居座り、受付枠（<see cref="MaxConcurrentAiChecks"/>）が解放されず新規受付が
+    /// 429 で塞がり続ける。また processing の滞留時間が非有界になり、孤児判定
     /// （<see cref="ProcessingStaleAfter"/>）の根拠が成り立たなくなる。
-    /// 超過時は AI を呼ばずに failed 記録＋failed Detail で応答し、rerun で回復できる。
+    /// 超過時は AI を呼ばずに failed 記録に落とし、rerun で回復できる
+    /// （待機「件数」の上限は <see cref="MaxConcurrentAiChecks"/> が担う）。
     /// </summary>
     private static readonly TimeSpan AiCallQueueTimeout = TimeSpan.FromSeconds(30);
 
@@ -152,31 +199,58 @@ public sealed class SubsidiaryCheckService
     /// <summary>AI 呼出タイムアウトのテスト用オーバーライド（null＝<see cref="AiCallTimeout"/>）。</summary>
     internal static TimeSpan? AiCallTimeoutOverride;
 
+    /// <summary>
+    /// 再実行準備（商品情報・画像バイナリの DB 読取）に失敗を注入するテスト用フック
+    /// （null＝注入なし＝本番の挙動）。クレーム後の準備失敗が failed 記録に落ちること
+    /// （＝無保護区間がないこと）を、実際の DB 障害を起こさずに検証するためだけに用意している。
+    /// </summary>
+    internal static Func<Guid, Exception?>? RerunPrepareFailureOverride;
+
     /// <summary>実行スロットを即時取得できたか（テストから待ち行列状態を作るために使う）。</summary>
     internal static Task<bool> TryOccupyAiSlotAsync() => AiCallSemaphore.WaitAsync(TimeSpan.Zero);
 
     /// <summary><see cref="TryOccupyAiSlotAsync"/> で取得したスロットを解放する。</summary>
     internal static void ReleaseAiSlot() => AiCallSemaphore.Release();
 
+    /// <summary>受付枠を1つ占有する（テストから受付上限に達した状態を作るために使う）。</summary>
+    internal static bool TryReserveAiCheckSlotForTest() => TryReserveAiCheckSlot();
+
+    /// <summary><see cref="TryReserveAiCheckSlotForTest"/> で占有した受付枠を解放する。</summary>
+    internal static void ReleaseAiCheckSlotForTest() => ReleaseAiCheckSlot();
+
     private readonly SubsidiaryCheckRepository _repository;
     private readonly IAiChatClient _aiClient;
+    private readonly IServiceScopeFactory _scopeFactory;
     private readonly ILogger<SubsidiaryCheckService> _logger;
 
     public SubsidiaryCheckService(
         SubsidiaryCheckRepository repository,
         IAiChatClient aiClient,
+        IServiceScopeFactory scopeFactory,
         ILogger<SubsidiaryCheckService> logger)
     {
         _repository = repository;
         _aiClient = aiClient;
+        _scopeFactory = scopeFactory;
         _logger = logger;
     }
 
+    /// <summary>AI 実行本体への入力（商品情報・表示ラベル・AI へ渡す画像列）。</summary>
+    private sealed record AiRunInput(
+        SubsidiaryCheckProductInfo? Product,
+        string ProductLabel,
+        IReadOnlyList<AiImageInput> Images);
+
     /// <summary>
-    /// 新規チェックを登録し、AI チェックを同期実行して結果詳細を返す。
-    /// AI 未設定（IsConfigured=false）は永続化前に 503（UNDX-AI-008）を throw する（無駄なレコードを作らない）。
+    /// 新規チェックを登録し、AI チェックを<b>バックグラウンドで開始</b>して
+    /// processing 状態の詳細を即座に返す（リバースプロキシのタイムアウト回避。クラス注記を参照）。
+    /// <para>
+    /// 入力検証エラー（枚数・形式・サイズ・ラベル長）は従来どおり同期的に 4xx を返す。
+    /// AI 未設定（IsConfigured=false）は永続化前に 503（UNDX-AI-008）、受付上限超過は
+    /// 永続化前に 429（UNDX-REQ-009）を throw する（いずれも無駄なレコード・画像を作らない）。
+    /// </para>
     /// </summary>
-    public async Task<SubsidiaryCheckDetail> CreateAndRunAsync(
+    public async Task<SubsidiaryCheckDetail> CreateAndStartAsync(
         Guid? productId,
         string? productLabel,
         IReadOnlyList<SubsidiaryCheckImageUpload> instructionImages,
@@ -200,16 +274,47 @@ public sealed class SubsidiaryCheckService
 
         var label = ResolveProductLabel(productLabel, product);
 
-        // SoT（subsidiary_check）への記録を先に確定してから AI を呼び出す（原則6）。
+        // 受付枠の予約は永続化より前に行う（超過時に無駄なレコード・画像を作らない）。
+        ReserveAiCheckSlotOrThrow();
+
         var checkId = Guid.NewGuid();
-        await _repository.InsertAsync(
-            checkId, productId, label, createdBy, BuildImageRecords(instructionImages, tagImages),
-            cancellationToken);
+        try
+        {
+            // SoT（subsidiary_check）への記録を先に確定してから AI を呼び出す（原則6）。
+            await _repository.InsertAsync(
+                checkId, productId, label, createdBy, BuildImageRecords(instructionImages, tagImages),
+                cancellationToken);
+        }
+        catch
+        {
+            // レコードが作られていないので failed 記録の対象もない。予約だけ解放する。
+            ReleaseAiCheckSlot();
+            throw;
+        }
 
-        await RunAiAsync(checkId, product, label,
-            ToAiImages(instructionImages, tagImages), cancellationToken);
+        SubsidiaryCheckDetail accepted;
+        try
+        {
+            // 応答は「受付時点（processing）」の状態にする。バックグラウンド起動より前に読むことで、
+            // AI が即座に終わった場合でも応答内容が実行タイミングに左右されない。
+            accepted = await GetDetailRequiredAsync(checkId, cancellationToken);
+        }
+        catch
+        {
+            // 登録済みだがバックグラウンドを起動できない区間。processing のまま放置せず
+            // failed を記録してから解放する（孤児判定の10分を待たずに再実行できる・原則4）。
+            await RecordFailureAsync(checkId, BuildFailureMessage(
+                ErrorCodes.Unexpected, "チェックの登録後に応答の生成へ失敗しました。再実行してください。"));
+            ReleaseAiCheckSlot();
+            throw;
+        }
 
-        return await GetDetailRequiredAsync(checkId, cancellationToken);
+        // 以降、予約の解放責務はバックグラウンドタスク側に移る。
+        // AI 完了を待たずに応答し、フロントは詳細をポーリングして completed / failed を待つ。
+        StartBackgroundRun(
+            checkId, new AiRunInput(product, label, ToAiImages(instructionImages, tagImages)));
+
+        return accepted;
     }
 
     /// <summary>
@@ -224,64 +329,197 @@ public sealed class SubsidiaryCheckService
     /// 多重化するが、クレーム成立と同時に started_at が now() へ進むことで孤児条件から外れ、
     /// 重複起動が構造的に成立しない。
     /// </para>
+    /// <para>
+    /// クレーム成立後の AI 実行（および画像・商品情報の読取）はバックグラウンドへ切り離し、
+    /// 新規作成と同じく processing の詳細を即座に返す。
+    /// </para>
     /// </summary>
     public async Task<SubsidiaryCheckDetail> RerunAsync(
         Guid checkId, CancellationToken cancellationToken = default)
     {
         // 未存在は 404 で早期に返す（クレーム 0 行と「存在しない」を区別するため）。
-        var current = await GetDetailRequiredAsync(checkId, cancellationToken);
+        _ = await GetDetailRequiredAsync(checkId, cancellationToken);
 
         if (!_aiClient.IsConfigured)
         {
             throw new AppException(ErrorCodes.AiNotConfigured, 503);
         }
 
-        // 実行権の原子的クレーム。0 行なら「他が実行中」「completed で確定済み」のいずれか。
-        var claimed = await _repository.ClaimForRerunAsync(
-            checkId, DateTime.UtcNow - ProcessingStaleAfter, cancellationToken);
+        // 受付枠の予約はクレームより前に行う（クレームしてから即 failed に落とすと記録を汚すため）。
+        ReserveAiCheckSlotOrThrow();
+
+        int claimed;
+        try
+        {
+            // 実行権の原子的クレーム。0 行なら「他が実行中」「completed で確定済み」のいずれか。
+            claimed = await _repository.ClaimForRerunAsync(
+                checkId, DateTime.UtcNow - ProcessingStaleAfter, cancellationToken);
+        }
+        catch
+        {
+            ReleaseAiCheckSlot();
+            throw;
+        }
+
         if (claimed == 0)
         {
+            ReleaseAiCheckSlot();
             throw await BuildRerunRejectedAsync(checkId, cancellationToken);
         }
 
-        // クレーム後は status=processing で実行権を占有している。AI 実行前の準備（DB 読取）で
-        // 失敗した場合もここで failed 記録に落として占有を解放する。無保護にすると、
-        // クライアント切断や DB 障害で processing のまま残り、孤児判定（ProcessingStaleAfter）まで
-        // rerun が拒否される＝回復パス自体が塞がるため（原則4・原則6）。
-        SubsidiaryCheckProductInfo? product;
-        IReadOnlyList<AiImageInput> aiImages;
+        SubsidiaryCheckDetail accepted;
         try
         {
-            // 商品が後から削除されている場合（FK SET NULL）は商品情報なしで再実行する。
-            product = current.Summary.ProductId is { } productId
-                ? await _repository.GetProductInfoAsync(productId, cancellationToken)
-                : null;
-
-            var stored = await _repository.GetImagesWithDataAsync(checkId, cancellationToken);
-            aiImages = ToAiImages(
-                stored.Where(i => i.Kind == SubsidiaryCheckImageKind.Instruction).ToList(),
-                stored.Where(i => i.Kind == SubsidiaryCheckImageKind.Tag).ToList());
+            // 新規作成と同じく、応答は受付時点（クレーム直後の processing）の状態にする。
+            accepted = await GetDetailRequiredAsync(checkId, cancellationToken);
         }
-        catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
+        catch
         {
+            // クレーム済みだがバックグラウンドを起動できない区間。実行権を握ったまま放置せず
+            // failed を記録してから解放する（無保護区間を作らない）。
             await RecordFailureAsync(checkId, BuildFailureMessage(
-                ErrorCodes.AiCallFailed, "リクエストが中断されました（クライアント切断）。再実行してください。"));
-            throw;
-        }
-        catch (Exception ex)
-        {
-            _logger.LogWarning(ex, "副資材チェックの再実行準備に失敗しました（checkId: {CheckId}）", checkId);
-            var message = ex is AppException app
-                ? BuildFailureMessage(app.Error, app.Message)
-                : BuildFailureMessage(ErrorCodes.Unexpected, "再実行してください。");
-            await RecordFailureAsync(checkId, message);
+                ErrorCodes.Unexpected, "再実行の受付後に応答の生成へ失敗しました。再実行してください。"));
+            ReleaseAiCheckSlot();
             throw;
         }
 
-        await RunAiAsync(checkId, product, current.Summary.ProductLabel, aiImages, cancellationToken);
+        // クレーム後は status=processing で実行権を占有している。AI 実行前の準備（商品情報・
+        // 画像バイナリの DB 読取）はバックグラウンド側で行い、そこでの失敗も failed 記録に落とす
+        // （無保護区間を作らない）。無保護にすると DB 障害等で processing のまま残り、
+        // 孤児判定（ProcessingStaleAfter）まで rerun が拒否される＝回復パス自体が塞がるため
+        // （原則4・原則6）。以降、予約の解放責務はバックグラウンドタスク側に移る。
+        StartBackgroundRun(checkId, prepared: null);
 
-        return await GetDetailRequiredAsync(checkId, cancellationToken);
+        return accepted;
     }
+
+    /// <summary>
+    /// AI 実行本体を HTTP リクエストから切り離してバックグラウンドで起動する
+    /// （<c>MartController.Rebuild</c> と同じ流儀・原則3）。
+    /// <para>
+    /// scoped 依存（Repository / Service）はリクエスト終了とともに破棄されるため<b>捕捉せず</b>、
+    /// <see cref="IServiceScopeFactory"/> から専用スコープを作って解決し直す
+    /// （破棄済み DbConnection / Repository 参照の防止）。捕捉するのは checkId と純粋なデータ、
+    /// およびシングルトンの <see cref="IServiceScopeFactory"/> / <see cref="ILogger{T}"/> のみ。
+    /// トークンは渡さない（＝<see cref="CancellationToken.None"/> 相当。クライアント切断で
+    /// AI 実行を中断させない）。
+    /// </para>
+    /// </summary>
+    /// <param name="prepared">
+    /// 実行入力。新規作成はリクエストで確保済みの入力を渡す。null（rerun）はバックグラウンド側で
+    /// DB から読み直す。
+    /// </param>
+    private void StartBackgroundRun(Guid checkId, AiRunInput? prepared)
+    {
+        // シングルトン依存はローカルへ写してから閉じ込める。ラムダが this を捕捉しなくなるため、
+        // リクエストスコープのサービス・リポジトリを保持しないことが構造的に保証される。
+        var scopeFactory = _scopeFactory;
+        var logger = _logger;
+
+        _ = Task.Run(async () =>
+        {
+            try
+            {
+                using var scope = scopeFactory.CreateScope();
+                var service = scope.ServiceProvider.GetRequiredService<SubsidiaryCheckService>();
+                await service.RunBackgroundAsync(checkId, prepared);
+            }
+            catch (Exception ex)
+            {
+                // RunBackgroundAsync は内部で全経路を failed 記録に落とすため、ここへ来るのは
+                // スコープ生成・解決の失敗（プロセス停止時の ObjectDisposedException 等）だけ。
+                // failed 記録もできない状態のため processing のまま残り、
+                // ProcessingStaleAfter 経過後の rerun（孤児回復パス）で回復する。
+                logger.LogError(ex,
+                    "副資材チェックのバックグラウンド実行を開始できませんでした（checkId: {CheckId}）",
+                    checkId);
+            }
+            finally
+            {
+                ReleaseAiCheckSlot();
+            }
+        });
+    }
+
+    /// <summary>
+    /// バックグラウンド実行の本体（新規作成・rerun 共通）。専用スコープで解決したインスタンスで動く。
+    /// 準備（DB 読取）と AI 実行のいずれの失敗も failed 記録に落とし、例外を外へ出さない。
+    /// </summary>
+    private async Task RunBackgroundAsync(Guid checkId, AiRunInput? prepared)
+    {
+        var input = prepared;
+        if (input is null)
+        {
+            try
+            {
+                input = await LoadRunInputAsync(checkId);
+            }
+            catch (Exception ex)
+            {
+                _logger.LogWarning(ex, "副資材チェックの再実行準備に失敗しました（checkId: {CheckId}）", checkId);
+                var message = ex is AppException app
+                    ? BuildFailureMessage(app.Error, app.Message)
+                    : BuildFailureMessage(ErrorCodes.Unexpected, "再実行してください。");
+                await RecordFailureAsync(checkId, message);
+                return;
+            }
+        }
+
+        await RunAiAsync(checkId, input.Product, input.ProductLabel, input.Images);
+    }
+
+    /// <summary>保存済みレコードから AI 実行入力（商品情報・ラベル・画像）を読み出す（rerun 用）。</summary>
+    private async Task<AiRunInput> LoadRunInputAsync(Guid checkId)
+    {
+        if (RerunPrepareFailureOverride?.Invoke(checkId) is { } injected)
+        {
+            throw injected;
+        }
+
+        var current = await GetDetailRequiredAsync(checkId);
+
+        // 商品が後から削除されている場合（FK SET NULL）は商品情報なしで再実行する。
+        var product = current.Summary.ProductId is { } productId
+            ? await _repository.GetProductInfoAsync(productId)
+            : null;
+
+        var stored = await _repository.GetImagesWithDataAsync(checkId);
+        return new AiRunInput(
+            product,
+            current.Summary.ProductLabel,
+            ToAiImages(
+                stored.Where(i => i.Kind == SubsidiaryCheckImageKind.Instruction).ToList(),
+                stored.Where(i => i.Kind == SubsidiaryCheckImageKind.Tag).ToList()));
+    }
+
+    /// <summary>
+    /// 受付枠（実行中＋待機中の総数）を1つ予約する。上限に達している場合は予約せず false。
+    /// </summary>
+    private static bool TryReserveAiCheckSlot()
+    {
+        if (Interlocked.Increment(ref _inFlightAiChecks) <= MaxConcurrentAiChecks)
+        {
+            return true;
+        }
+
+        // 上限超過時は自分の加算を巻き戻す（カウンタが恒久的にずれないようにする）。
+        Interlocked.Decrement(ref _inFlightAiChecks);
+        return false;
+    }
+
+    /// <summary>受付枠を予約する。上限に達している場合は 429（UNDX-REQ-009）。</summary>
+    private static void ReserveAiCheckSlotOrThrow()
+    {
+        if (!TryReserveAiCheckSlot())
+        {
+            throw new AppException(ErrorCodes.AiCheckBusy, 429,
+                $"実行中・待機中の AI チェックが上限（{MaxConcurrentAiChecks} 件）に達しています。"
+                + "実行中のチェックが完了してから再試行してください。");
+        }
+    }
+
+    /// <summary>予約した受付枠を解放する。</summary>
+    private static void ReleaseAiCheckSlot() => Interlocked.Decrement(ref _inFlightAiChecks);
 
     /// <summary>
     /// クレームできなかった（0 行）ときの拒否理由を、現在状態を読み直して構築する。
@@ -411,16 +649,16 @@ public sealed class SubsidiaryCheckService
         => data.Length >= 4 && data[0] == 0x89 && data[1] == 0x50 && data[2] == 0x4E && data[3] == 0x47;
 
     /// <summary>
-    /// AI チェックを実行し、結果（completed / failed）を記録する。
-    /// 失敗は throw せず failed 記録に変換する（クライアント切断によるキャンセルのみ記録後に再 throw）。
-    /// AI 呼出タイムアウト（リクエスト自体は未キャンセル）はキャンセル扱いにせず failed 記録として応答する。
+    /// AI チェックを実行し、結果（completed / failed）を記録する（バックグラウンドタスク上で動く）。
+    /// AI 失敗・応答解析失敗・AI 呼出タイムアウト・順番待ち超過はいずれも throw せず failed 記録に変換する
+    /// （呼出元はバックグラウンドタスクであり、例外を返す先が存在しないため）。
+    /// HTTP リクエストのキャンセルトークンは渡さない（クライアント切断で AI 実行を中断させない）。
     /// </summary>
     private async Task RunAiAsync(
         Guid checkId,
         SubsidiaryCheckProductInfo? product,
         string productLabel,
-        IReadOnlyList<AiImageInput> aiImages,
-        CancellationToken cancellationToken)
+        IReadOnlyList<AiImageInput> aiImages)
     {
         try
         {
@@ -428,10 +666,11 @@ public sealed class SubsidiaryCheckService
             var userPrompt = SubsidiaryCheckPromptBuilder.BuildUserPrompt(product, productLabel);
 
             // AI 呼出のみを同時実行制限・タイムアウトで保護する（DB 操作はセマフォの外で行う）。
-            // 待機は有界（AiCallQueueTimeout）。待機超過は AI を呼ばずに failed 記録で応答することで、
-            // 画像バッファを保持したまま滞留するリクエスト数を抑える（メモリ保護・CRITICAL）。
+            // 待機は有界（AiCallQueueTimeout）。待機超過は AI を呼ばずに failed 記録に落とすことで、
+            // 画像バッファを保持したまま滞留する時間を抑える（メモリ保護・CRITICAL）。
+            // 滞留「件数」の抑制は受付上限（MaxConcurrentAiChecks）が担う。
             var queueTimeout = AiCallQueueTimeoutOverride ?? AiCallQueueTimeout;
-            if (!await AiCallSemaphore.WaitAsync(queueTimeout, cancellationToken))
+            if (!await AiCallSemaphore.WaitAsync(queueTimeout))
             {
                 _logger.LogWarning(
                     "副資材チェックの AI 実行が順番待ちタイムアウトしました"
@@ -448,20 +687,17 @@ public sealed class SubsidiaryCheckService
             var callTimeout = AiCallTimeoutOverride ?? AiCallTimeout;
             try
             {
-                using var timeoutCts = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
-                timeoutCts.CancelAfter(callTimeout);
+                using var timeoutCts = new CancellationTokenSource(callTimeout);
                 try
                 {
                     responseText = await _aiClient.AnalyzeImagesAsync(
                         aiImages, systemPrompt, userPrompt, CheckMaxOutputTokens, timeoutCts.Token);
                 }
-                catch (OperationCanceledException)
-                    when (timeoutCts.IsCancellationRequested && !cancellationToken.IsCancellationRequested)
+                catch (OperationCanceledException) when (timeoutCts.IsCancellationRequested)
                 {
-                    // 自前のタイムアウト発火（リクエスト側は未キャンセル）: 本物のキャンセル
-                    // （クライアント切断）と区別し、throw せず failed 記録へ進む（記録はセマフォ解放後）。
-                    // どちらのトークンも未キャンセルの OperationCanceledException（AI SDK 由来の
-                    // 想定外キャンセル）はここで握らず、下の汎用 catch で failed 記録にする。
+                    // 自前のタイムアウト発火: throw せず failed 記録へ進む（記録はセマフォ解放後）。
+                    // タイムアウト以外の OperationCanceledException（AI SDK 由来の想定外キャンセル）は
+                    // ここで握らず、下の汎用 catch で failed 記録にする。
                     callTimedOut = true;
                 }
             }
@@ -498,7 +734,7 @@ public sealed class SubsidiaryCheckService
             var updated = await _repository.UpdateResultAsync(
                 checkId, SubsidiaryCheckStatus.Completed, judgment, failCount, warnCount,
                 SubsidiaryCheckRepository.SerializeFindings(parsed.Findings),
-                _aiClient.ChatModel, errorMessage: null, cancellationToken);
+                _aiClient.ChatModel, errorMessage: null);
             if (updated == 0)
             {
                 // 並行 rerun 等で先に completed が確定していた場合。記録保護（原則2）のため結果は破棄する。
@@ -506,18 +742,9 @@ public sealed class SubsidiaryCheckService
                     "副資材チェックは既に completed のため結果を破棄しました（checkId: {CheckId}）", checkId);
             }
         }
-        catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
-        {
-            // クライアント切断によるキャンセルでも processing 孤児を残さない: failed 記録後に再 throw する。
-            // どちらのトークンも未キャンセルの OperationCanceledException は「キャンセル」ではないため
-            // ここでは扱わず、下の汎用 catch で failed 記録にする（500 を返さない・原則4）。
-            await RecordFailureAsync(checkId, BuildFailureMessage(
-                ErrorCodes.AiCallFailed, "リクエストが中断されました（クライアント切断）。再実行してください。"));
-            throw;
-        }
         catch (Exception ex)
         {
-            // AI 呼出失敗は主要フロー（記録）を止めない（原則4）。failed 記録で応答し、rerun で回復できる。
+            // AI 呼出失敗は主要フロー（記録）を止めない（原則4）。failed 記録に落とし、rerun で回復できる。
             // error_message には採番コード＋日本語の汎用文言のみを保存し、
             // 生の例外メッセージ（SDK 内部文言等）はログに留める（ユーザー露出防止）。
             _logger.LogWarning(ex, "副資材チェックの AI 実行に失敗しました（checkId: {CheckId}）", checkId);
@@ -543,8 +770,8 @@ public sealed class SubsidiaryCheckService
     }
 
     /// <summary>
-    /// failed 記録を書き込む。キャンセル済みでも記録が届くよう CancellationToken.None で実行し、
-    /// 記録自体の失敗はログのみとする（記録失敗で元のエラーを覆い隠さない）。
+    /// failed 記録を書き込む。バックグラウンド実行からの記録が確実に届くよう CancellationToken.None で
+    /// 実行し、記録自体の失敗はログのみとする（記録失敗で元のエラーを覆い隠さない）。
     /// 既に completed のチェックは状態遷移ガード（記録保護・原則2）により更新されない（警告ログのみ）。
     /// </summary>
     private async Task RecordFailureAsync(Guid checkId, string errorMessage)

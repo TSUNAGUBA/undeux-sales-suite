@@ -104,6 +104,14 @@ public sealed class ExceptionHandlingMiddleware
     /// 誤って非サイズ系を 413「合計サイズ超過」に倒すと、利用者はファイルを縮小し続けても
     /// 復帰できないため、上限超過と確証が持てるものだけを 413 とする安全側の判定にしている。
     /// </para>
+    /// <para>
+    /// <b>既知の制約（意図的に現状維持）:</b> 判定が ASP.NET Core の英語メッセージ文言に依存するため、
+    /// フレームワーク側で文言が変わると本判定が false となり 413 が静かに 400 へ劣化しうる。
+    /// ただし劣化方向は「サイズ超過を汎用の 400 として返す」＝<b>安全側</b>であり
+    /// （逆方向の「解析失敗を 413 と誤認して復帰不能な案内を出す」は起きない）、
+    /// 例外型・プロパティに上限超過を示す公開情報がない以上これ以上の判別材料もないため、
+    /// メッセージ一致による判定を維持する。
+    /// </para>
     /// </summary>
     private static bool IsSizeLimitFailure(InvalidDataException exception)
         => exception.Message.Contains("limit", StringComparison.OrdinalIgnoreCase)

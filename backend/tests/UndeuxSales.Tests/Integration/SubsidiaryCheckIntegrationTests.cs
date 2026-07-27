@@ -17,8 +17,13 @@ namespace UndeuxSales.Tests.Integration;
 /// <summary>
 /// 副資材チェック API（/api/subsidiary-check/*）の統合テスト。
 /// IAiChatClient をテスト用スタブ（固定 JSON 応答）へ差し替えて、一覧→作成→判定→詳細→画像の
-/// 一連のフロー・検証エラー・404・AI 未設定時 503・再実行（手動回復パス）を検証する。
+/// 一連のフロー・検証エラー・404・AI 未設定時 503・受付上限 429・再実行（手動回復パス）を検証する。
 /// 件数はテスト実行順に依存しないよう差分（前後比較）で検証する。
+/// <para>
+/// AI 実行は非同期（バックグラウンド）のため、POST は status=processing を即座に返す。
+/// 完了の待機は <see cref="WaitForSettledAsync"/>（公開 API の GET 詳細をポーリング）で行い、
+/// フロントの自動更新と同じ観測手段だけを使う（実装の内部構造に依存しない）。
+/// </para>
 /// </summary>
 [Collection("Api")]
 public sealed class SubsidiaryCheckIntegrationTests
@@ -60,10 +65,22 @@ public sealed class SubsidiaryCheckIntegrationTests
 
         var create = await client.PostAsync("/api/subsidiary-check", form);
         create.EnsureSuccessStatusCode();
-        var created = await create.Content.ReadFromJsonAsync<SubsidiaryCheckDetail>();
+        var accepted = await create.Content.ReadFromJsonAsync<SubsidiaryCheckDetail>();
 
-        Assert.NotNull(created);
-        Assert.Equal(SubsidiaryCheckStatus.Completed, created!.Summary.Status);
+        // POST は AI 完了を待たず、受付時点（processing）の詳細を即座に返す
+        // （共用リバースプロキシのタイムアウト約60秒を超えないための構造）。
+        Assert.NotNull(accepted);
+        Assert.Equal(SubsidiaryCheckStatus.Processing, accepted!.Summary.Status);
+        Assert.Null(accepted.Summary.Judgment);
+        Assert.Null(accepted.Summary.CheckedAt);
+        // 画像・登録情報は応答時点で既に永続化されている（AI 実行だけがバックグラウンド）。
+        Assert.Equal(3, accepted.Images.Count);
+        Assert.Equal("TAG-3943 スリッパ", accepted.Summary.ProductLabel);
+
+        // バックグラウンド実行の完了を待つ（フロントのポーリングと同じ観測手段）。
+        var created = await WaitForSettledAsync(client, accepted.Summary.CheckId);
+
+        Assert.Equal(SubsidiaryCheckStatus.Completed, created.Summary.Status);
         Assert.Equal(SubsidiaryCheckSeverity.Pass, created.Summary.Judgment);
         Assert.Equal(0, created.Summary.FailCount);
         Assert.Equal(0, created.Summary.WarnCount);
@@ -120,9 +137,11 @@ public sealed class SubsidiaryCheckIntegrationTests
 
         var create = await client.PostAsync("/api/subsidiary-check", form);
         create.EnsureSuccessStatusCode();
-        var created = await create.Content.ReadFromJsonAsync<SubsidiaryCheckDetail>();
+        var accepted = await create.Content.ReadFromJsonAsync<SubsidiaryCheckDetail>();
+        Assert.NotNull(accepted);
+        var created = await WaitForSettledAsync(client, accepted!.Summary.CheckId);
 
-        Assert.NotNull(created!.Product);
+        Assert.NotNull(created.Product);
         Assert.Equal(productId, created.Product!.ProductId);
         Assert.NotNull(created.Product.Attachment);
         Assert.Equal("綿 100%", created.Product.Attachment!.Composition);
@@ -242,9 +261,11 @@ public sealed class SubsidiaryCheckIntegrationTests
 
         var create = await client.PostAsync("/api/subsidiary-check", form);
         create.EnsureSuccessStatusCode();
-        var created = await create.Content.ReadFromJsonAsync<SubsidiaryCheckDetail>();
+        var accepted = await create.Content.ReadFromJsonAsync<SubsidiaryCheckDetail>();
+        Assert.NotNull(accepted);
+        var created = await WaitForSettledAsync(client, accepted!.Summary.CheckId);
 
-        Assert.Equal(SubsidiaryCheckStatus.Failed, created!.Summary.Status);
+        Assert.Equal(SubsidiaryCheckStatus.Failed, created.Summary.Status);
         Assert.Null(created.Summary.Judgment);
         Assert.Contains("UNDX-AI-009", created.Summary.ErrorMessage ?? string.Empty);
         Assert.Empty(created.Findings);
@@ -255,9 +276,12 @@ public sealed class SubsidiaryCheckIntegrationTests
         stub.ResponseText = AllPassResponse;
         var rerun = await client.PostAsync($"/api/subsidiary-check/{created.Summary.CheckId}/rerun", content: null);
         rerun.EnsureSuccessStatusCode();
-        var rerunDetail = await rerun.Content.ReadFromJsonAsync<SubsidiaryCheckDetail>();
+        var rerunAccepted = await rerun.Content.ReadFromJsonAsync<SubsidiaryCheckDetail>();
+        // rerun も即座に processing を返し、AI はバックグラウンドで実行される。
+        Assert.Equal(SubsidiaryCheckStatus.Processing, rerunAccepted!.Summary.Status);
+        var rerunDetail = await WaitForSettledAsync(client, created.Summary.CheckId);
 
-        Assert.Equal(SubsidiaryCheckStatus.Completed, rerunDetail!.Summary.Status);
+        Assert.Equal(SubsidiaryCheckStatus.Completed, rerunDetail.Summary.Status);
         Assert.Equal(SubsidiaryCheckSeverity.Pass, rerunDetail.Summary.Judgment);
         Assert.Null(rerunDetail.Summary.ErrorMessage);
         Assert.Equal(3, rerunDetail.Findings.Count);
@@ -323,12 +347,13 @@ public sealed class SubsidiaryCheckIntegrationTests
         using var factory = WithSubsidiaryAi(stub);
         using var client = CreateClient(factory);
 
-        // 実行開始から10分超経過した processing 孤児（プロセスクラッシュ等の想定）は再実行で回復できる。
+        // 実行開始から10分超経過した processing 孤児（プロセス消失等の想定。非同期化後は
+        // バックグラウンドタスクごと消えたケース）は再実行で回復できる。
         var staleId = await InsertProcessingCheckAsync(TimeSpan.FromMinutes(11));
         var rerun = await client.PostAsync($"/api/subsidiary-check/{staleId}/rerun", content: null);
         rerun.EnsureSuccessStatusCode();
-        var detail = await rerun.Content.ReadFromJsonAsync<SubsidiaryCheckDetail>();
-        Assert.Equal(SubsidiaryCheckStatus.Completed, detail!.Summary.Status);
+        var detail = await WaitForSettledAsync(client, staleId);
+        Assert.Equal(SubsidiaryCheckStatus.Completed, detail.Summary.Status);
         Assert.Equal(SubsidiaryCheckSeverity.Pass, detail.Summary.Judgment);
 
         // 新しい（実行中の可能性がある）processing は従来どおり 400 で拒否される。
@@ -360,8 +385,8 @@ public sealed class SubsidiaryCheckIntegrationTests
             TimeSpan.Zero, startedAge: TimeSpan.FromMinutes(11));
         var accepted = await client.PostAsync($"/api/subsidiary-check/{orphanId}/rerun", content: null);
         accepted.EnsureSuccessStatusCode();
-        var detail = await accepted.Content.ReadFromJsonAsync<SubsidiaryCheckDetail>();
-        Assert.Equal(SubsidiaryCheckStatus.Completed, detail!.Summary.Status);
+        var detail = await WaitForSettledAsync(client, orphanId);
+        Assert.Equal(SubsidiaryCheckStatus.Completed, detail.Summary.Status);
         Assert.Equal(1, stub.AnalyzeCallCount);
     }
 
@@ -399,8 +424,10 @@ public sealed class SubsidiaryCheckIntegrationTests
         AddImage(form, "tagImages", "tag.png", "image/png", PngBytes(0x01));
         var create = await client.PostAsync("/api/subsidiary-check", form);
         create.EnsureSuccessStatusCode();
-        var created = await create.Content.ReadFromJsonAsync<SubsidiaryCheckDetail>();
-        Assert.Equal(SubsidiaryCheckStatus.Failed, created!.Summary.Status);
+        var accepted = await create.Content.ReadFromJsonAsync<SubsidiaryCheckDetail>();
+        Assert.NotNull(accepted);
+        var created = await WaitForSettledAsync(client, accepted!.Summary.CheckId);
+        Assert.Equal(SubsidiaryCheckStatus.Failed, created.Summary.Status);
 
         stub.ResponseText = AllPassResponse;
         var callsBefore = stub.AnalyzeCallCount;
@@ -412,12 +439,11 @@ public sealed class SubsidiaryCheckIntegrationTests
         Assert.Equal(1, responses.Count(r => r.IsSuccessStatusCode));
         var rejected = Assert.Single(responses, r => r.StatusCode == HttpStatusCode.BadRequest);
         Assert.Contains("UNDX-REQ-001", await rejected.Content.ReadAsStringAsync());
+
+        var detail = await WaitForSettledAsync(client, created.Summary.CheckId);
+        Assert.Equal(SubsidiaryCheckStatus.Completed, detail.Summary.Status);
         // AI 呼出は1回だけ（read-then-act では2回呼ばれ得た）。
         Assert.Equal(callsBefore + 1, stub.AnalyzeCallCount);
-
-        var detail = await client.GetFromJsonAsync<SubsidiaryCheckDetail>(
-            $"/api/subsidiary-check/{created.Summary.CheckId}");
-        Assert.Equal(SubsidiaryCheckStatus.Completed, detail!.Summary.Status);
 
         foreach (var response in responses)
         {
@@ -437,8 +463,10 @@ public sealed class SubsidiaryCheckIntegrationTests
         AddImage(form, "tagImages", "tag.png", "image/png", PngBytes(0x01));
         var create = await client.PostAsync("/api/subsidiary-check", form);
         create.EnsureSuccessStatusCode();
-        var created = await create.Content.ReadFromJsonAsync<SubsidiaryCheckDetail>();
-        Assert.Equal(SubsidiaryCheckStatus.Completed, created!.Summary.Status);
+        var accepted = await create.Content.ReadFromJsonAsync<SubsidiaryCheckDetail>();
+        Assert.NotNull(accepted);
+        var created = await WaitForSettledAsync(client, accepted!.Summary.CheckId);
+        Assert.Equal(SubsidiaryCheckStatus.Completed, created.Summary.Status);
 
         // completed へ failed を書き込もうとしても状態遷移ガード（記録保護・原則2）で 0 行更新になる。
         using var scope = factory.Services.CreateScope();
@@ -479,9 +507,11 @@ public sealed class SubsidiaryCheckIntegrationTests
         {
             var create = await client.PostAsync("/api/subsidiary-check", form);
             create.EnsureSuccessStatusCode();
-            var created = await create.Content.ReadFromJsonAsync<SubsidiaryCheckDetail>();
+            var accepted = await create.Content.ReadFromJsonAsync<SubsidiaryCheckDetail>();
+            Assert.NotNull(accepted);
+            var created = await WaitForSettledAsync(client, accepted!.Summary.CheckId);
 
-            Assert.Equal(SubsidiaryCheckStatus.Failed, created!.Summary.Status);
+            Assert.Equal(SubsidiaryCheckStatus.Failed, created.Summary.Status);
             Assert.Contains("UNDX-AI-001", created.Summary.ErrorMessage ?? string.Empty);
             Assert.Contains("AI 呼出がタイムアウト", created.Summary.ErrorMessage ?? string.Empty);
         }
@@ -510,9 +540,11 @@ public sealed class SubsidiaryCheckIntegrationTests
         {
             var create = await client.PostAsync("/api/subsidiary-check", form);
             create.EnsureSuccessStatusCode();
-            var created = await create.Content.ReadFromJsonAsync<SubsidiaryCheckDetail>();
+            var accepted = await create.Content.ReadFromJsonAsync<SubsidiaryCheckDetail>();
+            Assert.NotNull(accepted);
+            var created = await WaitForSettledAsync(client, accepted!.Summary.CheckId);
 
-            Assert.Equal(SubsidiaryCheckStatus.Failed, created!.Summary.Status);
+            Assert.Equal(SubsidiaryCheckStatus.Failed, created.Summary.Status);
             Assert.Contains("UNDX-AI-001", created.Summary.ErrorMessage ?? string.Empty);
             Assert.Contains("順番待ち", created.Summary.ErrorMessage ?? string.Empty);
             // 待機超過時は AI を呼ばない（画像バッファを抱えた滞留を増やさない）。
@@ -563,9 +595,116 @@ public sealed class SubsidiaryCheckIntegrationTests
 
         var create = await client.PostAsync("/api/subsidiary-check", form);
         create.EnsureSuccessStatusCode();
-        var created = await create.Content.ReadFromJsonAsync<SubsidiaryCheckDetail>();
+        var accepted = await create.Content.ReadFromJsonAsync<SubsidiaryCheckDetail>();
+        Assert.NotNull(accepted);
+        var created = await WaitForSettledAsync(client, accepted!.Summary.CheckId);
 
-        Assert.Equal(SubsidiaryCheckStatus.Completed, created!.Summary.Status);
+        Assert.Equal(SubsidiaryCheckStatus.Completed, created.Summary.Status);
+    }
+
+    [Fact]
+    public async Task Create_WhenAcceptanceLimitReached_Returns429_AndPersistsNothing()
+    {
+        // 受付上限（実行中＋待機中の総数）に達している間の新規チェックは、永続化前に 429 で拒否する
+        // （画像バッファを抱えたまま滞留する件数を有界にし、無駄なレコード・画像も作らない）。
+        var stub = new SubsidiaryCheckFakeAiClient { ResponseText = AllPassResponse };
+        using var factory = WithSubsidiaryAi(stub);
+        using var client = CreateClient(factory);
+
+        var before = await client.GetFromJsonAsync<SubsidiaryCheckPage>("/api/subsidiary-check");
+        var reserved = await OccupyAllAcceptanceSlotsAsync();
+        try
+        {
+            using var form = new MultipartFormDataContent();
+            AddImage(form, "instructionImages", "instruction.jpg", "image/jpeg", JpegBytes(0x01));
+            AddImage(form, "tagImages", "tag.png", "image/png", PngBytes(0x01));
+
+            var response = await client.PostAsync("/api/subsidiary-check", form);
+
+            Assert.Equal(HttpStatusCode.TooManyRequests, response.StatusCode);
+            Assert.Contains("UNDX-REQ-009", await response.Content.ReadAsStringAsync());
+            Assert.Equal(0, stub.AnalyzeCallCount);
+
+            // 永続化前に拒否されるため、レコードは1件も増えない。
+            var after = await client.GetFromJsonAsync<SubsidiaryCheckPage>("/api/subsidiary-check");
+            Assert.Equal(before!.TotalCount, after!.TotalCount);
+        }
+        finally
+        {
+            ReleaseAcceptanceSlots(reserved);
+        }
+    }
+
+    [Fact]
+    public async Task Rerun_WhenAcceptanceLimitReached_Returns429_WithoutClaiming()
+    {
+        // rerun はクレーム前に判定する（クレームしてから即 failed に落とすと記録を汚すため）。
+        var stub = new SubsidiaryCheckFakeAiClient { ResponseText = AllPassResponse };
+        using var factory = WithSubsidiaryAi(stub);
+        using var client = CreateClient(factory);
+
+        var staleId = await InsertProcessingCheckAsync(TimeSpan.FromMinutes(11));
+        var reserved = await OccupyAllAcceptanceSlotsAsync();
+        try
+        {
+            var response = await client.PostAsync($"/api/subsidiary-check/{staleId}/rerun", content: null);
+
+            Assert.Equal(HttpStatusCode.TooManyRequests, response.StatusCode);
+            Assert.Contains("UNDX-REQ-009", await response.Content.ReadAsStringAsync());
+            Assert.Equal(0, stub.AnalyzeCallCount);
+
+            // クレームしていないため状態は processing のまま（failed 記録で履歴を汚さない）。
+            var detail = await client.GetFromJsonAsync<SubsidiaryCheckDetail>(
+                $"/api/subsidiary-check/{staleId}");
+            Assert.Equal(SubsidiaryCheckStatus.Processing, detail!.Summary.Status);
+            Assert.Null(detail.Summary.ErrorMessage);
+        }
+        finally
+        {
+            ReleaseAcceptanceSlots(reserved);
+        }
+
+        // 上限が解消されれば同じ孤児を回復できる（拒否が状態を壊していないことの確認）。
+        var retry = await client.PostAsync($"/api/subsidiary-check/{staleId}/rerun", content: null);
+        retry.EnsureSuccessStatusCode();
+        var settled = await WaitForSettledAsync(client, staleId);
+        Assert.Equal(SubsidiaryCheckStatus.Completed, settled.Summary.Status);
+    }
+
+    [Fact]
+    public async Task Rerun_PreparationFailureInBackground_IsRecordedAsFailed()
+    {
+        // クレーム成立後・AI 呼出前の準備（商品情報・画像バイナリの DB 読取）で失敗しても、
+        // processing のまま取り残さず failed 記録に落とす（無保護区間がないこと）。
+        // 非同期化でこの区間はバックグラウンドへ移ったため、保護もバックグラウンド側で効くこと。
+        var stub = new SubsidiaryCheckFakeAiClient { ResponseText = AllPassResponse };
+        using var factory = WithSubsidiaryAi(stub);
+        using var client = CreateClient(factory);
+
+        var staleId = await InsertProcessingCheckAsync(TimeSpan.FromMinutes(11));
+        SubsidiaryCheckService.RerunPrepareFailureOverride =
+            id => id == staleId ? new InvalidOperationException("準備失敗の注入") : null;
+        try
+        {
+            var rerun = await client.PostAsync($"/api/subsidiary-check/{staleId}/rerun", content: null);
+            rerun.EnsureSuccessStatusCode();
+
+            var detail = await WaitForSettledAsync(client, staleId);
+            Assert.Equal(SubsidiaryCheckStatus.Failed, detail.Summary.Status);
+            Assert.Contains("UNDX-SYS-001", detail.Summary.ErrorMessage ?? string.Empty);
+            // 準備段階で落ちているため AI は呼ばれない。
+            Assert.Equal(0, stub.AnalyzeCallCount);
+        }
+        finally
+        {
+            SubsidiaryCheckService.RerunPrepareFailureOverride = null;
+        }
+
+        // failed になったことで、注入を外せば通常の rerun で回復できる。
+        var recovered = await client.PostAsync($"/api/subsidiary-check/{staleId}/rerun", content: null);
+        recovered.EnsureSuccessStatusCode();
+        var settled = await WaitForSettledAsync(client, staleId);
+        Assert.Equal(SubsidiaryCheckStatus.Completed, settled.Summary.Status);
     }
 
     [Fact]
@@ -580,6 +719,68 @@ public sealed class SubsidiaryCheckIntegrationTests
         Assert.Equal(5, book!.Sections.Count);
         Assert.False(string.IsNullOrWhiteSpace(book.Source));
         Assert.Contains(book.Sections, s => s.Id == "icon-priority" && s.Items.Count == 7);
+    }
+
+    /// <summary>
+    /// status が processing でなくなる（completed / failed）まで詳細をポーリングして返す。
+    /// フロントの自動更新と同じく公開 API（GET 詳細）だけを観測手段に使うため、
+    /// バックグラウンド実行の内部構造（タスク・スコープ・カウンタ）には依存しない。
+    /// </summary>
+    private static async Task<SubsidiaryCheckDetail> WaitForSettledAsync(
+        HttpClient client, Guid checkId, TimeSpan? timeout = null)
+    {
+        var deadline = DateTime.UtcNow + (timeout ?? TimeSpan.FromSeconds(30));
+        while (true)
+        {
+            var detail = await client.GetFromJsonAsync<SubsidiaryCheckDetail>(
+                $"/api/subsidiary-check/{checkId}");
+            Assert.NotNull(detail);
+            if (detail!.Summary.Status != SubsidiaryCheckStatus.Processing)
+            {
+                return detail;
+            }
+
+            Assert.True(DateTime.UtcNow < deadline,
+                $"チェック {checkId} が制限時間内に完了しませんでした（processing のまま）。");
+            await Task.Delay(25);
+        }
+    }
+
+    /// <summary>
+    /// 受付枠（実行中＋待機中の上限）をすべて占有して「満杯」状態を作る。
+    /// 直前のテストのバックグラウンドタスクが解放し切るまで少し待つため、
+    /// 上限数ちょうどを確保できるまでリトライする（部分占有のまま先へ進んで取りこぼさない）。
+    /// </summary>
+    /// <returns>占有した枠数（<see cref="ReleaseAcceptanceSlots"/> へ渡す）。</returns>
+    private static async Task<int> OccupyAllAcceptanceSlotsAsync()
+    {
+        var deadline = DateTime.UtcNow + TimeSpan.FromSeconds(10);
+        while (true)
+        {
+            var reserved = 0;
+            while (SubsidiaryCheckService.TryReserveAiCheckSlotForTest())
+            {
+                reserved++;
+            }
+
+            if (reserved == SubsidiaryCheckService.MaxConcurrentAiChecks)
+            {
+                return reserved;
+            }
+
+            ReleaseAcceptanceSlots(reserved);
+            Assert.True(DateTime.UtcNow < deadline, "受付枠が解放されず、満杯状態を作れませんでした。");
+            await Task.Delay(25);
+        }
+    }
+
+    /// <summary><see cref="OccupyAllAcceptanceSlotsAsync"/> で占有した受付枠を解放する。</summary>
+    private static void ReleaseAcceptanceSlots(int count)
+    {
+        for (var i = 0; i < count; i++)
+        {
+            SubsidiaryCheckService.ReleaseAiCheckSlotForTest();
+        }
     }
 
     /// <summary>IAiChatClient を副資材チェック用スタブへ差し替えたファクトリを生成する。</summary>

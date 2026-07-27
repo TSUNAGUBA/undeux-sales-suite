@@ -148,11 +148,29 @@ public static class SubsidiaryCheckPromptBuilder
     /// <summary>
     /// 入力テキストからデータ境界のデリミタ文字列を除去する。
     /// 商品ラベル等に終了デリミタを埋め込んで「データ範囲の外」を偽装する攻撃を防ぐ。
+    /// <para>
+    /// <b>単発 Replace では不十分</b>: 除去した結果として新しいデリミタが再合成される「分割注入」
+    /// （例: <c>"===== 検品対象データ ここ" + {終了デリミタ} + "まで ====="</c> は1回の除去で
+    /// 正規の終了デリミタに戻る）で回避できるため、<b>変化がなくなるまで繰り返し除去</b>する。
+    /// ループを抜ける条件は「1周しても文字列が変化しない」＝どちらのデリミタも出現しないことであり、
+    /// 戻り値にデリミタ文字列が現れないことが保証される。
+    /// デリミタは非空文字列なので1周ごとに長さが必ず減少し、必ず停止する（入力長も検証済みで有界）。
+    /// </para>
     /// </summary>
     private static string StripDelimiters(string value)
-        => value
-            .Replace(InputDataBlockStart, string.Empty, StringComparison.Ordinal)
-            .Replace(InputDataBlockEnd, string.Empty, StringComparison.Ordinal);
+    {
+        string previous;
+        do
+        {
+            previous = value;
+            value = value
+                .Replace(InputDataBlockStart, string.Empty, StringComparison.Ordinal)
+                .Replace(InputDataBlockEnd, string.Empty, StringComparison.Ordinal);
+        }
+        while (!string.Equals(value, previous, StringComparison.Ordinal));
+
+        return value;
+    }
 
     private static void AppendIfPresent(StringBuilder builder, string label, string? value)
     {

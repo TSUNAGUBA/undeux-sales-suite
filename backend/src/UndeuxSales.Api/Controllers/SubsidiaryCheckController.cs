@@ -23,6 +23,9 @@ public sealed class SubsidiaryCheckController : ControllerBase
     // 拒否できず、無駄な受信帯域とメモリを消費する。
     // 到達時の BadHttpRequestException / InvalidDataException は
     // ExceptionHandlingMiddleware が 413（UNDX-REQ-008）へマップする。
+    // 注意: RequestSizeLimit は Kestrel の機能で TestServer 上では適用されないため、
+    // この transport 層上限そのものは統合テストで E2E 検証できていない
+    // （アプリ層の合計サイズ上限 UNDX-REQ-008 の経路はテスト済み）。
     private const long HardSizeLimitBytes = 25 * 1024 * 1024;
 
     // ページング既定値の SoT（ProductMasterController と同じ流儀。Repository は防御的クランプのみ行う）。
@@ -52,11 +55,14 @@ public sealed class SubsidiaryCheckController : ControllerBase
             cancellationToken);
 
     /// <summary>
-    /// 新規チェックの実行。multipart/form-data で
+    /// 新規チェックの登録＋AI チェックのバックグラウンド開始。multipart/form-data で
     /// <c>productId</c>（任意 uuid）・<c>productLabel</c>（任意）・
     /// <c>instructionImages</c>（指示書画像 1〜3枚）・<c>tagImages</c>（タグ画像 1〜10枚）を受け取り、
-    /// レコード＋画像を永続化 → AI 同期実行 → 結果を保存して詳細を返す。
-    /// AI 失敗時は failed 状態の詳細を返す（エラーを throw しない。登録済み記録は残る）。
+    /// レコード＋画像を永続化したうえで <b>status=processing の詳細を即座に返す</b>。
+    /// AI 実行はリクエストから切り離したバックグラウンドタスクで行い、フロントは
+    /// <c>GET /api/subsidiary-check/{checkId}</c> をポーリングして completed / failed を待つ
+    /// （共用リバースプロキシのタイムアウト約60秒を超えないための構造。mart 再構築と同じ流儀）。
+    /// 受付上限超過は 429（UNDX-REQ-009）で拒否する（永続化前）。
     /// </summary>
     [HttpPost]
     [RequestSizeLimit(HardSizeLimitBytes)]
@@ -96,7 +102,7 @@ public sealed class SubsidiaryCheckController : ControllerBase
         var tagImages = await ReadImagesAsync(
             tagFiles, SubsidiaryCheckService.MaxTagImages, cancellationToken);
 
-        return await _service.CreateAndRunAsync(
+        return await _service.CreateAndStartAsync(
             productId,
             NullIfEmpty(form["productLabel"]),
             instructionImages,
@@ -124,7 +130,8 @@ public sealed class SubsidiaryCheckController : ControllerBase
     /// <summary>
     /// AI 再実行（手動回復パス）。対象は failed 状態、または processing のまま
     /// 一定時間（SubsidiaryCheckService.ProcessingStaleAfter）超経過した孤児チェック。
-    /// completed のチェックは記録保護のため 400（UNDX-REQ-001）。
+    /// completed のチェックは記録保護のため 400（UNDX-REQ-001）、受付上限超過は 429（UNDX-REQ-009）。
+    /// 新規チェックと同じく AI 実行はバックグラウンドで行い、status=processing の詳細を即座に返す。
     /// </summary>
     [HttpPost("{checkId}/rerun")]
     public Task<SubsidiaryCheckDetail> Rerun(string checkId, CancellationToken cancellationToken)

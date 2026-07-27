@@ -96,6 +96,15 @@ public static class ErrorCodes
         "アップロードの合計サイズが上限を超えています。",
         "ファイルのサイズ・件数を減らして再試行してください。");
 
+    // REQ-009（副資材チェックの受付上限）:
+    //   実行中＋バックグラウンド待機中の AI チェック総数が上限
+    //   （SubsidiaryCheckService.MaxConcurrentAiChecks）に達しているときの 429。
+    //   上限値の SoT は同定数。REQ-001〜008 と衝突しない次番として 009 を採番した。
+    public static readonly ErrorCodeInfo AiCheckBusy = new(
+        "UNDX-REQ-009",
+        "AI チェックの受付上限に達しています（実行中・待機中のチェックが多すぎます）。",
+        "実行中のチェックが完了するまで待ってから再試行してください。");
+
     public static readonly ErrorCodeInfo DatabaseError = new(
         "UNDX-DATA-001",
         "データベース処理でエラーが発生しました。",
@@ -159,6 +168,7 @@ public static class ErrorCodes
         SubsidiaryImageTooLarge,
         SubsidiaryImageTooMany,
         UploadTotalTooLarge,
+        AiCheckBusy,
         DatabaseError,
         ProductNotFound,
         FlagNotFound,
