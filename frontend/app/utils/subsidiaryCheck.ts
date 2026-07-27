@@ -165,7 +165,20 @@ export const SUBSIDIARY_INSTRUCTION_MAX_COUNT = 3
 export const SUBSIDIARY_TAG_MAX_COUNT = 10
 /** 画像1枚のサイズ上限（5MB）。 */
 export const SUBSIDIARY_IMAGE_MAX_BYTES = 5 * 1024 * 1024
+/**
+ * 全画像（指示書＋タグ）の合計サイズ上限（20MB）。
+ * SoT はバックエンド SubsidiaryCheckService.MaxTotalImageBytes（Anthropic API の
+ * リクエスト32MB制限・base64膨張約1.33倍に対する安全値）。変更時は両者を同期させること。
+ */
+export const SUBSIDIARY_TOTAL_IMAGE_MAX_BYTES = 20 * 1024 * 1024
 /** 受け付ける画像の MIME タイプ。 */
 export const SUBSIDIARY_IMAGE_TYPES = ['image/jpeg', 'image/png'] as const
 /** input[accept] に渡す受付形式。 */
 export const SUBSIDIARY_IMAGE_ACCEPT = SUBSIDIARY_IMAGE_TYPES.join(',')
+
+/**
+ * processing のまま経過した場合に「孤児」とみなし再実行導線を出すまでの時間（10分）。
+ * SoT はバックエンド SubsidiaryCheckService.ProcessingStaleAfter（rerun の許可条件）。
+ * 変更時は両者を同期させること。
+ */
+export const SUBSIDIARY_PROCESSING_STALE_MS = 10 * 60 * 1000

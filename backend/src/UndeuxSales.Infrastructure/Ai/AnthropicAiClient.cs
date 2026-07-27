@@ -147,8 +147,10 @@ public sealed class AnthropicAiClient : IAiChatClient
         }
         catch (Exception ex) when (ex is not OperationCanceledException)
         {
+            // SDK の生メッセージ（内部文言）はログのみに残し、ユーザー向け詳細は汎用文言にする。
             _logger.LogWarning(ex, "画像説明の生成に失敗しました（モデル: {Model}）", _options.VisionModel);
-            throw new AppException(ErrorCodes.AiCallFailed, StatusCodes502, ex.Message);
+            throw new AppException(ErrorCodes.AiCallFailed, StatusCodes502,
+                "AI 呼出に失敗しました。時間をおいて再試行してください。");
         }
     }
 
@@ -200,19 +202,33 @@ public sealed class AnthropicAiClient : IAiChatClient
             ],
         };
 
+        Message response;
         try
         {
-            var response = await client.Messages.Create(parameters, cancellationToken: cancellationToken);
-            var texts = response.Content
-                .Select(block => block.TryPickText(out var text) ? text.Text : null)
-                .Where(text => !string.IsNullOrEmpty(text));
-            return string.Join("\n", texts).Trim();
+            response = await client.Messages.Create(parameters, cancellationToken: cancellationToken);
         }
         catch (Exception ex) when (ex is not OperationCanceledException)
         {
+            // SDK の生メッセージ（内部文言）はログのみに残し、ユーザー向け詳細は汎用文言にする。
             _logger.LogWarning(ex, "画像分析応答の生成に失敗しました（モデル: {Model}）", _options.Model);
-            throw new AppException(ErrorCodes.AiCallFailed, StatusCodes502, ex.Message);
+            throw new AppException(ErrorCodes.AiCallFailed, StatusCodes502,
+                "AI 呼出に失敗しました。時間をおいて再試行してください。");
         }
+
+        if (response.StopReason == StopReason.MaxTokens)
+        {
+            // 出力上限で切り詰められた JSON は解析不能なため、解析前に明示メッセージで失敗させる。
+            _logger.LogWarning(
+                "画像分析応答が最大出力トークン（{MaxTokens}）で切り詰められました（モデル: {Model}）",
+                maxTokens, _options.Model);
+            throw new AppException(ErrorCodes.AiCallFailed, StatusCodes502,
+                "AI 応答が出力トークン上限で切り詰められました。画像の枚数を減らして再実行してください。");
+        }
+
+        var texts = response.Content
+            .Select(block => block.TryPickText(out var text) ? text.Text : null)
+            .Where(text => !string.IsNullOrEmpty(text));
+        return string.Join("\n", texts).Trim();
     }
 
     private const int StatusCodes502 = 502;

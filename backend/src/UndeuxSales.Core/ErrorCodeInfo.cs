@@ -62,6 +62,10 @@ public static class ErrorCodes
         "取込ファイルのサイズが上限を超えています。",
         "ファイルを分割するか、上限内のサイズにしてアップロードしてください。");
 
+    // REQ-004〜008（副資材チェックの画像検証）:
+    // 枚数・サイズ等の上限値の SoT は SubsidiaryCheckService の定数
+    // （MaxInstructionImages / MaxTagImages / MaxImageSizeBytes / MaxTotalImageBytes）。
+    // 上限値を変更する場合は、以下のメッセージ文言も同時に更新すること。
     public static readonly ErrorCodeInfo SubsidiaryImageMissing = new(
         "UNDX-REQ-004",
         "副資材チェックの画像が指定されていません。",
@@ -81,6 +85,11 @@ public static class ErrorCodes
         "UNDX-REQ-007",
         "副資材チェックの画像枚数が上限を超えています。",
         "指示書画像は3枚以内、タグ画像は10枚以内に減らしてアップロードし直してください。");
+
+    public static readonly ErrorCodeInfo UploadTotalTooLarge = new(
+        "UNDX-REQ-008",
+        "アップロードの合計サイズが上限を超えています。",
+        "画像の枚数を減らすか、解像度を下げて再試行してください。");
 
     public static readonly ErrorCodeInfo DatabaseError = new(
         "UNDX-DATA-001",
@@ -144,6 +153,7 @@ public static class ErrorCodes
         SubsidiaryImageInvalidFormat,
         SubsidiaryImageTooLarge,
         SubsidiaryImageTooMany,
+        UploadTotalTooLarge,
         DatabaseError,
         ProductNotFound,
         FlagNotFound,

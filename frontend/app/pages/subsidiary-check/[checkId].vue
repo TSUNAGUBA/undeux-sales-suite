@@ -16,7 +16,8 @@ import type {
  * 副資材チェックの結果詳細。
  * 判定バナー（pass/warn/fail）・カテゴリ別（レイアウト/順番/内容）の指摘・
  * 商品情報+付属情報・アップロード画像ギャラリーを表示する。
- * status=failed のチェックには再実行（手動回復パス）を提供する。
+ * status=failed のチェック、および processing のまま一定時間経過した孤児チェックには
+ * 再実行（手動回復パス）を提供する。
  *
  * 画像は Authorization ヘッダが必要なため <img src="API URL"> の直指定はできない。
  * RagKnowledgeSection.vue の原本ダウンロードと同じ「認証付き fetch + URL.createObjectURL」
@@ -164,10 +165,22 @@ const findingGroups = computed(() =>
   })),
 )
 
-// ---- 再実行（failed のみ。手動回復パス） ----
+// ---- 再実行（failed / 長時間 processing の孤児。手動回復パス） ----
 
 const rerunning = ref(false)
 const rerunError = ref<string | null>(null)
+
+/**
+ * processing のまま SUBSIDIARY_PROCESSING_STALE_MS（バックエンド
+ * SubsidiaryCheckService.ProcessingStaleAfter と同値）超経過した「孤児」か。
+ * プロセスクラッシュ等で結果が確定しない場合の回復導線（rerun）を出す判定に使う。
+ * 時刻は detail 取得（load / 再読込）時点で評価される（computed は detail 変更で再評価）。
+ */
+const isStaleProcessing = computed(() => {
+  const s = detail.value?.summary
+  if (!s || s.status !== 'processing') return false
+  return Date.now() - new Date(s.createdAt).getTime() >= SUBSIDIARY_PROCESSING_STALE_MS
+})
 
 async function rerun(): Promise<void> {
   if (rerunning.value) return
@@ -290,18 +303,42 @@ onMounted(() => {
 
         <div
           v-else-if="summary.status === 'processing'"
-          class="flex flex-wrap items-center gap-3 rounded-xl border border-sky-200 bg-sky-50 p-4 text-sm text-sky-700"
+          class="rounded-xl border border-sky-200 bg-sky-50 p-4 text-sm text-sky-700"
         >
-          <LoaderCircle class="h-5 w-5 shrink-0 animate-spin" aria-hidden="true" />
-          <span class="flex-1">AIチェックを処理中です…（数十秒かかることがあります）</span>
-          <button
-            type="button"
-            class="inline-flex min-h-[36px] items-center gap-1 rounded-lg border border-sky-300 bg-white px-3 py-2 text-xs text-sky-700 hover:bg-sky-100"
-            @click="load"
-          >
-            <RotateCcw class="h-3.5 w-3.5" />
-            再読込
-          </button>
+          <div class="flex flex-wrap items-center gap-3">
+            <LoaderCircle class="h-5 w-5 shrink-0 animate-spin" aria-hidden="true" />
+            <span class="flex-1">AIチェックを処理中です…（数十秒かかることがあります）</span>
+            <button
+              type="button"
+              class="inline-flex min-h-[36px] items-center gap-1 rounded-lg border border-sky-300 bg-white px-3 py-2 text-xs text-sky-700 hover:bg-sky-100"
+              @click="load"
+            >
+              <RotateCcw class="h-3.5 w-3.5" />
+              再読込
+            </button>
+          </div>
+          <!-- 長時間 processing のままの孤児チェックには再実行導線を出す（バックエンドの孤児回復パス） -->
+          <div v-if="isStaleProcessing" class="mt-3 border-t border-sky-200 pt-3">
+            <p class="text-xs text-sky-600">
+              処理中のまま時間が経過しています。処理が中断された可能性があるため、再実行できます
+              （同じ画像に対して AI チェックをやり直します）。
+            </p>
+            <div class="mt-2 flex flex-wrap items-center gap-3">
+              <button
+                type="button"
+                class="inline-flex items-center gap-1.5 rounded-lg bg-sky-600 px-4 py-2 text-sm font-medium text-white hover:bg-sky-700 disabled:opacity-50"
+                :disabled="rerunning"
+                @click="rerun"
+              >
+                <LoaderCircle v-if="rerunning" class="h-4 w-4 animate-spin" />
+                <RotateCcw v-else class="h-4 w-4" />
+                {{ rerunning ? 'AIチェック実行中…（数十秒かかることがあります）' : 'AIチェックを再実行' }}
+              </button>
+              <p v-if="rerunError" class="text-xs text-rose-700" role="alert">
+                再実行に失敗しました: {{ rerunError }}
+              </p>
+            </div>
+          </div>
         </div>
 
         <div

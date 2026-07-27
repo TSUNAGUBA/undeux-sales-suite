@@ -34,6 +34,27 @@ public sealed class ExceptionHandlingMiddleware
             await WriteErrorAsync(context, ex.HttpStatus,
                 new ApiError(ex.Error.Code, ex.Error.Summary, ex.Error.Remedy, detail, details));
         }
+        catch (BadHttpRequestException ex) when (ex.StatusCode == StatusCodes.Status413PayloadTooLarge)
+        {
+            // Kestrel のリクエストサイズ上限（RequestSizeLimit）超過。
+            // 正当入力に近い過大アップロードのため 500（UNDX-SYS-001）ではなく 413 の採番エラーで返す。
+            _logger.LogWarning(ex, "リクエストサイズ上限超過のリクエストを拒否しました。");
+            await WriteErrorAsync(context, StatusCodes.Status413PayloadTooLarge,
+                new ApiError(
+                    ErrorCodes.UploadTotalTooLarge.Code,
+                    ErrorCodes.UploadTotalTooLarge.Summary,
+                    ErrorCodes.UploadTotalTooLarge.Remedy));
+        }
+        catch (InvalidDataException ex)
+        {
+            // multipart 読取の上限（MultipartBodyLengthLimit 等）超過。413 の採番エラーへマップする。
+            _logger.LogWarning(ex, "multipart 読取上限超過のリクエストを拒否しました。");
+            await WriteErrorAsync(context, StatusCodes.Status413PayloadTooLarge,
+                new ApiError(
+                    ErrorCodes.UploadTotalTooLarge.Code,
+                    ErrorCodes.UploadTotalTooLarge.Summary,
+                    ErrorCodes.UploadTotalTooLarge.Remedy));
+        }
         catch (DbException ex)
         {
             _logger.LogError(ex, "データベースエラーが発生しました。");

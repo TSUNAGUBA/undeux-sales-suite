@@ -15,8 +15,14 @@ namespace UndeuxSales.Api.Controllers;
 [Route("api/subsidiary-check")]
 public sealed class SubsidiaryCheckController : ControllerBase
 {
-    // multipart 全体の上限（指示書3枚＋タグ10枚 × 各5MB ＋ メタ）。
+    // multipart 全体の transport 層上限（防御層）。
+    // 正当な入力はアプリ層の合計サイズ検証（SubsidiaryCheckService.MaxTotalImageBytes = 20MB）で
+    // 先に拒否されるため、この 60MB（20MB＋メタ情報＋十分な余裕）に到達するのは異常入力のみ。
+    // 到達時の BadHttpRequestException / InvalidDataException は
+    // ExceptionHandlingMiddleware が 413（UNDX-REQ-008）へマップする。
     private const long HardSizeLimitBytes = 60 * 1024 * 1024;
+
+    // ページング既定値の SoT（ProductMasterController と同じ流儀。Repository は防御的クランプのみ行う）。
     private const int DefaultPage = 1;
     private const int DefaultPageSize = 20;
 
@@ -75,11 +81,17 @@ public sealed class SubsidiaryCheckController : ControllerBase
             productId = parsed;
         }
 
+        var instructionFiles = form.Files.GetFiles("instructionImages");
+        var tagFiles = form.Files.GetFiles("tagImages");
+
+        // 合計サイズはバッファ確保前に file.Length の合算で早期拒否する（UNDX-REQ-008・413）。
+        SubsidiaryCheckService.EnsureTotalSizeWithinLimit(
+            instructionFiles.Concat(tagFiles).Sum(file => file.Length));
+
         var instructionImages = await ReadImagesAsync(
-            form.Files.GetFiles("instructionImages"), SubsidiaryCheckService.MaxInstructionImages,
-            cancellationToken);
+            instructionFiles, SubsidiaryCheckService.MaxInstructionImages, cancellationToken);
         var tagImages = await ReadImagesAsync(
-            form.Files.GetFiles("tagImages"), SubsidiaryCheckService.MaxTagImages, cancellationToken);
+            tagFiles, SubsidiaryCheckService.MaxTagImages, cancellationToken);
 
         return await _service.CreateAndRunAsync(
             productId,
@@ -107,7 +119,8 @@ public sealed class SubsidiaryCheckController : ControllerBase
     }
 
     /// <summary>
-    /// 失敗（failed）状態のチェックの AI 再実行（手動回復パス）。
+    /// AI 再実行（手動回復パス）。対象は failed 状態、または processing のまま
+    /// 一定時間（SubsidiaryCheckService.ProcessingStaleAfter）超経過した孤児チェック。
     /// completed のチェックは記録保護のため 400（UNDX-REQ-001）。
     /// </summary>
     [HttpPost("{checkId}/rerun")]
@@ -135,6 +148,8 @@ public sealed class SubsidiaryCheckController : ControllerBase
         var images = new List<SubsidiaryCheckImageUpload>(files.Count);
         foreach (var file in files)
         {
+            // 形式（Content-Type）・サイズはバッファ確保前に検証し、無駄な大容量確保を避ける。
+            SubsidiaryCheckService.EnsureAllowedContentType(file.FileName, file.ContentType);
             if (file.Length > SubsidiaryCheckService.MaxImageSizeBytes)
             {
                 throw new AppException(ErrorCodes.SubsidiaryImageTooLarge, 413,
@@ -150,6 +165,7 @@ public sealed class SubsidiaryCheckController : ControllerBase
                 await stream.ReadExactlyAsync(data, cancellationToken);
             }
 
+            // 読込後の最終検証（空ファイル・マジックバイト等はデータが必要）。
             var image = new SubsidiaryCheckImageUpload(file.FileName, file.ContentType, data);
             SubsidiaryCheckService.ValidateImage(image);
             images.Add(image);

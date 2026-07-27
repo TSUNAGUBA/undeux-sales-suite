@@ -10,6 +10,7 @@ using UndeuxSales.Core;
 using UndeuxSales.Core.Rag;
 using UndeuxSales.Core.SubsidiaryCheck;
 using UndeuxSales.Infrastructure.Queries;
+using UndeuxSales.Infrastructure.SubsidiaryCheck;
 
 namespace UndeuxSales.Tests.Integration;
 
@@ -53,8 +54,8 @@ public sealed class SubsidiaryCheckIntegrationTests
         var instructionBytes = new byte[] { 0xFF, 0xD8, 0xFF, 0x01, 0x02 };
         using var form = new MultipartFormDataContent();
         AddImage(form, "instructionImages", "instruction1.jpg", "image/jpeg", instructionBytes);
-        AddImage(form, "tagImages", "tag1.png", "image/png", new byte[] { 0x89, 0x50, 0x4E, 0x47 });
-        AddImage(form, "tagImages", "tag2.png", "image/png", new byte[] { 0x89, 0x50, 0x4E, 0x48 });
+        AddImage(form, "tagImages", "tag1.png", "image/png", PngBytes(0x01));
+        AddImage(form, "tagImages", "tag2.png", "image/png", PngBytes(0x02));
         form.Add(new StringContent("TAG-3943 スリッパ"), "productLabel");
 
         var create = await client.PostAsync("/api/subsidiary-check", form);
@@ -113,8 +114,8 @@ public sealed class SubsidiaryCheckIntegrationTests
         using var client = CreateClient(factory);
 
         using var form = new MultipartFormDataContent();
-        AddImage(form, "instructionImages", "instruction.jpg", "image/jpeg", new byte[] { 1, 2, 3 });
-        AddImage(form, "tagImages", "tag.png", "image/png", new byte[] { 4, 5, 6 });
+        AddImage(form, "instructionImages", "instruction.jpg", "image/jpeg", JpegBytes(0x01));
+        AddImage(form, "tagImages", "tag.png", "image/png", PngBytes(0x01));
         form.Add(new StringContent(productId.ToString()), "productId");
 
         var create = await client.PostAsync("/api/subsidiary-check", form);
@@ -145,7 +146,7 @@ public sealed class SubsidiaryCheckIntegrationTests
         using var client = CreateClient(factory);
 
         using var form = new MultipartFormDataContent();
-        AddImage(form, "instructionImages", "instruction.jpg", "image/jpeg", new byte[] { 1 });
+        AddImage(form, "instructionImages", "instruction.jpg", "image/jpeg", JpegBytes(0x01));
 
         var response = await client.PostAsync("/api/subsidiary-check", form);
 
@@ -163,10 +164,10 @@ public sealed class SubsidiaryCheckIntegrationTests
         using var form = new MultipartFormDataContent();
         for (var i = 0; i < 4; i++)
         {
-            AddImage(form, "instructionImages", $"instruction{i}.jpg", "image/jpeg", new byte[] { 1 });
+            AddImage(form, "instructionImages", $"instruction{i}.jpg", "image/jpeg", JpegBytes((byte)i));
         }
 
-        AddImage(form, "tagImages", "tag.png", "image/png", new byte[] { 2 });
+        AddImage(form, "tagImages", "tag.png", "image/png", PngBytes(0x01));
 
         var response = await client.PostAsync("/api/subsidiary-check", form);
 
@@ -183,7 +184,7 @@ public sealed class SubsidiaryCheckIntegrationTests
 
         using var form = new MultipartFormDataContent();
         AddImage(form, "instructionImages", "instruction.gif", "image/gif", new byte[] { 1 });
-        AddImage(form, "tagImages", "tag.png", "image/png", new byte[] { 2 });
+        AddImage(form, "tagImages", "tag.png", "image/png", PngBytes(0x01));
 
         var response = await client.PostAsync("/api/subsidiary-check", form);
 
@@ -214,8 +215,8 @@ public sealed class SubsidiaryCheckIntegrationTests
         var before = await client.GetFromJsonAsync<SubsidiaryCheckPage>("/api/subsidiary-check");
 
         using var form = new MultipartFormDataContent();
-        AddImage(form, "instructionImages", "instruction.jpg", "image/jpeg", new byte[] { 1 });
-        AddImage(form, "tagImages", "tag.png", "image/png", new byte[] { 2 });
+        AddImage(form, "instructionImages", "instruction.jpg", "image/jpeg", JpegBytes(0x01));
+        AddImage(form, "tagImages", "tag.png", "image/png", PngBytes(0x01));
 
         var response = await client.PostAsync("/api/subsidiary-check", form);
 
@@ -236,8 +237,8 @@ public sealed class SubsidiaryCheckIntegrationTests
         using var client = CreateClient(factory);
 
         using var form = new MultipartFormDataContent();
-        AddImage(form, "instructionImages", "instruction.jpg", "image/jpeg", new byte[] { 1 });
-        AddImage(form, "tagImages", "tag.png", "image/png", new byte[] { 2 });
+        AddImage(form, "instructionImages", "instruction.jpg", "image/jpeg", JpegBytes(0x01));
+        AddImage(form, "tagImages", "tag.png", "image/png", PngBytes(0x01));
 
         var create = await client.PostAsync("/api/subsidiary-check", form);
         create.EnsureSuccessStatusCode();
@@ -266,6 +267,122 @@ public sealed class SubsidiaryCheckIntegrationTests
             $"/api/subsidiary-check/{created.Summary.CheckId}/rerun", content: null);
         Assert.Equal(HttpStatusCode.BadRequest, protectedRerun.StatusCode);
         Assert.Contains("UNDX-REQ-001", await protectedRerun.Content.ReadAsStringAsync());
+    }
+
+    [Fact]
+    public async Task Create_TotalSizeOverLimit_Returns413WithErrorCode()
+    {
+        var stub = new SubsidiaryCheckFakeAiClient();
+        using var factory = WithSubsidiaryAi(stub);
+        using var client = CreateClient(factory);
+
+        // 各画像は 5MB 以下（各上限内）だが、合計 21MB > 20MB（MaxTotalImageBytes）で拒否される。
+        using var form = new MultipartFormDataContent();
+        AddImage(form, "instructionImages", "instruction.jpg", "image/jpeg",
+            LargeImage(JpegBytes(0x01), 5 * 1024 * 1024));
+        for (var i = 0; i < 4; i++)
+        {
+            AddImage(form, "tagImages", $"tag{i}.png", "image/png",
+                LargeImage(PngBytes((byte)i), 4 * 1024 * 1024));
+        }
+
+        var response = await client.PostAsync("/api/subsidiary-check", form);
+
+        Assert.Equal(HttpStatusCode.RequestEntityTooLarge, response.StatusCode);
+        Assert.Contains("UNDX-REQ-008", await response.Content.ReadAsStringAsync());
+    }
+
+    [Fact]
+    public async Task Create_ContentTypeMagicMismatch_Returns400WithErrorCode()
+    {
+        var stub = new SubsidiaryCheckFakeAiClient();
+        using var factory = WithSubsidiaryAi(stub);
+        using var client = CreateClient(factory);
+
+        // Content-Type の申告は image/jpeg だが中身は PNG（マジックバイト不一致）→ UNDX-REQ-005。
+        using var form = new MultipartFormDataContent();
+        AddImage(form, "instructionImages", "fake.jpg", "image/jpeg", PngBytes(0x01));
+        AddImage(form, "tagImages", "tag.png", "image/png", PngBytes(0x02));
+
+        var response = await client.PostAsync("/api/subsidiary-check", form);
+
+        Assert.Equal(HttpStatusCode.BadRequest, response.StatusCode);
+        Assert.Contains("UNDX-REQ-005", await response.Content.ReadAsStringAsync());
+    }
+
+    [Fact]
+    public async Task Rerun_StaleProcessing_IsAllowed_AndFreshProcessingIsRejected()
+    {
+        var stub = new SubsidiaryCheckFakeAiClient { ResponseText = AllPassResponse };
+        using var factory = WithSubsidiaryAi(stub);
+        using var client = CreateClient(factory);
+
+        // 作成から10分超経過した processing 孤児（プロセスクラッシュ等の想定）は再実行で回復できる。
+        var staleId = await InsertProcessingCheckAsync(TimeSpan.FromMinutes(11));
+        var rerun = await client.PostAsync($"/api/subsidiary-check/{staleId}/rerun", content: null);
+        rerun.EnsureSuccessStatusCode();
+        var detail = await rerun.Content.ReadFromJsonAsync<SubsidiaryCheckDetail>();
+        Assert.Equal(SubsidiaryCheckStatus.Completed, detail!.Summary.Status);
+        Assert.Equal(SubsidiaryCheckSeverity.Pass, detail.Summary.Judgment);
+
+        // 新しい（実行中の可能性がある）processing は従来どおり 400 で拒否される。
+        var freshId = await InsertProcessingCheckAsync(TimeSpan.Zero);
+        var rejected = await client.PostAsync($"/api/subsidiary-check/{freshId}/rerun", content: null);
+        Assert.Equal(HttpStatusCode.BadRequest, rejected.StatusCode);
+        Assert.Contains("UNDX-REQ-001", await rejected.Content.ReadAsStringAsync());
+    }
+
+    [Fact]
+    public async Task UpdateResult_CompletedCheck_IsProtectedFromOverwrite()
+    {
+        var stub = new SubsidiaryCheckFakeAiClient { ResponseText = AllPassResponse };
+        using var factory = WithSubsidiaryAi(stub);
+        using var client = CreateClient(factory);
+
+        using var form = new MultipartFormDataContent();
+        AddImage(form, "instructionImages", "instruction.jpg", "image/jpeg", JpegBytes(0x01));
+        AddImage(form, "tagImages", "tag.png", "image/png", PngBytes(0x01));
+        var create = await client.PostAsync("/api/subsidiary-check", form);
+        create.EnsureSuccessStatusCode();
+        var created = await create.Content.ReadFromJsonAsync<SubsidiaryCheckDetail>();
+        Assert.Equal(SubsidiaryCheckStatus.Completed, created!.Summary.Status);
+
+        // completed へ failed を書き込もうとしても状態遷移ガード（記録保護・原則2）で 0 行更新になる。
+        using var scope = factory.Services.CreateScope();
+        var repository = scope.ServiceProvider.GetRequiredService<SubsidiaryCheckRepository>();
+        var updated = await repository.UpdateResultAsync(
+            created.Summary.CheckId, SubsidiaryCheckStatus.Failed, judgment: null,
+            failCount: 0, warnCount: 0, findingsJson: null, aiModel: "overwrite-model",
+            errorMessage: "上書きテスト");
+
+        Assert.Equal(0, updated);
+        var detail = await client.GetFromJsonAsync<SubsidiaryCheckDetail>(
+            $"/api/subsidiary-check/{created.Summary.CheckId}");
+        Assert.Equal(SubsidiaryCheckStatus.Completed, detail!.Summary.Status);
+        Assert.Equal(SubsidiaryCheckSeverity.Pass, detail.Summary.Judgment);
+        Assert.Null(detail.Summary.ErrorMessage);
+    }
+
+    [Fact]
+    public async Task Create_AiTimeout_RecordsFailedDetail_WithTimeoutMessage()
+    {
+        // AI 呼出がタイムアウト（OperationCanceledException・リクエスト側は未キャンセル）した場合、
+        // キャンセル扱いにせず failed 記録＋failed Detail が返る。
+        var stub = new SubsidiaryCheckFakeAiClient { AnalyzeException = new OperationCanceledException() };
+        using var factory = WithSubsidiaryAi(stub);
+        using var client = CreateClient(factory);
+
+        using var form = new MultipartFormDataContent();
+        AddImage(form, "instructionImages", "instruction.jpg", "image/jpeg", JpegBytes(0x01));
+        AddImage(form, "tagImages", "tag.png", "image/png", PngBytes(0x01));
+
+        var create = await client.PostAsync("/api/subsidiary-check", form);
+        create.EnsureSuccessStatusCode();
+        var created = await create.Content.ReadFromJsonAsync<SubsidiaryCheckDetail>();
+
+        Assert.Equal(SubsidiaryCheckStatus.Failed, created!.Summary.Status);
+        Assert.Contains("UNDX-AI-001", created.Summary.ErrorMessage ?? string.Empty);
+        Assert.Contains("タイムアウト", created.Summary.ErrorMessage ?? string.Empty);
     }
 
     [Fact]
@@ -304,6 +421,51 @@ public sealed class SubsidiaryCheckIntegrationTests
         var part = new ByteArrayContent(bytes);
         part.Headers.ContentType = new MediaTypeHeaderValue(contentType);
         form.Add(part, fieldName, fileName);
+    }
+
+    /// <summary>JPEG マジックバイト（FF D8 FF）を持つ擬似画像（marker で内容を変えられる）。</summary>
+    private static byte[] JpegBytes(byte marker) => new byte[] { 0xFF, 0xD8, 0xFF, marker };
+
+    /// <summary>PNG マジックバイト（89 50 4E 47）を持つ擬似画像（marker で内容を変えられる）。</summary>
+    private static byte[] PngBytes(byte marker) => new byte[] { 0x89, 0x50, 0x4E, 0x47, marker };
+
+    /// <summary>指定サイズまでゼロ埋めした擬似画像（先頭は magic のバイト列）。</summary>
+    private static byte[] LargeImage(byte[] magic, int totalLength)
+    {
+        var data = new byte[totalLength];
+        magic.CopyTo(data, 0);
+        return data;
+    }
+
+    /// <summary>
+    /// processing 状態のチェック（＋画像2枚）を DB へ直接投入する（processing 孤児のシミュレーション）。
+    /// </summary>
+    /// <param name="age">created_at を現在からどれだけ過去にするか。</param>
+    private async Task<Guid> InsertProcessingCheckAsync(TimeSpan age)
+    {
+        var checkId = Guid.NewGuid();
+        await using var connection = new NpgsqlConnection(_fixture.ConnectionString);
+        await connection.OpenAsync();
+        await connection.ExecuteAsync("""
+            INSERT INTO subsidiary_check (check_id, product_label, status, created_by, created_at)
+            VALUES (@checkId, 'processing 孤児テスト', 'processing', 'tester@example.com', now() - @age);
+
+            INSERT INTO subsidiary_check_image
+                (image_id, check_id, kind, file_name, content_type, size_bytes, data, sort_order)
+            VALUES
+                (@instructionId, @checkId, 'instruction', 'i.jpg', 'image/jpeg', 4, @jpeg, 0),
+                (@tagId, @checkId, 'tag', 't.png', 'image/png', 5, @png, 0);
+            """,
+            new
+            {
+                checkId,
+                age,
+                instructionId = Guid.NewGuid(),
+                tagId = Guid.NewGuid(),
+                jpeg = JpegBytes(0x01),
+                png = PngBytes(0x01),
+            });
+        return checkId;
     }
 
     /// <summary>商品マスタ＋付属情報のテストデータを投入する（自然キーはテストごとに一意）。</summary>
@@ -346,6 +508,11 @@ public sealed class SubsidiaryCheckFakeAiClient : IAiChatClient
     /// <summary>AnalyzeImagesAsync が返す固定応答テキスト。</summary>
     public string ResponseText { get; set; } = "{ \"findings\": [] }";
 
+    /// <summary>
+    /// AnalyzeImagesAsync が throw する例外（AI 呼出タイムアウト等の異常系検証用）。null なら正常応答。
+    /// </summary>
+    public Exception? AnalyzeException { get; set; }
+
     public bool IsConfigured => Configured;
 
     public string ChatModel => "fake-subsidiary-model";
@@ -365,7 +532,17 @@ public sealed class SubsidiaryCheckFakeAiClient : IAiChatClient
     public Task<string> AnalyzeImagesAsync(
         IReadOnlyList<AiImageInput> images, string systemPrompt, string userPrompt,
         int maxTokens, CancellationToken cancellationToken)
-        => Configured
-            ? Task.FromResult(ResponseText)
-            : throw new AppException(ErrorCodes.AiNotConfigured, 503);
+    {
+        if (!Configured)
+        {
+            throw new AppException(ErrorCodes.AiNotConfigured, 503);
+        }
+
+        if (AnalyzeException is not null)
+        {
+            throw AnalyzeException;
+        }
+
+        return Task.FromResult(ResponseText);
+    }
 }

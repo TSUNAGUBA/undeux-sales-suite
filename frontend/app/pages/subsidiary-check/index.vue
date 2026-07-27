@@ -242,8 +242,16 @@ function maxCountOf(kind: SubsidiaryCheckImageKind): number {
   return kind === 'instruction' ? SUBSIDIARY_INSTRUCTION_MAX_COUNT : SUBSIDIARY_TAG_MAX_COUNT
 }
 
+/** 選択済み全画像（指示書＋タグ）の合計サイズ。 */
+function totalSelectedBytes(): number {
+  return [...instructionImages.value, ...tagImages.value].reduce(
+    (sum, image) => sum + image.file.size,
+    0,
+  )
+}
+
 /**
- * ファイル追加。形式（jpeg/png）・サイズ（5MB）・枚数上限をクライアント側でも検証し、
+ * ファイル追加。形式（jpeg/png）・サイズ（各5MB・合計20MB）・枚数上限をクライアント側でも検証し、
  * 通ったものだけプレビュー付きで追加する（検証の SoT はバックエンド。ここは即時フィードバック用）。
  */
 function addFiles(kind: SubsidiaryCheckImageKind, fileList: FileList | null): void {
@@ -258,6 +266,13 @@ function addFiles(kind: SubsidiaryCheckImageKind, fileList: FileList | null): vo
     }
     if (file.size > SUBSIDIARY_IMAGE_MAX_BYTES) {
       errors.push(`${file.name}: ファイルサイズが上限（${formatFileSize(SUBSIDIARY_IMAGE_MAX_BYTES)}）を超えています。`)
+      continue
+    }
+    if (totalSelectedBytes() + file.size > SUBSIDIARY_TOTAL_IMAGE_MAX_BYTES) {
+      errors.push(
+        `${file.name}: 画像の合計サイズを ${formatFileSize(SUBSIDIARY_TOTAL_IMAGE_MAX_BYTES)} 以内にしてください`
+        + `（現在 ${formatFileSize(totalSelectedBytes())}）。`,
+      )
       continue
     }
     if (target.value.length >= max) {
@@ -313,6 +328,13 @@ async function runCheck(): Promise<void> {
   }
   if (tagImages.value.length < 1 || tagImages.value.length > SUBSIDIARY_TAG_MAX_COUNT) {
     formError.value = `タグ画像を 1〜${SUBSIDIARY_TAG_MAX_COUNT} 枚アップロードしてください。`
+    return
+  }
+  // 合計サイズの最終ガード（追加時検証と同値。サーバは UNDX-REQ-008 で拒否する）。
+  if (totalSelectedBytes() > SUBSIDIARY_TOTAL_IMAGE_MAX_BYTES) {
+    formError.value =
+      `画像の合計サイズを ${formatFileSize(SUBSIDIARY_TOTAL_IMAGE_MAX_BYTES)} 以内にしてください`
+      + `（現在 ${formatFileSize(totalSelectedBytes())}）。`
     return
   }
   submitting.value = true
@@ -614,7 +636,7 @@ onMounted(() => {
             </span>
           </div>
           <p class="mt-0.5 text-xs text-slate-500">
-            {{ upload.note }}。JPEG / PNG・各 {{ formatFileSize(SUBSIDIARY_IMAGE_MAX_BYTES) }} 以下。
+            {{ upload.note }}。JPEG / PNG・各 {{ formatFileSize(SUBSIDIARY_IMAGE_MAX_BYTES) }} 以下・全画像の合計 {{ formatFileSize(SUBSIDIARY_TOTAL_IMAGE_MAX_BYTES) }} 以内。
           </p>
 
           <input

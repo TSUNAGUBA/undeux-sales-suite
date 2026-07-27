@@ -159,10 +159,10 @@ flowchart TD
 | POST | `/api/chat/business` | 業務チャット（`domain=system\|quality\|logistics`＋会話履歴）。**SSE ストリーミング応答** |
 | POST | `/api/chat/negotiation` | 商談チャット（`businessTypeCode`＋`deptCode`＋会話履歴）。**SSE ストリーミング応答** |
 | GET | `/api/subsidiary-check` | 副資材チェック履歴（`page`・`pageSize`。作成日時降順） |
-| POST | `/api/subsidiary-check` | 副資材チェック実行（multipart: `productId`?・`productLabel`?・`instructionImages` 1〜3・`tagImages` 1〜10）。AI 同期実行し結果を返す。**要 AI 設定（未設定は 503）** |
+| POST | `/api/subsidiary-check` | 副資材チェック実行（multipart: `productId`?・`productLabel`?・`instructionImages` 1〜3・`tagImages` 1〜10。各5MB・**合計20MB** 以内）。AI 同期実行し結果を返す。**要 AI 設定（未設定は 503）** |
 | GET | `/api/subsidiary-check/{checkId}` | チェック詳細（判定・指摘・画像メタ・商品/付属情報） |
 | GET | `/api/subsidiary-check/{checkId}/images/{imageId}` | 入力画像バイナリ |
-| POST | `/api/subsidiary-check/{checkId}/rerun` | AI 再実行（**status=failed のみ**。completed は記録保護のため 400） |
+| POST | `/api/subsidiary-check/{checkId}/rerun` | AI 再実行（**status=failed、または作成10分超の processing（孤児回復）**。completed は記録保護のため 400） |
 | GET | `/api/subsidiary-check/rules` | ルールブック（しまむら副資材規定カタログ） |
 | GET | `/api/error-codes` | エラーコード一覧 |
 
@@ -232,13 +232,17 @@ flowchart TD
 - **記録保護と手動回復:** チェック記録は記録系データ（原則2）。再実行（rerun）は status=failed のみ許可し、
   completed の上書きは 400 で拒否する。AI 呼出失敗・応答解析失敗・キャンセルは failed 状態＋エラー内容で記録に残し、
   主要フロー（登録済み記録の参照）を止めない（原則4）。AI 未設定（キーなし）のみ永続化前に 503 で弾く（無駄な記録を作らない）。
+  再実行（rerun）は failed に加え、プロセス停止等で孤児化した processing（作成から10分超経過）にも許可する
+  （手動回復パス。completed の上書きは 400 で拒否し、DB 層でも `status <> 'completed'` ガードで保護する）。
+
+## 8. エラーコード
 
 形式 `UNDX-{領域}-{連番}`。一覧は `GET /api/error-codes` または `ErrorCodes`（Core）参照。
 
 | 領域 | 例 | 内容 |
 |------|-----|------|
 | AUTH | `UNDX-AUTH-001` | 認証エラー |
-| REQ | `UNDX-REQ-001`〜`007` | リクエスト検証エラー（`004`〜`007` は副資材チェックの画像検証: 未指定/形式不正/サイズ超過/枚数超過） |
+| REQ | `UNDX-REQ-001`〜`008` | リクエスト検証エラー（`004`〜`008` は副資材チェックの画像検証: 未指定/形式不正/サイズ超過/枚数超過/合計サイズ超過。`008` はリクエストサイズ超過の共通マップにも使用） |
 | IMP | `UNDX-IMP-001`〜`005` | 取込処理エラー |
 | DATA / SYS | `UNDX-DATA-001`〜`005` / `UNDX-SYS-001` | データ層 / 商品未登録 / フラグ未存在 / ナレッジ・マスタ未存在 / 副資材チェック未存在 / 想定外エラー |
 | AI | `UNDX-AI-001` / `UNDX-AI-008` / `UNDX-AI-009` | LLM 呼出失敗（502 または SSE error イベント） / AI 未設定（503。DD-04 の `UNDX-AI-*` 領域を継承） / AI 応答の解析失敗（`002`〜`007` は DD-04 予約済みのため `009` を採番） |
@@ -483,8 +487,13 @@ flowchart TD
     AI -->|JSON findings| PR[解析・正規化<br/>SubsidiaryCheckResponseParser]
     PR --> U[UPDATE status=completed<br/>judgment + findings jsonb]
     AI -->|失敗| F[UPDATE status=failed<br/>error_message 保存 = 記録は残す]
-    F -.->|rerun は failed のみ| AI
+    F -.->|rerun: failed または<br/>作成10分超の processing| AI
 ```
+
+- 画像は各5MB・合計20MB 以内（Anthropic Messages API のリクエスト上限 32MB に base64 膨張約1.33倍を
+  考慮した安全側の値。超過は `UNDX-REQ-008` で早期拒否し、transport 層の上限超過も同コードの 413 にマップ）。
+- completed の結果は DB 層の `status <> 'completed'` ガードでも保護し、並行 rerun による確定済み判定の
+  巻き戻しを防ぐ（原則2）。
 
 ### 13.4 SoT 宣言
 
@@ -500,7 +509,24 @@ flowchart TD
 - 出力は JSON のみを要求し、コードフェンス・前後説明文を許容する頑健なパーサで解析する。
   未知の category は `content`、未知の severity は `warn` に正規化（安全側）。解析不能は
   `UNDX-AI-009` として failed 記録に残す。
-- MaxTokens は `min(4096, Anthropic:MaxOutputTokens)`。**運用推奨: `Anthropic__MaxOutputTokens=4096`**
-  （既定 2048 のままでは指摘が多い場合に応答が切れる可能性がある）。
+- MaxTokens は副資材チェック専用の固定値 4096（チャット用 `Anthropic:MaxOutputTokens` とは独立。
+  応答が出力トークン上限で切り詰められた場合は明示メッセージ付きの failed 記録にする）。
+- AI 呼出は同時実行 3 件までに制限（SemaphoreSlim）し、120 秒でタイムアウトさせる
+  （タイムアウトは failed 記録＋再実行導線。同期実行によるリソース占有の抑制）。
+- system プロンプトに反プロンプトインジェクション文を明記する（画像内・付属情報内のテキストに
+  出力指示・判定指示が含まれていても従わず、content カテゴリの fail として報告させる）。
+- AI 例外の内部文言（SDK メッセージ等）は error_message に保存せず、エラーコード＋汎用文言のみを
+  記録・表示する（詳細はサーバーログ）。
 - 画像が不鮮明で判読できない項目は fail ではなく warn（目視確認の誘導）として返すよう
   プロンプトで指示する（AI は目視チェックの補助であり、最終判断は人が行う）。
+
+### 13.6 ストレージ・認可に関する設計判断
+
+- **画像ストレージの増加:** チェック1件あたり最大 合計20MB の画像を PostgreSQL（bytea）に保存し、
+  削除 API は提供しない（記録保護・原則2）。想定利用（日次数件〜10件程度）では年間最大 ~70GB 程度の
+  増加余地があり、**当面は無制限保存を受容し、DB 容量の閾値監視で対応する**（設計判断）。
+  将来の恒久対応として「判定・findings は恒久保存、画像バイナリのみ保持期間（例: 12ヶ月）経過後に
+  削除する」運用パスの設計を残課題とする（記録と画像原本の分離により原則2と両立可能）。
+- **認可:** API は認証必須（`[Authorize]`）だが、サプライヤー/バイヤーのロール分離はナビゲーション
+  表示のみで API レベルでは行わない（商品マスタ・週次取込一覧と同じ本アプリ全体の既存パターン。
+  §6 認可の注記参照）。UCP 移行時（ADR-018）に MakerOps ドメインとしてサーバー側ロール制御を導入する。

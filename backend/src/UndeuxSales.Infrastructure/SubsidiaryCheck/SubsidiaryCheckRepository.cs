@@ -5,16 +5,11 @@ using UndeuxSales.Infrastructure.Database;
 
 namespace UndeuxSales.Infrastructure.SubsidiaryCheck;
 
-/// <summary>チェック画像のバイナリ（ダウンロード・AI 再実行用）。</summary>
+/// <summary>
+/// チェック画像1枚のバイナリ。INSERT 用の永続化入力と、ダウンロード・AI 再実行用の
+/// 読出し結果の両方で共用する（書込・読出でスキーマ形状が同一のため重複 record を作らない。原則3）。
+/// </summary>
 public sealed record SubsidiaryCheckImagePayload(
-    string Kind,
-    string FileName,
-    string ContentType,
-    byte[] Data,
-    int SortOrder);
-
-/// <summary>永続化するチェック画像1枚（INSERT 用）。</summary>
-public sealed record SubsidiaryCheckImageRecord(
     string Kind,
     string FileName,
     string ContentType,
@@ -30,7 +25,8 @@ public sealed record SubsidiaryCheckImageRecord(
 /// </summary>
 public sealed class SubsidiaryCheckRepository
 {
-    private const int DefaultPageSize = 20;
+    // ページングの既定値の SoT は SubsidiaryCheckController（DefaultPage / DefaultPageSize）。
+    // リポジトリは受け取った値の防御的クランプのみを行う。
     private const int MaxPageSize = 100;
 
     /// <summary>findings の jsonb 直列化設定（API 応答（camelCase）と同一のワイヤ形式で保存する）。</summary>
@@ -63,14 +59,15 @@ public sealed class SubsidiaryCheckRepository
         c.checked_at
         """;
 
+    // LATERAL サブクエリで「対象行の check_id のみ」を ix_subsidiary_check_image_check 経由で集計する
+    // （全行 GROUP BY の派生テーブルだと履歴増加に伴い一覧・詳細のコストが線形に悪化するため）。
     private const string ImageCountJoin = """
-        LEFT JOIN (
-            SELECT check_id,
-                   COUNT(*) FILTER (WHERE kind = 'instruction') AS instruction_count,
-                   COUNT(*) FILTER (WHERE kind = 'tag')         AS tag_count
-            FROM subsidiary_check_image
-            GROUP BY check_id
-        ) img ON img.check_id = c.check_id
+        LEFT JOIN LATERAL (
+            SELECT COUNT(*) FILTER (WHERE i.kind = 'instruction') AS instruction_count,
+                   COUNT(*) FILTER (WHERE i.kind = 'tag')         AS tag_count
+            FROM subsidiary_check_image i
+            WHERE i.check_id = c.check_id
+        ) img ON TRUE
         """;
 
     private readonly IDbConnectionFactory _connectionFactory;
@@ -90,7 +87,7 @@ public sealed class SubsidiaryCheckRepository
         int page, int pageSize, CancellationToken cancellationToken = default)
     {
         page = Math.Max(page, 1);
-        pageSize = Math.Clamp(pageSize <= 0 ? DefaultPageSize : pageSize, 1, MaxPageSize);
+        pageSize = Math.Clamp(pageSize, 1, MaxPageSize);
 
         await using var connection = await _connectionFactory.OpenConnectionAsync(cancellationToken);
 
@@ -101,7 +98,8 @@ public sealed class SubsidiaryCheckRepository
 
         var rows = (await connection.QueryAsync<SummaryRow>(new CommandDefinition($"""
             SELECT {SummaryColumns},
-                   (COUNT(*) OVER ())::int AS total_count
+                   (COUNT(*) OVER ())::int AS total_count,
+                   NULL::text AS findings_json
             FROM subsidiary_check c
             {ImageCountJoin}
             ORDER BY c.created_at DESC, c.check_id
@@ -126,9 +124,11 @@ public sealed class SubsidiaryCheckRepository
     {
         await using var connection = await _connectionFactory.OpenConnectionAsync(cancellationToken);
 
+        // サマリ行と findings（jsonb）を1クエリで取得する（サマリ→findings の2往復を避ける）。
         var row = await connection.QuerySingleOrDefaultAsync<SummaryRow>(new CommandDefinition($"""
             SELECT {SummaryColumns},
-                   0::int AS total_count
+                   0::int AS total_count,
+                   c.findings::text AS findings_json
             FROM subsidiary_check c
             {ImageCountJoin}
             WHERE c.check_id = @checkId;
@@ -137,10 +137,6 @@ public sealed class SubsidiaryCheckRepository
         {
             return null;
         }
-
-        var findingsJson = await connection.ExecuteScalarAsync<string?>(new CommandDefinition(
-            "SELECT findings::text FROM subsidiary_check WHERE check_id = @checkId;",
-            new { checkId }, cancellationToken: cancellationToken));
 
         var images = (await connection.QueryAsync<SubsidiaryCheckImageInfo>(new CommandDefinition("""
             SELECT image_id, kind, file_name, content_type, size_bytes, sort_order
@@ -153,7 +149,8 @@ public sealed class SubsidiaryCheckRepository
             ? await QueryProductInfoAsync(connection, productId, cancellationToken)
             : null;
 
-        return new SubsidiaryCheckDetail(ToSummary(row), DeserializeFindings(findingsJson), images, product);
+        return new SubsidiaryCheckDetail(
+            ToSummary(row), DeserializeFindings(row.FindingsJson), images, product);
     }
 
     /// <summary>チェック画像1枚のバイナリを取得する（ダウンロード用）。未存在は null。</summary>
@@ -191,7 +188,7 @@ public sealed class SubsidiaryCheckRepository
         Guid? productId,
         string productLabel,
         string createdBy,
-        IReadOnlyList<SubsidiaryCheckImageRecord> images,
+        IReadOnlyList<SubsidiaryCheckImagePayload> images,
         CancellationToken cancellationToken = default)
     {
         await using var connection = await _connectionFactory.OpenConnectionAsync(cancellationToken);
@@ -231,9 +228,14 @@ public sealed class SubsidiaryCheckRepository
 
     /// <summary>
     /// AI 実行結果（completed / failed）を反映する。画像・作成情報（記録系）は変更しない。
+    /// <para>
+    /// 状態遷移ガード: 既に completed のチェックは更新しない（WHERE 句で除外）。
+    /// 並行 rerun 等による「確定済み判定結果の巻き戻り」を DB 層で防ぐ（記録保護・原則2）。
+    /// </para>
     /// </summary>
     /// <param name="findingsJson"><see cref="SerializeFindings"/> で直列化した JSON（失敗時は null）。</param>
-    public async Task UpdateResultAsync(
+    /// <returns>更新された行数（0 = completed 保護により破棄。呼出側で警告ログを出す）。</returns>
+    public async Task<int> UpdateResultAsync(
         Guid checkId,
         string status,
         string? judgment,
@@ -245,7 +247,7 @@ public sealed class SubsidiaryCheckRepository
         CancellationToken cancellationToken = default)
     {
         await using var connection = await _connectionFactory.OpenConnectionAsync(cancellationToken);
-        await connection.ExecuteAsync(new CommandDefinition("""
+        return await connection.ExecuteAsync(new CommandDefinition("""
             UPDATE subsidiary_check
             SET status        = @status,
                 judgment      = @judgment,
@@ -255,9 +257,14 @@ public sealed class SubsidiaryCheckRepository
                 ai_model      = @aiModel,
                 error_message = @errorMessage,
                 checked_at    = now()
-            WHERE check_id = @checkId;
+            WHERE check_id = @checkId
+              AND status <> @completedStatus;
             """,
-            new { checkId, status, judgment, failCount, warnCount, findingsJson, aiModel, errorMessage },
+            new
+            {
+                checkId, status, judgment, failCount, warnCount, findingsJson, aiModel, errorMessage,
+                completedStatus = SubsidiaryCheckStatus.Completed,
+            },
             cancellationToken: cancellationToken));
     }
 
@@ -332,6 +339,7 @@ public sealed class SubsidiaryCheckRepository
                ?? (IReadOnlyList<SubsidiaryCheckFinding>)Array.Empty<SubsidiaryCheckFinding>();
     }
 
+    /// <param name="FindingsJson">詳細クエリのみ実値（一覧クエリは NULL 固定。転送量を抑える）。</param>
     private sealed record SummaryRow(
         Guid CheckId,
         Guid? ProductId,
@@ -348,7 +356,8 @@ public sealed class SubsidiaryCheckRepository
         string CreatedBy,
         DateTime CreatedAt,
         DateTime? CheckedAt,
-        int TotalCount);
+        int TotalCount,
+        string? FindingsJson);
 
     private sealed record ProductInfoRow(
         Guid ProductId,
