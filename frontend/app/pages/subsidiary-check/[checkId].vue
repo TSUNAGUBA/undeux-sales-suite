@@ -84,7 +84,11 @@ async function load(): Promise<void> {
     // 画像取得は補助表示のため非ブロッキング（失敗しても指摘・判定は表示する。原則4）。
     void loadImages(result)
   } catch (error) {
-    if (seq !== requestSeq) return
+    // notFound / errorMessage は load だけが書くため、判定も load 世代で行う。
+    // ここで requestSeq を見ると、後着のポーリングに打ち消されてエラー状態が
+    // どこにも設定されないまま握り潰され、直前のチェックの判定結果が
+    // 別 checkId の画面に残り続ける（誤ったレコードへの帰属表示）。
+    if (loadSeq !== loadingSeq) return
     if (isNotFoundError(error)) {
       notFound.value = true
       detail.value = null
@@ -264,11 +268,16 @@ async function rerun(): Promise<void> {
   if (rerunning.value) return
   rerunning.value = true
   rerunError.value = null
+  // 再実行の応答も detail への書込であり、実行中のポーリング応答が後着して
+  // 古い startedAt で上書きすると、孤児判定が再び真になって再実行ボタンが復活し、
+  // 押しても 400（実行中）になる。書込順序は他の経路と同じ世代で保証する。
+  const seq = ++requestSeq
   try {
     const updated = await post<SubsidiaryCheckDetail>(
       `/api/subsidiary-check/${checkId.value}/rerun`,
       {},
     )
+    if (seq !== requestSeq) return
     detail.value = updated
     // 画像自体は不変だが、初回取得に失敗していた場合の回復も兼ねて再取得する。
     void loadImages(updated)

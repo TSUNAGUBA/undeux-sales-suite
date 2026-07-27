@@ -398,10 +398,37 @@ Start-Process "https://$FirebaseProjectId.web.app"
      --alarm-actions $SnsTopicArn
    ```
 
-> **api コンテナのメモリ:** 副資材チェックは1リクエストで最大約100MBを保持するため、
-> AI 呼出は同時1件に直列化しています（`docs/design.md` §13.5）。同時実行数を増やしたい場合は、
-> 先に `infra/aws/docker-compose.ec2.yml` の `api` の `memory`（既定 512m）を EC2 の空き容量を
-> 確認のうえ引き上げてください。メモリを据え置いたまま同時実行数だけを増やすと OOM の原因になります。
+4. **api コンテナのメモリ使用率アラーム。** 副資材チェックは1リクエストで最大約100MBを保持し、
+   コンテナのメモリ上限 512MiB に対する余裕（ヘッドルーム）は約74MB しかありません
+   （収支は `docs/design.md` §13.5）。画像配信や DB 読取の一時コピーは収支外のため、
+   **同時アクセスが重なると上限を超える可能性があります**。超過すると OOM でコンテナが再起動し、
+   `restart: unless-stopped` により無言で復帰するため、症状は「チェックがときどき処理中のまま」
+   としてしか現れません。運用開始時にメモリ使用率の監視・アラームを設定してください。
+
+   ```powershell
+   # 前提: EC2 に CloudWatch エージェントを導入し、Docker/コンテナメトリクスを送信する設定にしておく
+   #   （最小構成なら EC2 全体の mem_used_percent でも代替可）
+   # 例: メモリ使用率が 85% を超えたら通知（$SnsTopicArn は事前に作成した SNS トピック）
+   aws cloudwatch put-metric-alarm `
+     --alarm-name "undeux-api-memory" `
+     --namespace CWAgent --metric-name mem_used_percent `
+     --dimensions Name=InstanceId,Value=$Ec2InstanceId `
+     --statistic Average --period 300 --evaluation-periods 2 `
+     --threshold 85 --comparison-operator GreaterThanThreshold `
+     --alarm-actions $SnsTopicArn
+   ```
+
+   あわせて、OOM 再起動が起きていないかを随時確認できます。
+
+   ```powershell
+   ssh -i $KeyPath ubuntu@$ElasticIp
+   # RestartCount が増えていれば再起動が発生している。OOMKilled が true ならメモリ超過が原因
+   docker inspect --format '{{.RestartCount}} {{.State.OOMKilled}}' undeux-api
+   ```
+
+> **同時実行数を増やしたい場合:** 先に `infra/aws/docker-compose.ec2.yml` の `api` の
+> `memory`（既定 512m）を EC2 の空き容量を確認のうえ引き上げてください。
+> メモリを据え置いたまま同時実行数だけを増やすと OOM の原因になります（`docs/design.md` §13.5）。
 
 ---
 

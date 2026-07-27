@@ -135,11 +135,16 @@ function handleHistoryRowClick(row: SubsidiaryCheckSummary): void {
 
 // ---- 履歴のページング（inventory.vue のパターン） ----
 
+// 表示中の行に対応する件数ラベル。ページ送り中も既存行を残す表示のため、
+// 基準は「要求中のページ（historyPage）」ではなく「読込済みの応答」にする
+// （応答待ちの間だけラベルだけが新ページの範囲を示す不整合を避ける）。
 const historyPageInfo = computed(() => {
-  const total = history.value?.totalCount ?? 0
-  if (total === 0) return '0 件'
-  const from = (historyPage.value - 1) * PAGE_SIZE + 1
-  const to = Math.min(historyPage.value * PAGE_SIZE, total)
+  const loaded = history.value
+  const total = loaded?.totalCount ?? 0
+  if (!loaded || total === 0) return '0 件'
+  const size = loaded.pageSize > 0 ? loaded.pageSize : PAGE_SIZE
+  const from = (loaded.page - 1) * size + 1
+  const to = Math.min(loaded.page * size, total)
   return `${formatNumber(from)}〜${formatNumber(to)} / ${formatNumber(total)} 件`
 })
 
