@@ -53,7 +53,7 @@ builder.Services.AddSwaggerGen(SwaggerSetup.Configure);
 builder.Services.Configure<ImportSettings>(
     builder.Configuration.GetSection(ImportSettings.SectionName));
 
-// AI（Anthropic Claude API）設定。キー未設定時もアプリは起動し、チャットのみ無効になる。
+// AI（Google Vertex AI / Gemini）設定。未設定時もアプリは起動し、AI 機能のみ無効になる。
 builder.Services.Configure<UndeuxSales.Infrastructure.Ai.AiOptions>(
     builder.Configuration.GetSection(UndeuxSales.Infrastructure.Ai.AiOptions.SectionName));
 

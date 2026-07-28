@@ -207,11 +207,11 @@ export const SUBSIDIARY_TAG_MAX_COUNT = 10
 /** 画像1枚のサイズ上限（5MB）。 */
 export const SUBSIDIARY_IMAGE_MAX_BYTES = 5 * 1024 * 1024
 /**
- * 全画像（指示書＋タグ）の合計サイズ上限（20MB）。
- * SoT はバックエンド SubsidiaryCheckService.MaxTotalImageBytes（Anthropic API の
- * リクエスト32MB制限・base64膨張約1.33倍に対する安全値）。変更時は両者を同期させること。
+ * 全画像（指示書＋タグ）の合計サイズ上限（14MB）。
+ * SoT はバックエンド SubsidiaryCheckService.MaxTotalImageBytes（Vertex AI（Gemini）の
+ * generateContent リクエスト20MB制限・base64膨張約1.33倍に対する安全値）。変更時は両者を同期させること。
  */
-export const SUBSIDIARY_TOTAL_IMAGE_MAX_BYTES = 20 * 1024 * 1024
+export const SUBSIDIARY_TOTAL_IMAGE_MAX_BYTES = 14 * 1024 * 1024
 /** 受け付ける画像の MIME タイプ。 */
 export const SUBSIDIARY_IMAGE_TYPES = ['image/jpeg', 'image/png'] as const
 /** input[accept] に渡す受付形式。 */

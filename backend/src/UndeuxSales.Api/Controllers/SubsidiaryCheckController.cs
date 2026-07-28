@@ -17,9 +17,10 @@ namespace UndeuxSales.Api.Controllers;
 public sealed class SubsidiaryCheckController : ControllerBase
 {
     // multipart 全体の transport 層上限（防御層）。
-    // アプリ層の合計サイズ上限（SubsidiaryCheckService.MaxTotalImageBytes = 20MB）に
-    // multipart のオーバーヘッド（boundary・パートヘッダ・その他フォーム値）分を加えた 25MB とし、
-    // RagController（本体 20MB に対し transport 25MB）と同じ流儀に揃える。
+    // アプリ層の合計サイズ上限（SubsidiaryCheckService.MaxTotalImageBytes = 14MB）に
+    // multipart のオーバーヘッド（boundary・パートヘッダ・その他フォーム値）と余裕を加えた防御層で、
+    // RagController（本体 20MB に対し transport 25MB）と同じ 25MB に揃える
+    // （14MB 超は transport 通過後にアプリ層が byte[] 実体化前に 413 UNDX-REQ-008 で弾く）。
     // 過大に取ると（旧値 60MB）、アプリ層で拒否される入力をボディ全体受信し切ってからでないと
     // 拒否できず、無駄な受信帯域とメモリを消費する。
     // 到達時の BadHttpRequestException / InvalidDataException は
@@ -98,8 +99,8 @@ public sealed class SubsidiaryCheckController : ControllerBase
         SubsidiaryCheckService.EnsureTotalSizeWithinLimit(
             instructionFiles.Concat(tagFiles).Sum(file => file.Length));
 
-        // 受付枠の予約は「画像バッファ（1リクエストあたり最大20MB）を確保する前」に行う。
-        // バッファ確保後だと、429 で拒否される要求まで 20MB を確保することになり、
+        // 受付枠の予約は「画像バッファ（1リクエストあたり最大14MB）を確保する前」に行う。
+        // バッファ確保後だと、429 で拒否される要求まで 14MB を確保することになり、
         // 受付上限（SubsidiaryCheckService.MaxConcurrentAiChecks）がピークメモリを有界化しない
         // （受付枠が満杯の状態で同時 POST が届くと GC ヒープハードリミットを突破しうる）。
         // using により、以降の全失敗パス（画像読取・検証・永続化・応答生成）で確実に解放される。

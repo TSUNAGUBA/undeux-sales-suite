@@ -39,7 +39,14 @@ public static class ServiceCollectionExtensions
         services.AddScoped<KnowledgeIngestionService>();
         services.AddScoped<KnowledgeSeeder>();
         services.AddScoped<ChatContextService>();
-        services.AddSingleton<IAiChatClient, AnthropicAiClient>();
+        services.AddHttpClient(GeminiVertexAiClient.HttpClientName, client =>
+        {
+            // ストリーミング（streamGenerateContent）は本文受信に時間がかかるため、HttpClient 全体の
+            // タイムアウトは接続〜ヘッダ受信の粗いバックストップ（180秒）とし、実行時間の主たる打切りは
+            // 呼出側のトークン（副資材チェックは AiCallTimeout=120秒、チャットはリクエスト中断）で行う。
+            client.Timeout = TimeSpan.FromSeconds(180);
+        });
+        services.AddSingleton<IAiChatClient, GeminiVertexAiClient>();
 
         // 副資材チェック（AI 検品）
         services.AddScoped<SubsidiaryCheckRepository>();

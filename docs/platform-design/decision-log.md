@@ -599,7 +599,7 @@ UI はレスポンシブを **必須契約** とする。PC 向けにリスト/�
 
 ### ADR-018: 副資材チェックは AI 画像比較＋コード内ルールカタログの二層構成
 
-- **状態:** 承認（現行アプリ実装判断）
+- **状態:** 承認（現行アプリ実装判断） / **Superseded-by:** ADR-019（AI プロバイダを Vertex AI（Gemini）へ移行、画像合計上限 20MB→14MB）
 - **領域:** AI／機能追加（design.md §13、CLAUDE.md 原則2・3・4）
 
 **コンテキスト**
@@ -623,6 +623,35 @@ AI 判定は非決定的で、同一入力に対する再現性は決定的ル�
 - 波及: [DD-04 AI/RAGエージェント設計](./detailed-design/DD-04-ai-rag-agent-design.md)（`UNDX-AI-009` を現行アプリで採番。002〜007 の予約は維持）、`docs/design.md` §13（機能設計）・§9.6（付属情報）
 - エラーコード: `UNDX-REQ-004`〜`007`（画像検証）、`UNDX-REQ-008`（アップロード合計サイズ超過・transport 上限の共通マップ）、`UNDX-REQ-009`（同時実行の上限による一時的拒否・429。AI チェックの受付上限と画像配信の順番待ち超過の2経路で共用）、`UNDX-DATA-005`（チェック未存在）、`UNDX-AI-009`（応答解析失敗）
 - 依存: ADR-010（AI の実行系書込はガードレール越しのみ）と整合 — 本機能の AI は判定記録の生成のみで業務データを書き換えない。UCP 移行時は MakerOps ドメインの品質管理機能として位置づける。
+
+---
+
+### ADR-019: AI プロバイダを Anthropic Claude から Google Vertex AI（Gemini）へ移行
+
+- **状態:** 承認（現行アプリ実装判断。ADR-018 の AI プロバイダ選定を更新）
+- **領域:** AI／インフラ（design.md §12・§13.5、CLAUDE.md 原則3・4・5・7）
+
+**コンテキスト**
+ADR-018 では副資材チェック・チャットの LLM に Anthropic Claude API（Messages API）を直接用いていた。運用判断として認証・課金を GCP（Firebase と同一プロジェクト／Blaze）へ集約し、Vertex AI 経由の Gemini（既定 `gemini-2.5-flash`）を用いることになった。EC2（GCP 外）で動く api コンテナからの呼出であること、512MiB のメモリ上限、モデルを運用側で差し替えたい要件が制約となる。
+
+**決定**
+LLM 呼出を Vertex AI（Gemini）の REST（`generateContent` / `streamGenerateContent`、SSE）へ移行する。`IAiChatClient` の実装を `AnthropicAiClient` から `GeminiVertexAiClient` に置換し、公式 SDK `Google.Cloud.AIPlatform.V1`（gRPC・重量）ではなく HttpClient + `Google.Apis.Auth`（ADC／サービスアカウントのトークン取得のみ）で構成してメモリ収支を守る。認証は GCP サービスアカウント鍵で行い、EC2 はメタデータ ADC が使えないため鍵 JSON を base64 で環境変数として渡す（`.env`／compose 補間で安全）。モデル・ロケーションはリポジトリ変数（`GEMINI_MODEL` 等）で差し替え可能とし、既定は `gemini-2.5-flash`。プロンプトキャッシュは Anthropic の `cache_control` を廃し、安定プレフィックスを先頭に固定して Gemini 2.5 の暗黙キャッシュに委ねる。画像合計上限を 20MB→**14MB** に引き下げる（Vertex のインライン送信はリクエスト全体 20MB 制限で、base64 膨張約1.33倍を考慮した安全値）。
+
+**代替案**
+1. Claude を Vertex AI 経由（`Anthropic.Vertex`）で使う（当初案。Claude モデルは Vertex Model Garden の利用承認が前提で、Gemini は即時利用可能なため不採用）
+2. 公式 SDK `Google.Cloud.AIPlatform.V1`（gRPC）を用いる（依存が重くメモリ上限 384MiB を圧迫するため不採用。REST + 軽量認証ライブラリを採用）
+3. Anthropic Claude API 直接呼出の継続（認証・課金の GCP 集約という運用判断に反する）
+
+**根拠**
+Gemini は Vertex 上で即時に使え、`gemini-2.5-flash` は multimodal で低コスト。REST + `Google.Apis.Auth` は gRPC SDK より大幅に軽量で、既存のメモリ収支（同時1件直列化・受付上限4件）を維持できる（原則3）。SA 鍵の base64 受け渡しは `.env` の `KEY=VALUE` 補間で壊れず、EC2（GCP 外）でも動く。モデルの変数化はコード変更なしの差し替えを可能にする（原則7・原則1）。
+
+**トレードオフ**
+画像合計上限が 20MB→14MB に縮小し、大きな画像の同時投入は早期に 413 で拒否される（副資材チェックの実入力は 5MB/枚・数枚のため実害は小さい）。Gemini はプロンプトキャッシュを明示制御できず暗黙キャッシュに依存する（安定部の前方固定で効かせる）。判定精度はモデル差の影響を受ける（`gemini-2.5-flash`。必要なら変数で上位モデルへ差し替え可能）。Anthropic 依存パッケージは削除。既存の完了チェック記録に保存済みのモデル名（`claude-*`）はそのまま保全する（記録保護・原則2。新規記録は `gemini-*`）。
+
+**影響**
+- 波及: `docs/design.md` §12・§13・§13.5（メモリ収支を 14MB で再計算）、[DD-04](./detailed-design/DD-04-ai-rag-agent-design.md) §7、`infra/deploy-guide.md`・`infra/aws/README.md`（GCP シークレット・変数）、`docker-compose*.yml`・`.env.example`・`.github/workflows/deploy-backend.yml`、フロント `SUBSIDIARY_TOTAL_IMAGE_MAX_BYTES`（14MB 同期）
+- 設定: secrets `GCP_PROJECT_ID` / `GCP_SERVICE_ACCOUNT`（任意。未登録なら AI 無効）、variables `GEMINI_MODEL` / `GEMINI_VISION_MODEL` / `GCP_LOCATION`
+- エラーコード: 変更なし（`UNDX-AI-008` の文言のみ Vertex 認証情報へ更新）
 
 ---
 

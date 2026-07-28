@@ -301,20 +301,26 @@ gh secret set FRONTEND_ORIGIN      --repo $Repo --body "https://$FirebaseProject
 gh secret set RDS_CONNECTION_STRING --repo $Repo --body $RdsConnectionString
 gh secret set EC2_HOST             --repo $Repo --body $Ec2Ip
 gh secret set EC2_USER             --repo $Repo --body "ubuntu"
-# AI機能（AIチャット・副資材チェック）を有効化する場合のみ
+# AI機能（AIチャット・副資材チェック。Vertex AI / Gemini）を有効化する場合のみ
 # （未登録でもデプロイは成功し、該当機能のみ「AI未設定」になる）
-$AnthropicApiKey = "（Anthropic Console で発行したAPIキー）"
-gh secret set ANTHROPIC_API_KEY    --repo $Repo --body $AnthropicApiKey
+# GCP プロジェクトID（Firebase と同一プロジェクトで可）とサービスアカウント鍵（JSON全文）を登録する。
+$GcpProjectId = "（Vertex AI を有効化した GCP プロジェクトID）"
+$GcpServiceAccountPath = "（Vertex AI 用サービスアカウント鍵 JSON のパス）"
+gh secret set GCP_PROJECT_ID       --repo $Repo --body $GcpProjectId
+Get-Content $GcpServiceAccountPath -Raw | gh secret set GCP_SERVICE_ACCOUNT --repo $Repo
+# モデル等の非機密設定はリポジトリ変数（variables）で任意に上書きできる（未設定なら既定 gemini-2.5-flash）。
+gh variable set GEMINI_MODEL        --repo $Repo --body "gemini-2.5-flash"
+gh variable set GCP_LOCATION        --repo $Repo --body "global"
 
 # ファイルから登録するもの（サービスアカウントJSON・SSH秘密鍵）
 Get-Content $FirebaseServiceAccountPath -Raw | gh secret set FIREBASE_SERVICE_ACCOUNT --repo $Repo
 Get-Content "$HOME\.ssh\undeux-ec2" -Raw    | gh secret set EC2_SSH_KEY --repo $Repo
 
-# 登録結果を確認（10件表示されればOK）
+# 登録結果を確認（必須10件。AI を有効化した場合は GCP_PROJECT_ID / GCP_SERVICE_ACCOUNT を含む）
 gh secret list --repo $Repo
 
 # 機密値を含む PowerShell 変数を消去する（コンソール履歴対策）
-Remove-Variable DbPassword, RdsConnectionString, AnthropicApiKey -ErrorAction SilentlyContinue
+Remove-Variable DbPassword, RdsConnectionString, GcpProjectId -ErrorAction SilentlyContinue
 ```
 
 ---
@@ -374,7 +380,7 @@ Start-Process "https://$FirebaseProjectId.web.app"
 副資材チェック（`/subsidiary-check`）は画像アップロードと AI 呼出を行うため、
 初回リリース時に次の5点を確認してください（設計の根拠は `docs/design.md` §13.5・§13.6）。
 
-1. **`ANTHROPIC_API_KEY` の登録**（未登録時は当該メニューのみ 503「AI未設定」。他機能は影響なし）
+1. **Vertex AI（Gemini）認証情報の登録**（`GCP_PROJECT_ID` / `GCP_SERVICE_ACCOUNT`。未登録時は当該メニューのみ 503「AI未設定」。他機能は影響なし）
 2. **リバースプロキシのボディサイズ上限。** 共有 `nginx-proxy` の `client_max_body_size` が
    **50MB 以上**である必要があります（nginx 既定は 1MB）。まず現行値を確認し、
    不足する場合のみ変更してください。
@@ -387,7 +393,7 @@ Start-Process "https://$FirebaseProjectId.web.app"
    |------|-----------|-------------|
    | 週次売上の取込（`POST /api/imports`） | **50MB** | `ImportsController.HardSizeLimitBytes` |
    | RAG のナレッジ原本登録 | 25MB | `RagController` の transport 上限 |
-   | 副資材チェック（`POST /api/subsidiary-check`） | 25MB | `SubsidiaryCheckController.HardSizeLimitBytes`（画像合計20MB＋multipart のオーバーヘッド） |
+   | 副資材チェック（`POST /api/subsidiary-check`） | 25MB | `SubsidiaryCheckController.HardSizeLimitBytes`（画像合計14MB＋multipart オーバーヘッドに余裕を見た防御層） |
 
    > **タイムアウトの設定は不要です。** AI 実行は**バックグラウンドで非同期実行**し、
    > POST は即座に応答します（フロントは状態をポーリング）。これは mart 再構築と同じ方式で、
@@ -419,7 +425,7 @@ Start-Process "https://$FirebaseProjectId.web.app"
    > `aws sns list-subscriptions-by-topic --topic-arn $SnsTopicArn` の `SubscriptionArn` が
    > `PendingConfirmation` でなくなれば有効です。
 
-4. **RDS ストレージ使用率のアラーム。** チェック記録の画像（1件あたり最大 合計20MB）は
+4. **RDS ストレージ使用率のアラーム。** チェック記録の画像（1件あたり最大 合計14MB）は
    記録保護のため自動削除されません（`docs/design.md` §13.6）。空き容量のアラームを設定します。
 
    ```powershell
@@ -463,7 +469,7 @@ Start-Process "https://$FirebaseProjectId.web.app"
    > 使った時点で鳴り始めますが、その時点では発動点 2GiB に達しておらず自動拡張は動きません。
    > 上限を引き上げても何も変わらない＝**打つ手のない通知**になり、アラーム疲れを招きます）。
    >
-   > 1.5GiB の猶予: チェック1件あたり最大 20MiB なので約76件ぶん。想定利用（日次10件程度）で
+   > 1.5GiB の猶予: チェック1件あたり最大 14MiB なので約109件ぶん。想定利用（日次10件程度）で
    > 1週間以上あり、自動拡張のクールダウン6時間に対して十分です。
 
 5. **api コンテナのメモリ監視と OOM 検知。** 手順が長いため、次の「ステップ8-3」に分けて記載します。
@@ -489,11 +495,11 @@ $Ec2Ip       = aws ec2 describe-instances --instance-ids $InstanceId --query "Re
 $SnsTopicArn = aws sns create-topic --name undeux-alerts --query "TopicArn" --output text   # 作成済みなら既存 ARN が返る
 ```
 
-副資材チェックは1リクエストで最大約100MiB を保持します。コンテナのメモリ上限は 512MiB で、
-cgroup 下の .NET GC ヒープハードリミットはその 75%（384MiB）。収支は AI 実行が約310MiB、
-画像配信が上限約40MiB（同時4件に有界化済み）で、**合計約350MiB・余裕（ヘッドルーム）は
-約34MiB** です（384 − 350。収支の内訳は `docs/design.md` §13.5。メモリ量はすべて MiB 表記で統一）。
-画像配信は同時実行数を制限しているため閲覧者数に比例しませんが、**ヘッドルームは 34MiB と薄く**、
+副資材チェックは1リクエストで最大約70MiB を保持します。コンテナのメモリ上限は 512MiB で、
+cgroup 下の .NET GC ヒープハードリミットはその 75%（384MiB）。収支は AI 実行が約260MiB、
+画像配信が上限約40MiB（同時4件に有界化済み）で、**合計約300MiB・余裕（ヘッドルーム）は
+約84MiB** です（384 − 300。収支の内訳は `docs/design.md` §13.5。メモリ量はすべて MiB 表記で統一）。
+画像配信は同時実行数を制限しているため閲覧者数に比例しませんが、**ヘッドルームは 84MiB と依然として限られるため**、
 超過すると api コンテナが OOM Kill され、`restart: unless-stopped` で無言復帰するため、
 症状は「チェックがときどき処理中のまま」としてしか現れません。
 
@@ -758,7 +764,12 @@ GitHub の **Actions** タブの「Run workflow」ボタンからも実行でき
 | `EC2_HOST` | EC2 の固定IP | ステップ3-4 |
 | `EC2_USER` | `ubuntu` | 固定 |
 | `EC2_SSH_KEY` | SSH秘密鍵（`undeux-ec2` ファイル全文） | ステップ3-1 |
-| `ANTHROPIC_API_KEY` | Anthropic API キー（AIチャット・副資材チェック用・任意。未登録時は該当機能のみ「AI未設定」） | Anthropic Console |
+| `GCP_PROJECT_ID` | Vertex AI を有効化した GCP プロジェクトID（AI 機能用・任意。未登録時は該当機能のみ「AI未設定」） | GCP / Firebase |
+| `GCP_SERVICE_ACCOUNT` | Vertex AI 用サービスアカウント鍵 JSON（全文・任意。`roles/aiplatform.user` を付与） | GCP IAM |
+
+> **リポジトリ変数（任意）:** モデル等の非機密設定は secrets ではなく variables で上書きする
+> （Settings → Secrets and variables → Actions → Variables）。`GEMINI_MODEL`（既定 `gemini-2.5-flash`）、
+> `GEMINI_VISION_MODEL`（既定同上）、`GCP_LOCATION`（既定 `global`）。未設定なら既定値が使われる。
 
 ---
 

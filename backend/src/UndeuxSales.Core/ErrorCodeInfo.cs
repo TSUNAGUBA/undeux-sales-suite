@@ -146,8 +146,8 @@ public static class ErrorCodes
 
     public static readonly ErrorCodeInfo AiNotConfigured = new(
         "UNDX-AI-008",
-        "AI 機能が未設定です（Anthropic API キーが構成されていません）。",
-        "運営者が環境変数 Anthropic__ApiKey（ANTHROPIC_API_KEY）を設定してから利用してください。");
+        "AI 機能が未設定です（Vertex AI の認証情報が構成されていません）。",
+        "運営者が GCP プロジェクト（VertexAi__ProjectId）とサービスアカウント鍵を設定してから利用してください。");
 
     // UNDX-AI-002〜007 は将来機能向けに DD-04（AI/RAG エージェント詳細設計）で予約済みのため 009 を採番。
     public static readonly ErrorCodeInfo AiResponseUnparseable = new(

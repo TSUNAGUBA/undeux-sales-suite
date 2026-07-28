@@ -61,8 +61,13 @@ services:
       ConnectionStrings__Default: "Host=db;Port=5432;Database=undeux;Username=undeux;Password=${POSTGRES_PASSWORD:-undeux}"
       Firebase__ProjectId: "${FIREBASE_PROJECT_ID:-}"
       Cors__AllowedOrigins__0: "${FRONTEND_ORIGIN:-http://localhost:3000}"
-      # AIチャット（未設定時はチャットのみ無効。ナレッジ管理は利用可能）
-      Anthropic__ApiKey: "${ANTHROPIC_API_KEY:-}"
+      # AI（Vertex AI / Gemini。未設定時は AI 機能のみ無効。ナレッジ管理は利用可能）
+      VertexAi__ProjectId: "${VERTEX_PROJECT_ID:-}"
+      VertexAi__Location: "${VERTEX_LOCATION:-global}"
+      # SA 鍵(base64)。空なら ADC（GOOGLE_APPLICATION_CREDENTIALS 等）を使う。
+      VertexAi__ServiceAccountJsonBase64: "${VERTEX_SA_JSON_BASE64:-}"
+      VertexAi__Model: "${GEMINI_MODEL:-gemini-2.5-flash}"
+      VertexAi__VisionModel: "${GEMINI_VISION_MODEL:-gemini-2.5-flash}"
     ports:
       - "8080:8080"
     depends_on:

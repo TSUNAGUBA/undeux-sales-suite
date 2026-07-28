@@ -18,8 +18,8 @@ public sealed class KnowledgeIngestionService
     public const long MaxFileSizeBytes = 20 * 1024 * 1024;
 
     /// <summary>
-    /// 画像ファイルの上限サイズ（5MB）。Anthropic API の画像上限（約5MB/枚）を超える画像は
-    /// AI 説明生成が常に失敗するため、登録時点で拒否して利用者に予見可能にする。
+    /// 画像ファイルの上限サイズ（5MB）。Vertex AI（Gemini）のインラインデータ上限（約7MB/枚）に対する
+    /// 安全側の値。これを超える画像は AI 説明生成が失敗しやすいため、登録時点で拒否して予見可能にする。
     /// あわせて base64 変換（約1.33倍の文字列化）による一時メモリ膨張も抑える。
     /// </summary>
     public const long MaxImageFileSizeBytes = 5 * 1024 * 1024;
