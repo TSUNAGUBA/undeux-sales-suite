@@ -20,7 +20,7 @@ public sealed record ChatPreparation(AiChatRequest Request, IReadOnlyList<ChatSo
 /// チャット（業務/商談）のコンテキスト構築。
 /// <para>
 /// system は「安定プレフィックス（役割定義・マスタ文脈・実績データ）＋可変部（RAG 検索結果）」の
-/// 2 ブロック構成とし、安定部にのみ cache_control を付与してプロンプトキャッシュを効かせる（DD-04 §7.2）。
+/// 2 ブロック構成とし、安定部を先頭に固定して Gemini 2.5 の暗黙キャッシュを効かせる（DD-04 §7.2）。
 /// 実績データ（mart）はスタースキーマの次元絞込（channel=業態）で決定的に集計し、
 /// LLM には解釈のみをさせる（数値を捏造させない。DD-04 §4.1）。
 /// </para>
@@ -78,7 +78,7 @@ public sealed class ChatContextService
             history, RagSearchScope.ForBusinessChat(domain), cancellationToken);
 
         var request = new AiChatRequest(
-            new[] { new AiSystemBlock(stableText, Cache: true), new AiSystemBlock(contextBlock, Cache: false) },
+            new[] { new AiSystemBlock(stableText), new AiSystemBlock(contextBlock) },
             history,
             _aiOptions.MaxOutputTokens);
         return new ChatPreparation(request, sources);
@@ -101,7 +101,7 @@ public sealed class ChatContextService
             history, RagSearchScope.ForNegotiation(businessTypeCode, deptCode), cancellationToken);
 
         var request = new AiChatRequest(
-            new[] { new AiSystemBlock(stableText, Cache: true), new AiSystemBlock(contextBlock, Cache: false) },
+            new[] { new AiSystemBlock(stableText), new AiSystemBlock(contextBlock) },
             history,
             _aiOptions.MaxOutputTokens);
         return new ChatPreparation(request, sources);

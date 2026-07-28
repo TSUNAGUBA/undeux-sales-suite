@@ -42,7 +42,7 @@ public static class KnowledgeTextExtractor
         _ => "application/octet-stream",
     };
 
-    /// <summary>画像の Anthropic API 用 media type。</summary>
+    /// <summary>画像の Vertex AI（Gemini）用 media type。</summary>
     public static string ResolveImageMediaType(string fileName) =>
         GetExtension(fileName) == ".png" ? "image/png" : "image/jpeg";
 

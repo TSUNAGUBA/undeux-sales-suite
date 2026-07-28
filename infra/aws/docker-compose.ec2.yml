@@ -48,8 +48,13 @@ services:
       ConnectionStrings__Default: "${UNDEUX_DB_CONNECTION}"
       Firebase__ProjectId: "${UNDEUX_FIREBASE_PROJECT_ID}"
       Cors__AllowedOrigins__0: "${UNDEUX_FRONTEND_ORIGIN}"
-      # AIチャット（業務/商談）用。未設定でも起動し、チャットのみ「AI未設定」になる。
-      Anthropic__ApiKey: "${UNDEUX_ANTHROPIC_API_KEY:-}"
+      # AI（Vertex AI / Gemini）用。未設定でも起動し、AI 機能のみ「AI未設定」になる。
+      # ProjectId 未設定で AI 無効。EC2 は GCP 外のためサービスアカウント鍵（base64）で認証する。
+      VertexAi__ProjectId: "${UNDEUX_VERTEX_PROJECT_ID:-}"
+      VertexAi__Location: "${UNDEUX_VERTEX_LOCATION:-global}"
+      VertexAi__ServiceAccountJsonBase64: "${UNDEUX_VERTEX_SA_JSON_BASE64:-}"
+      VertexAi__Model: "${UNDEUX_VERTEX_MODEL:-gemini-2.5-flash}"
+      VertexAi__VisionModel: "${UNDEUX_VERTEX_VISION_MODEL:-gemini-2.5-flash}"
       # EC2 上の nginx-proxy / acme-companion による自動公開・HTTPS化。
       # VIRTUAL_HOST のドメインで公開され、acme-companion が証明書を取得する
       # （acme-companion 側に DEFAULT_EMAIL 設定済みのため EMAIL 指定は不要）。

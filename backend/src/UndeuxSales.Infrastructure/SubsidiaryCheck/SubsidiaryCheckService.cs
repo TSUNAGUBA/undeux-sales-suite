@@ -47,8 +47,8 @@ public sealed class ImageDownloadSlotLease : IDisposable
 /// <see cref="SubsidiaryCheckService.MaxConcurrentAiChecks"/>）を1つ予約したスコープ。
 /// <para>
 /// <b>なぜスコープ型か:</b> 受付枠は「画像バッファ（1リクエストあたり最大
-/// <see cref="SubsidiaryCheckService.MaxTotalImageBytes"/>＝20MB）を確保する<b>前</b>」に
-/// 予約しないとピークメモリを有界化できない（429 で拒否される要求まで 20MB を確保してしまい、
+/// <see cref="SubsidiaryCheckService.MaxTotalImageBytes"/>＝14MB）を確保する<b>前</b>」に
+/// 予約しないとピークメモリを有界化できない（429 で拒否される要求まで 14MB を確保してしまい、
 /// 受付枠が満杯の状態で同時アップロードが届くと GC ヒープハードリミットを突破しうる）。
 /// そのため予約はコントローラの入口（バッファ確保前）で行うことになり、
 /// 予約から解放までがリクエスト処理の広い範囲＋バックグラウンドタスクに跨る。
@@ -155,19 +155,21 @@ public sealed class SubsidiaryCheckService
     public const int MaxTagImages = 10;
 
     /// <summary>
-    /// 画像1枚の上限サイズ。Anthropic API の画像上限（約5MB/枚）に由来する既存定数を再利用する（原則3）。
+    /// 画像1枚の上限サイズ。ナレッジ取込と共通の 5MB 定数を再利用する（原則3）。
+    /// Vertex AI（Gemini）のインラインデータ上限（約7MB/枚）内に収まる。
     /// </summary>
     public const long MaxImageSizeBytes = KnowledgeIngestionService.MaxImageFileSizeBytes;
 
     /// <summary>
-    /// 全画像（指示書＋タグ）の合計 raw サイズ上限（20MB）。
-    /// 根拠: Anthropic Messages API はリクエスト全体で 32MB 制限があり、画像は base64 で約 1.33 倍に
-    /// 膨張する。20MB raw ≒ 26.6MB base64 ＋ プロンプト分で 32MB に対して安全側の値。
+    /// 全画像（指示書＋タグ）の合計 raw サイズ上限（14MB）。
+    /// 根拠: Vertex AI（Gemini）の generateContent はインライン送信時にリクエスト全体で 20MB 制限があり、
+    /// 画像は base64 で約 1.33 倍に膨張する。14MB raw ≒ 18.7MB base64 ＋ プロンプト分で 20MB に対して
+    /// 安全側の値（15MB raw だと base64 が丁度 20MB で余裕がない）。
     /// この上限がないと「各5MB × 最大13枚 = 65MB」の正当入力が AI 呼出で構造的に失敗する。
     /// フロント（utils/subsidiaryCheck.ts の SUBSIDIARY_TOTAL_IMAGE_MAX_BYTES）と
     /// UNDX-REQ-008 のメッセージ文言はこの値と同期させること。
     /// </summary>
-    public const long MaxTotalImageBytes = 20 * 1024 * 1024;
+    public const long MaxTotalImageBytes = 14 * 1024 * 1024;
 
     /// <summary>
     /// 商品ラベル（クライアント指定の任意テキスト）の最大文字数（200文字）。
@@ -219,21 +221,21 @@ public sealed class SubsidiaryCheckService
     /// （infra/aws/docker-compose.ec2.yml）・ローカル（docker-compose.yml）とも 512m で、
     /// cgroup 制限下の .NET GC ヒープハードリミットは既定でその 75% ＝ 384MiB。
     /// 一方 AI 呼出中の1件（バックグラウンドタスク）が同時に保持する量は、設計上許容された正常系の最大入力
-    /// （<see cref="MaxTotalImageBytes"/> = 20MiB）で概算 <b>約100MiB</b>。
+    /// （<see cref="MaxTotalImageBytes"/> = 14MiB）で概算 <b>約70MiB</b>。
     /// <b>本収支のメモリ量はすべて MiB 表記</b>（上限・ハードリミット・画像上限がいずれも 2 の冪で
     /// 定義されているため同一単位で突き合わせる。docs/design.md §13.5 と同じ数値）。内訳:
     /// </para>
     /// <list type="bullet">
-    ///   <item><description>画像バッファ byte[]: 20MiB</description></item>
-    ///   <item><description>base64 文字列: 20MiB → 約 28.0M 文字。.NET string は UTF-16
-    ///     （2バイト/文字）のため約 53MiB</description></item>
+    ///   <item><description>画像バッファ byte[]: 14MiB</description></item>
+    ///   <item><description>base64 文字列: 14MiB → 約 19.6M 文字。.NET string は UTF-16
+    ///     （2バイト/文字）のため約 37MiB</description></item>
     ///   <item><description>HTTP リクエストボディの UTF-8 直列化（base64 は ASCII のため
-    ///     1バイト/文字）: 約 27MiB</description></item>
+    ///     1バイト/文字）: 約 19MiB</description></item>
     /// </list>
     /// <para>
-    /// 同時1件なら実行中のピークは 100MiB ＋ ASP.NET Core のベースライン（約100〜150MiB）＝ 約250MiB で、
+    /// 同時1件なら実行中のピークは 70MiB ＋ ASP.NET Core のベースライン（約100〜150MiB）＝ 約220MiB で、
     /// 384MiB に対し余裕がある（待機中の画像バッファ分は <see cref="MaxConcurrentAiChecks"/> の
-    /// 収支に含めて評価している）。3並列では約300MiB ＋ ベースラインでハードリミットに到達し、
+    /// 収支に含めて評価している）。3並列では約210MiB ＋ ベースラインでハードリミットに接近し、
     /// <b>正常系の入力で OOM → コンテナ再起動（全機能停止）</b>に至るため直列化する。
     /// 想定利用（日次数件〜10件）に対し同時1件で機能上の問題はない。
     /// スループットが不足する場合は、同時実行数を上げる前にコンテナのメモリ上限引上げ
@@ -258,19 +260,19 @@ public sealed class SubsidiaryCheckService
     /// <para>
     /// <see cref="AiCallSemaphore"/> は AI 呼出の<b>同時実行数</b>のみを 1 に制限するが、
     /// 順番待ちの件数は制限しない。画像バッファ（1件あたり最大
-    /// <see cref="MaxTotalImageBytes"/> = 20MiB）は AI 実行前に確保済みのため、待機 K 件で
-    /// 20MiB×K が滞留し、GC ヒープハードリミット（384MiB）を待ち行列側から突破しうる。
+    /// <see cref="MaxTotalImageBytes"/> = 14MiB）は AI 実行前に確保済みのため、待機 K 件で
+    /// 14MiB×K が滞留し、GC ヒープハードリミット（384MiB）を待ち行列側から突破しうる。
     /// </para>
     /// <para>
-    /// 実行中1件（AI 呼出中のピーク約100MiB）＋待機3件（20MiB×3＝60MiB）＝約160MiB に
-    /// ASP.NET Core のベースライン（約100〜150MiB）を加えても約310MiB で、384MiB に対し余裕がある
+    /// 実行中1件（AI 呼出中のピーク約70MiB）＋待機3件（14MiB×3＝42MiB）＝約112MiB に
+    /// ASP.NET Core のベースライン（約100〜150MiB）を加えても約260MiB で、384MiB に対し余裕がある
     /// ため 4 とする。超過分は永続化・クレームの<b>前に</b> 429（<see cref="ErrorCodes.AiCheckBusy"/>）で
     /// 拒否し、無駄なレコード・画像や「クレーム直後の failed」で記録を汚さない。
     /// </para>
     /// <para>
     /// <b>この収支が成立する前提:</b> 予約が<b>画像バッファの確保より前</b>に行われること。
-    /// 予約より前にバッファを確保すると、429 で拒否される要求まで 20MiB を確保するため
-    /// 「受付枠が満杯＋同時 POST 4本」で +80MiB となり収支（約310MiB）が崩れる。
+    /// 予約より前にバッファを確保すると、429 で拒否される要求まで 14MiB を確保するため
+    /// 「受付枠が満杯＋同時 POST 4本」で +56MiB となり収支（約260MiB）が崩れる。
     /// そのため予約は <see cref="AiCheckSlotLease"/> でコントローラの入口
     /// （<c>file.Length</c> 合算による合計サイズ判定の直後・バッファ確保前）から行う。
     /// なお multipart のフォームバッファリングは予約より前に完了しているが、
@@ -323,7 +325,7 @@ public sealed class SubsidiaryCheckService
     /// （原則1「手動ステップを残さない」に抵触）。
     /// </para>
     /// <para>
-    /// <b>無制限にしない理由:</b> 待機を無制限にすると、画像バッファ（1件あたり最大20MB）を
+    /// <b>無制限にしない理由:</b> 待機を無制限にすると、画像バッファ（1件あたり最大14MB）を
     /// 保持したままの実行が長時間居座り、受付枠（<see cref="MaxConcurrentAiChecks"/>）が解放されず
     /// 新規受付が 429 で塞がり続ける。また processing の滞留時間が非有界になり、孤児判定
     /// （<see cref="ProcessingStaleAfter"/>）の根拠が成り立たなくなる。
@@ -738,7 +740,7 @@ public sealed class SubsidiaryCheckService
     /// 受付枠を予約したスコープを返す。上限に達している場合は 429（UNDX-REQ-009）。
     /// <para>
     /// <b>画像バッファを確保する前に呼ぶこと。</b> バッファ確保後に呼ぶと、429 で拒否される要求まで
-    /// 1件あたり最大 <see cref="MaxTotalImageBytes"/>（20MB）を確保することになり、
+    /// 1件あたり最大 <see cref="MaxTotalImageBytes"/>（14MB）を確保することになり、
     /// 受付上限がピークメモリを有界化しなくなる（<see cref="MaxConcurrentAiChecks"/> の収支を参照）。
     /// </para>
     /// 返り値は <c>using</c> で囲み、成功時のみ <see cref="StartBackgroundRun"/> が
@@ -774,12 +776,12 @@ public sealed class SubsidiaryCheckService
     /// <see cref="AiCallSemaphore"/> でピークメモリが構造的に有界化されているが、画像配信には
     /// 認証以外の制限が無かった。詳細画面は1回開くだけで最大 13 枚
     /// （<see cref="MaxInstructionImages"/>＋<see cref="MaxTagImages"/>）を並列取得するため、
-    /// 上限が無いと「同時閲覧者数 × 約40MiB」がそのままピークメモリになり
-    /// （1チェックの画像合計は最大 20MiB だが、bytea の読取には Npgsql の
+    /// 上限が無いと「同時閲覧者数 × 約28MiB」がそのままピークメモリになり
+    /// （1チェックの画像合計は最大 14MiB だが、bytea の読取には Npgsql の
     /// オーバーサイズバッファが同量程度乗るため、1閲覧あたりの実効は約2倍）、
     /// GC ハードリミット 384MiB に対するヘッドルーム
-    /// （有界化前は約74MiB・<c>docs/design.md</c> §13.5）を 2 名程度の同時閲覧で超えうる
-    /// （40MiB × 2 = 80MiB &gt; 74MiB）。
+    /// （有界化前は約124MiB・<c>docs/design.md</c> §13.5）を 5 名程度の同時閲覧で超えうる
+    /// （28MiB × 5 = 140MiB &gt; 124MiB）。
     /// </para>
     /// <para>
     /// <b>値の根拠:</b> 1枠のピークは、DB 読取中が「byte[]（最大5MiB）＋ Npgsql の

@@ -51,7 +51,10 @@ cd ~/undeux-sales-suite/infra/aws
 | `UNDEUX_DB_CONNECTION` | RDS への接続文字列 |
 | `UNDEUX_FIREBASE_PROJECT_ID` | Firebase プロジェクトID（IDトークン検証） |
 | `UNDEUX_FRONTEND_ORIGIN` | 許可するフロントエンドのオリジン（CORS） |
-| `UNDEUX_ANTHROPIC_API_KEY` | Anthropic API キー（AIチャット用。未設定でも起動し、チャットのみ「AI未設定」になる） |
+| `UNDEUX_VERTEX_PROJECT_ID` | GCP プロジェクトID（Vertex AI / Gemini。未設定でも起動し、AI 機能のみ「AI未設定」になる） |
+| `UNDEUX_VERTEX_SA_JSON_BASE64` | サービスアカウント鍵 JSON の base64（EC2 は GCP 外のため必須。ADC は使えない） |
+| `UNDEUX_VERTEX_LOCATION` | Vertex AI ロケーション（既定 `global`） |
+| `UNDEUX_VERTEX_MODEL` / `UNDEUX_VERTEX_VISION_MODEL` | 使用モデル（既定 `gemini-2.5-flash`。リポジトリ変数 `GEMINI_MODEL` 等で上書き可） |
 | `UNDEUX_API_DOMAIN` | API のドメイン名（nginx-proxy の `VIRTUAL_HOST` / `LETSENCRYPT_HOST` に使用） |
 | `UNDEUX_IMAGE_REPO` | GHCR のイメージ参照ベース（例 `ghcr.io/tsunaguba/undeux-sales-suite`）。`-api` / `-dataloader` を付けて pull |
 | `UNDEUX_IMAGE_TAG` | pull するイメージタグ（デプロイ時の commit SHA）。CI が生成 |

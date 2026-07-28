@@ -206,7 +206,7 @@ public sealed class RagIntegrationTests
     [Fact]
     public async Task FileKnowledge_ImageOverSizeLimit_Returns413()
     {
-        // 画像は 5MB 上限（Anthropic API の画像上限。他形式の 20MB より厳しい）
+        // 画像は 5MB 上限（Vertex AI（Gemini）の画像上限内。他形式の 20MB より厳しい）
         using var client = CreateClient("member-token");
         using var form = new MultipartFormDataContent();
         form.Add(new StringContent("user"), "scope");

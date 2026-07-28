@@ -262,7 +262,7 @@ function totalSelectedBytes(): number {
 }
 
 /**
- * ファイル追加。形式（jpeg/png）・サイズ（各5MB・合計20MB）・枚数上限をクライアント側でも検証し、
+ * ファイル追加。形式（jpeg/png）・サイズ（各5MB・合計14MB）・枚数上限をクライアント側でも検証し、
  * 通ったものだけプレビュー付きで追加する（検証の SoT はバックエンド。ここは即時フィードバック用）。
  */
 function addFiles(kind: SubsidiaryCheckImageKind, fileList: FileList | null): void {

@@ -3,8 +3,8 @@ namespace UndeuxSales.Core.Rag;
 /// <summary>チャット履歴の1メッセージ（role は user / assistant）。</summary>
 public sealed record AiChatMessage(string Role, string Content);
 
-/// <summary>system プロンプトの1ブロック。Cache=true は安定プレフィックス（プロンプトキャッシュ対象）。</summary>
-public sealed record AiSystemBlock(string Text, bool Cache);
+/// <summary>system プロンプトの1ブロック。先に置いたブロックほど安定プレフィックス（Gemini の暗黙キャッシュ対象）。</summary>
+public sealed record AiSystemBlock(string Text);
 
 /// <summary>LLM へのチャット要求（system ブロック列＋会話履歴）。</summary>
 public sealed record AiChatRequest(
@@ -33,7 +33,7 @@ public sealed record AiStreamEvent(string Type, string? Text, long InputTokens, 
 public sealed record AiImageInput(byte[] Data, string MediaType, string Label);
 
 /// <summary>
-/// LLM クライアント抽象（実装は Infrastructure の AnthropicAiClient）。
+/// LLM クライアント抽象（実装は Infrastructure の GeminiVertexAiClient）。
 /// 未設定（API キーなし）の場合、呼出側は UNDX-AI-008 で応答する（グレースフルデグラデーション）。
 /// </summary>
 public interface IAiChatClient

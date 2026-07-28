@@ -92,8 +92,13 @@ jobs:
           FIREBASE_PROJECT_ID: ${{ secrets.FIREBASE_PROJECT_ID }}
           FRONTEND_ORIGIN: ${{ secrets.FRONTEND_ORIGIN }}
           API_DOMAIN: ${{ secrets.API_DOMAIN }}
-          # 未登録でもデプロイは成功する（AIチャットのみ「AI未設定」となる）。
-          ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
+          # AI（Vertex AI / Gemini）。未登録でもデプロイは成功する（AI 機能のみ「AI未設定」となる）。
+          # 認証情報（サービスアカウント鍵・プロジェクト）は secrets、モデル等の非機密設定は variables から読む。
+          GCP_PROJECT_ID: ${{ secrets.GCP_PROJECT_ID }}
+          GCP_SERVICE_ACCOUNT: ${{ secrets.GCP_SERVICE_ACCOUNT }}
+          GCP_LOCATION: ${{ vars.GCP_LOCATION }}
+          GEMINI_MODEL: ${{ vars.GEMINI_MODEL }}
+          GEMINI_VISION_MODEL: ${{ vars.GEMINI_VISION_MODEL }}
           IMAGE_REPO: ${{ steps.meta.outputs.repo }}
           IMAGE_TAG: ${{ steps.meta.outputs.tag }}
         run: |
@@ -102,7 +107,14 @@ jobs:
             echo "UNDEUX_FIREBASE_PROJECT_ID=$FIREBASE_PROJECT_ID"
             echo "UNDEUX_FRONTEND_ORIGIN=$FRONTEND_ORIGIN"
             echo "UNDEUX_API_DOMAIN=$API_DOMAIN"
-            echo "UNDEUX_ANTHROPIC_API_KEY=$ANTHROPIC_API_KEY"
+            echo "UNDEUX_VERTEX_PROJECT_ID=$GCP_PROJECT_ID"
+            # SA 鍵 JSON は改行・引用符・= を含むため base64 化して1行の安全な値にする（空なら空のまま）。
+            # 注意: この base64 値は GitHub のログ自動マスク対象外。deploy.env への redirect のみとし、
+            # stdout へ出さないこと（デバッグで cat/set -x しない）。
+            echo "UNDEUX_VERTEX_SA_JSON_BASE64=$(printf '%s' "$GCP_SERVICE_ACCOUNT" | base64 -w0)"
+            echo "UNDEUX_VERTEX_LOCATION=${GCP_LOCATION:-global}"
+            echo "UNDEUX_VERTEX_MODEL=${GEMINI_MODEL:-gemini-2.5-flash}"
+            echo "UNDEUX_VERTEX_VISION_MODEL=${GEMINI_VISION_MODEL:-gemini-2.5-flash}"
             echo "UNDEUX_IMAGE_REPO=$IMAGE_REPO"
             echo "UNDEUX_IMAGE_TAG=$IMAGE_TAG"
           } > deploy.env

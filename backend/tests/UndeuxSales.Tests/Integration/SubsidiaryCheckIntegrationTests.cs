@@ -135,7 +135,7 @@ public sealed class SubsidiaryCheckIntegrationTests
     /// <summary>
     /// 画像配信の同時実行数は有界化されており、枠が埋まっている間の要求は
     /// 順番待ち上限で 429（UNDX-REQ-009）になる。
-    /// これが無いと「同時閲覧者数 × 約40MiB」がそのままピークメモリになり、
+    /// これが無いと「同時閲覧者数 × 約28MiB」がそのままピークメモリになり、
     /// GC ハードリミットに対するヘッドルーム（docs/design.md §13.5）を超えうる。
     /// </summary>
     [Fact]
@@ -369,7 +369,7 @@ public sealed class SubsidiaryCheckIntegrationTests
         using var factory = WithSubsidiaryAi(stub);
         using var client = CreateClient(factory);
 
-        // 各画像は 5MB 以下（各上限内）だが、合計 21MB > 20MB（MaxTotalImageBytes）で拒否される。
+        // 各画像は 5MB 以下（各上限内）だが、合計 21MB > 14MB（MaxTotalImageBytes）で拒否される。
         using var form = new MultipartFormDataContent();
         AddImage(form, "instructionImages", "instruction.jpg", "image/jpeg",
             LargeImage(JpegBytes(0x01), 5 * 1024 * 1024));
@@ -773,7 +773,7 @@ public sealed class SubsidiaryCheckIntegrationTests
     [Fact]
     public async Task Create_WhenAcceptanceLimitReached_RejectsBeforeReadingImages()
     {
-        // 受付枠の判定は「画像バッファ（1件あたり最大20MB）の確保より前」に行う必要がある
+        // 受付枠の判定は「画像バッファ（1件あたり最大14MB）の確保より前」に行う必要がある
         // （バッファ確保後だと、429 で拒否される要求までピークメモリへ寄与してしまう）。
         // 画像の読取・検証（ReadImagesAsync）まで進んでいれば形式エラーの 400（UNDX-REQ-005）に
         // なる要求が 429 で返ることで、アプリ層の画像バッファ（new byte[file.Length]）を

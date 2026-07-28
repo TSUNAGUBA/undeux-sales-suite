@@ -39,7 +39,7 @@ SoT の階層を明確にする。
 
 - ブループリント v1.0 の名称・SoT宣言（§7）・マルチテナント方式（ADR-001: OLTP=RLS＋論理列 / mart=スキーマ分離）・AI 組込範囲の限定（ADR-010）・ベクターストアは pgvector 既定（ADR-011）・ベクター/チャンク/インサイトは `domain_document` から再生成可（ADR-012）は確定事項として扱う。
 - DB は PostgreSQL 16。`pgvector`／`jsonb`／生成列／RLS（`app.tenant_id` セッション変数）が利用可能である前提。
-- **LLM は Claude API（Anthropic Messages API）を主に用いる**。具体モデル ID は環境依存として抽象化し、`config` の稼働設定（`backoffice.service_activation.config jsonb`）で解決する（ブループリント §8.5「モデルは環境依存」の方針を継承）。本書では役割別にモデルの「クラス」（高推論クラス／標準クラス／低コストクラス）で記述する。
+- **LLM は Google Vertex AI（Gemini）を主に用いる**。具体モデル ID は環境依存として抽象化し、`config` の稼働設定（`backoffice.service_activation.config jsonb`）で解決する（ブループリント §8.5「モデルは環境依存」の方針を継承）。本書では役割別にモデルの「クラス」（高推論クラス／標準クラス／低コストクラス）で記述する。
 - ベクターストアは pgvector 既定。規模により外部ベクターストアへ移行可能（ADR-011）。埋め込みベクトルの `dim`（次元数）はモデルに依存し、`knowledge.embedding.model`＋`dim` で識別する。
 - 記述言語は日本語、コード識別子/SQL/型名/モデルIDは英数字。
 - 金額は最小通貨単位の整数 `bigint`（`shared.currency.minor_unit` で桁解釈）。コスト集計もこの型方針に従う。
@@ -143,7 +143,7 @@ flowchart LR
     MF --> VS[pgvector 近傍検索<br/>top-k ＋ 距離しきい値]
     VS --> RR[再ランキング<br/>token_count 予算内に選抜]
     RR --> CTX[コンテキスト構築<br/>出典 chunk_id 付与]
-    CTX --> LLM[Claude API<br/>Messages + プロンプトキャッシュ]
+    CTX --> LLM[Vertex AI（Gemini）<br/>generateContent + プロンプトキャッシュ]
     LLM --> OUT[生成物＋出典必須]
     VS -. 該当なし .-> FB[根拠なし→<br/>ルールベース/未回答]
 ```
@@ -218,7 +218,7 @@ flowchart TD
 | A4 インサイト | Insight | A1〜A3＋RAG 根拠 | `InsightGenerator`（§5） | `knowledge.insight` |
 
 - **決定的処理を優先:** 集計（A1）・単純分類（A2 の閾値判定）は SQL/ルールで実行し、LLM に数値計算をさせない（ハルシネーション回避・コスト削減）。LLM は「分類の境界事例の判断」「異常の自然言語説明」「インサイト文生成」に限定する。
-- **ツール利用（Claude API）:** LLM に mart を直接触らせず、**サーバー側で実行した集計結果をツール結果として渡す**（プログラマティックな集計→LLM は解釈に専念）。LLM が SQL を提案しても実行は AnalyticsAgentFlow 側が検証・実行する（AI は業務データを直接読み書きしない、ADR-010）。
+- **ツール利用（Vertex AI / Gemini）:** LLM に mart を直接触らせず、**サーバー側で実行した集計結果をツール結果として渡す**（プログラマティックな集計→LLM は解釈に専念）。LLM が SQL を提案しても実行は AnalyticsAgentFlow 側が検証・実行する（AI は業務データを直接読み書きしない、ADR-010）。
 
 ### 4.2 異常検知の方針
 
@@ -284,7 +284,7 @@ flowchart TD
     end
     subgraph I3[I3 AI層]
         RAGN[RAG 根拠取得<br/>業界/クライアント知識]
-        GEN[Claude API 生成<br/>なぜ・次に何を]
+        GEN[Vertex AI（Gemini）生成<br/>なぜ・次に何を]
         CONF[信頼度算出]
     end
     KPI --> DIFF --> EXT --> ACT
@@ -347,7 +347,7 @@ ALTER TABLE knowledge.insight ENABLE ROW LEVEL SECURITY;
 ### 6.2 協調とツール利用
 
 - **ハブ＆スポーク協調:** `agent.analyst` を調整役（ハブ）とし、事実の取得・RAG 根拠付けを一元化して各役割エージェントへ供給する。各役割は自分の関心領域で判断・提案し、`agent.analyst` が統合して人間向けのアクション案を編む。
-- **ツール（Claude API のツール利用）:** 各エージェントに与えるツールは `agent_definition.tools jsonb` で宣言する。ツールは全て**読み取り／助言**系に限定する（ADR-010）：
+- **ツール（Vertex AI / Gemini のツール利用）:** 各エージェントに与えるツールは `agent_definition.tools jsonb` で宣言する。ツールは全て**読み取り／助言**系に限定する（ADR-010）：
   - `query_mart`（集計取得。サーバー側で検証・実行、結果をツール結果として返す）
   - `search_knowledge`（RAG 検索。テナント/業界境界内）
   - `get_thresholds`（在庫健全性等の実装閾値をコード SoT から取得）
@@ -395,11 +395,11 @@ sequenceDiagram
 
 ---
 
-## 7. モデル選定と Claude API 活用方針
+## 7. モデル選定と Vertex AI（Gemini）活用方針
 
 ### 7.1 モデル選定（クラスで抽象化）
 
-**具体モデル ID は環境依存**とし、稼働設定（`backoffice.service_activation.config jsonb`）で解決する。本書では役割に応じた「クラス」で規定する。実際のモデル ID（例: 高推論クラスに `claude-opus-4-8`、低コストクラスに `claude-haiku-4-5` 等）は環境の `config` にマッピングする。
+**具体モデル ID は環境依存**とし、稼働設定（`backoffice.service_activation.config jsonb`）で解決する。本書では役割に応じた「クラス」で規定する。実際のモデル ID（例: 高推論クラスに `gemini-2.5-pro`、標準・低コストクラスに `gemini-2.5-flash` 等）は環境の `config` にマッピングする。
 
 | クラス | 用途 | 選定観点 |
 |---|---|---|
@@ -410,9 +410,9 @@ sequenceDiagram
 
 - **モデル抽象化の下位互換:** モデル ID を直書きせず `config` 参照とすることで、モデル更新時もスキーマ・API 契約を変えずに切替え可能（原則7）。埋め込みモデル更新時は `(document_chunk_id, model)` キーで新旧共存し再生成する（§3.2）。
 
-### 7.2 Claude API 活用方針
+### 7.2 Vertex AI（Gemini）活用方針
 
-Claude API（Messages API）の機能を次の方針で用いる。
+Vertex AI（Gemini・generateContent）の機能を次の方針で用いる。
 
 | 機能 | 活用方針 |
 |---|---|
