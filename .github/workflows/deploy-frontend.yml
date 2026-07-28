@@ -3,14 +3,14 @@ name: deploy-frontend
 # フロントエンド（Nuxt SPA）を Firebase Hosting へデプロイする。
 # 実行方法:
 #   単独実行: GitHub の Actions タブ → "deploy-frontend" → "Run workflow"
-#   一括実行: "deploy-all"（backend → frontend の順で本ワークフローを呼び出す）
+#   通常運用: "deploy"（テストゲート付きパイプライン。backend → frontend の順で本ワークフローを呼び出す）
 # 必要なシークレットは infra/deploy-guide.md を参照。
 on:
   workflow_dispatch:
-  # deploy-all からの再利用呼び出し（secrets は inherit で受け取る）。
+  # deploy（テストゲート付きパイプライン）からの再利用呼び出し（secrets は inherit で受け取る）。
   workflow_call:
 
-# デプロイ系ワークフローの同時実行を防ぐ共通グループ（deploy-backend / deploy-all と共有）。
+# デプロイ系ワークフローの同時実行を防ぐ共通グループ（deploy-backend / deploy と共有）。
 # 実行中があれば後続はキャンセルせずキューイングする。
 concurrency:
   group: deploy
@@ -72,7 +72,7 @@ jobs:
       # Firebase Hosting（本番 live チャンネル）へデプロイする。
       # 公式アクション（FirebaseExtended/action-hosting-deploy）は「公開中と完全に同一内容の再デプロイ」を
       # 失敗として扱う（HTTP 400 FAILED_PRECONDITION: "is the current active version"）。差分ゼロの重複デプロイ
-      # （deploy-all と deploy-frontend の連続実行等）でジョブが赤くなるのを避けるため、シェルで firebase-tools を
+      # （deploy と deploy-frontend の連続実行等）でジョブが赤くなるのを避けるため、シェルで firebase-tools を
       # 実行し、この no-op（＝サイトは既に最新）のみ成功扱いにして冪等化する。それ以外の失敗は従来どおり失敗させる。
       # 認証はサービスアカウント JSON をファイル化し GOOGLE_APPLICATION_CREDENTIALS で渡す
       # （firebase-tools 15 系は本 env を確実に解決する。google-github-actions/auth は併用しない＝CLOUDSDK_* が

@@ -164,9 +164,10 @@ npm run typecheck  # 型チェック
 
 ## デプロイ
 
-GitHub Actions による自動デプロイ（フロント→Firebase Hosting、API→AWS EC2）を構成済み。
-一括デプロイは `deploy-all` ワークフロー（バックエンド → フロントエンドの順に直列実行）、
-個別デプロイは従来どおり `deploy-backend` / `deploy-frontend` を使用する。
+GitHub Actions によるデプロイ（フロント→Firebase Hosting、API→AWS EC2）を構成済み。
+通常運用は `deploy` ワークフロー（事前検証 → テストゲート[単体・結合・シナリオ] → バックエンド → フロントエンド → 結果レポート）を使用する。
+テストが1つでも失敗するとデプロイは中断され、失敗内容は Step Summary とアーティファクト `deploy-logs` に記録される。
+緊急時の個別デプロイは `deploy-backend` / `deploy-frontend` を使用する（テストゲートを迂回するフォールバック）。
 初回セットアップとデプロイの全手順（PowerShell コマンドベース）は
 `infra/deploy-guide.md` を参照。構成の概要は `infra/README.md`。
 

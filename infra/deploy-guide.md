@@ -11,9 +11,9 @@ GitHub Actions で自動デプロイするための、初回セットアップ�
 
 ```mermaid
 graph LR
-    Dev[開発者] -->|gh workflow run| ALL[deploy-all 一括デプロイ]
-    ALL -->|1. 呼び出し| BE[deploy-backend]
-    ALL -->|2. backend 成功後| FE[deploy-frontend]
+    Dev[開発者] -->|gh workflow run| ALL[deploy パイプライン<br/>事前検証→テストゲート→デプロイ]
+    ALL -->|テスト通過後 1| BE[deploy-backend]
+    ALL -->|backend 成功後 2| FE[deploy-frontend]
     Dev -. 個別実行も可 .-> BE
     Dev -. 個別実行も可 .-> FE
     FE --> FH[Firebase Hosting]
@@ -331,16 +331,21 @@ Remove-Variable DbPassword, RdsConnectionString, GcpProjectId -ErrorAction Silen
 > 先に Pull Request をマージしてから実行してください。
 
 ```powershell
-# 一括デプロイ（バックエンド → フロントエンドの順で自動実行）
-gh workflow run deploy-all.yml --repo $Repo --ref main
+# 通常運用: テストゲート付きパイプライン（事前検証 → 単体・結合・シナリオ → backend → frontend）
+gh workflow run deploy.yml --repo $Repo --ref main
 
 # 進行状況の確認
 gh run list --repo $Repo --limit 5
 gh run watch --repo $Repo
 ```
 
-> 個別にデプロイしたい場合は `deploy-backend.yml` / `deploy-frontend.yml` を
-> 単独で実行できます（従来どおり）。deploy-all はバックエンド失敗時に
+> **テストゲート:** `deploy` は事前検証（必須シークレットの存在確認）の後、単体テスト → 結合テスト →
+> シナリオテスト（フロントの型チェック＋静的ビルド）を順に実行し、**1つでも失敗するとデプロイを中断**します。
+> 失敗内容は Step Summary とアーティファクト `deploy-logs`（各ステージの `*.log`）に残ります。
+> 結合テストは PostgreSQL の service コンテナを CI 内に立てて実行します（テスト DB は fixture が自動作成）。
+>
+> **緊急フォールバック:** テストゲートを迂回して個別にデプロイしたい場合のみ `deploy-backend.yml` /
+> `deploy-frontend.yml` を単独実行します（テストは実行されません）。`deploy` はバックエンド失敗時に
 > フロントエンドのデプロイを自動的に中止します。
 
 - **deploy-backend** は初回約8〜12分（**イメージビルドは CI（GitHub Actions）で実行**し GHCR へ push、
@@ -735,10 +740,13 @@ sudo journalctl -k --since '-1h' | grep -i 'out of memory' | tail
 コードを更新したら、main にマージ後、次のコマンドを実行するだけです。
 
 ```powershell
-gh workflow run deploy-all.yml --repo tsunaguba/undeux-sales-suite --ref main
+gh workflow run deploy.yml --repo tsunaguba/undeux-sales-suite --ref main
 ```
 
-個別にデプロイする場合（片方だけ更新したとき等）:
+> ⚠️ **緊急フォールバックのみ:** 個別ワークフロー（下記）は**テストゲート（単体・結合・シナリオ）を実行しません**。
+> 通常運用は必ず上記 `deploy.yml` を使用し、テストを通してからデプロイしてください。
+> `deploy.yml` が使えない緊急時に限り、個別に実行します（テストを迂回する点に注意。テストゲートの無効化・迂回は
+> オペレーター承認のもとで行うこと。CLAUDE.md「デプロイ運用」）:
 
 ```powershell
 gh workflow run deploy-backend.yml  --repo tsunaguba/undeux-sales-suite --ref main
@@ -777,7 +785,7 @@ GitHub の **Actions** タブの「Run workflow」ボタンからも実行でき
 
 | 症状 | 対処 |
 |------|------|
-| `deploy-all` が `a deadlock was detected for concurrency group: 'deploy'` で失敗 | 親（`deploy-all`）と子（`deploy-backend`/`deploy-frontend`）が同じ `concurrency` グループを持つと発生する。**親には `concurrency` を設定しない**（排他は子側の `deploy` グループで担保）。修正済み。個別ワークフロー実行では発生しない |
+| `deploy` が `a deadlock was detected for concurrency group: 'deploy'` で失敗 | 親（`deploy`）と子（`deploy-backend`/`deploy-frontend`）が同じ `concurrency` グループを持つと発生する。**親には `concurrency` を設定しない**（排他は子側の `deploy` グループで担保）。修正済み。個別ワークフロー実行では発生しない |
 | `deploy-backend` が**イメージビルド（CI）**で失敗 | Actions のログで `dotnet publish` のコンパイルエラーを確認して修正する（ビルドは Actions ランナー上で実行される）。GHCR への push で `denied` なら、リポジトリ/Organization の Actions パッケージ書込権限（`permissions: packages: write` の許可）を確認する |
 | EC2 の `docker compose pull` が失敗 | EC2 が `ghcr.io` へ到達できるか（outbound 443）と、ワークフローの GHCR ログインが成功しているかを確認する。手動時は EC2 で `docker login ghcr.io` 済みか確認 |
 | `no space left on device`（旧構成の名残） | 本改修後、EC2 では **ビルドしない**ためこの失敗は原則発生しない。残存する旧イメージ/キャッシュで逼迫する場合は EC2 に SSH して `docker builder prune -af && docker image prune -af`（`--volumes` は付けない）。恒常的に不足するなら EBS 拡張（ステップ3-3 は 30GB 指定）を確認する |
