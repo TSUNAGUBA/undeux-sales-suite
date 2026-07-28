@@ -1,0 +1,235 @@
+# =============================================================================
+# デプロイパイプライン / Deploy Pipeline（テストゲート付き）
+#
+# 事前検証 → テストゲート（単体 → 結合 → シナリオ）→ デプロイ（バックエンド → フロントエンド）
+# → 結果レポート の順で実行し、いずれかのテストが失敗した場合はデプロイを中断する。
+# 「何がどのように失敗したか」は Step Summary とアーティファクト `deploy-logs` に残る。
+# 副資材チェック機能の原型リポジトリ（subsidiary-materials-agent）の deploy.yml に倣った構成。
+#
+# デプロイ本体は既存の再利用ワークフロー（deploy-backend.yml / deploy-frontend.yml）を
+# そのまま呼び出す（原則3）。個別ワークフローは緊急フォールバック用に workflow_dispatch を
+# 残すが、通常運用は必ず本パイプライン経由で行い、テストゲートを迂回しない。
+# 設定値・シークレットの登録手順は infra/deploy-guide.md を参照。
+# =============================================================================
+name: deploy
+
+# 共有 EC2 / 単一 Firebase プロジェクト（＝本番のみ・staging なし）へのデプロイのため、
+# 自動デプロイ（push トリガー）は付けず、オペレーターが明示的に起動する運用とする。
+on:
+  workflow_dispatch:
+
+# deploy-backend が GHCR へ push するため packages: write を付与する
+# （再利用ワークフローの GITHUB_TOKEN 権限は呼び出し側の permissions で頭打ちになる）。
+permissions:
+  contents: read
+  packages: write
+
+# 本（親）ワークフローには concurrency group を設定しない。
+# 呼び出す deploy-backend / deploy-frontend が `concurrency: group: deploy` を持つため、
+# 親も同じグループを宣言すると「親がグループを保持したまま子が同グループを待つ」構図になり、
+# GitHub Actions が concurrency デッドロックを検出して実行を打ち切るため、親はグループを持たない。
+# デプロイ操作（rsync --delete 等）の排他は子ワークフロー側の `deploy` グループで担保される。
+
+jobs:
+  # ---------------------------------------------------------------------------
+  # 事前検証: 必要なシークレットが揃っているかを最初に確認し、
+  # 不足があれば「何が足りないか」を明示して即座に失敗させる（無駄なテスト実行を避ける）。
+  # 値そのものは env に載せず、存在フラグ（"true"/"false"）だけで判定する。
+  # ---------------------------------------------------------------------------
+  preflight:
+    name: 事前検証（設定値チェック）
+    runs-on: ubuntu-latest
+    env:
+      HAS_RDS: ${{ secrets.RDS_CONNECTION_STRING != '' }}
+      HAS_FIREBASE_PROJECT_ID: ${{ secrets.FIREBASE_PROJECT_ID != '' }}
+      HAS_FIREBASE_API_KEY: ${{ secrets.FIREBASE_API_KEY != '' }}
+      HAS_FIREBASE_AUTH_DOMAIN: ${{ secrets.FIREBASE_AUTH_DOMAIN != '' }}
+      HAS_FIREBASE_SERVICE_ACCOUNT: ${{ secrets.FIREBASE_SERVICE_ACCOUNT != '' }}
+      HAS_FRONTEND_ORIGIN: ${{ secrets.FRONTEND_ORIGIN != '' }}
+      HAS_API_DOMAIN: ${{ secrets.API_DOMAIN != '' }}
+      HAS_EC2_HOST: ${{ secrets.EC2_HOST != '' }}
+      HAS_EC2_USER: ${{ secrets.EC2_USER != '' }}
+      HAS_EC2_SSH_KEY: ${{ secrets.EC2_SSH_KEY != '' }}
+      HAS_GCP_PROJECT_ID: ${{ secrets.GCP_PROJECT_ID != '' }}
+      HAS_GCP_SERVICE_ACCOUNT: ${{ secrets.GCP_SERVICE_ACCOUNT != '' }}
+    steps:
+      - name: 必須シークレットの存在確認
+        run: |
+          MISSING=""
+
+          # secret は値ではなく存在フラグ（"true"/"false"）で判定する
+          check() {
+            local name="$1" present="$2"
+            if [ "$present" != "true" ]; then
+              MISSING="${MISSING}\n- **${name}**（repository secret）が未設定です"
+            fi
+          }
+
+          check "RDS_CONNECTION_STRING"    "$HAS_RDS"
+          check "FIREBASE_PROJECT_ID"      "$HAS_FIREBASE_PROJECT_ID"
+          check "FIREBASE_API_KEY"         "$HAS_FIREBASE_API_KEY"
+          check "FIREBASE_AUTH_DOMAIN"     "$HAS_FIREBASE_AUTH_DOMAIN"
+          check "FIREBASE_SERVICE_ACCOUNT" "$HAS_FIREBASE_SERVICE_ACCOUNT"
+          check "FRONTEND_ORIGIN"          "$HAS_FRONTEND_ORIGIN"
+          check "API_DOMAIN"               "$HAS_API_DOMAIN"
+          check "EC2_HOST"                 "$HAS_EC2_HOST"
+          check "EC2_USER"                 "$HAS_EC2_USER"
+          check "EC2_SSH_KEY"              "$HAS_EC2_SSH_KEY"
+
+          if [ -n "$MISSING" ]; then
+            {
+              echo "## ❌ 事前検証失敗 — デプロイを中断します"
+              echo ""
+              echo "以下の必須シークレットが未登録です（手順書: \`infra/deploy-guide.md\` ステップ6）:"
+              echo -e "$MISSING"
+            } >> "$GITHUB_STEP_SUMMARY"
+            echo "::error::必須シークレットが不足しています。Step Summary を確認してください。"
+            exit 1
+          fi
+
+          # AI（Vertex AI / Gemini）は任意。未設定でもデプロイは継続し、AI 機能のみ無効になる。
+          if [ "$HAS_GCP_PROJECT_ID" != "true" ] || [ "$HAS_GCP_SERVICE_ACCOUNT" != "true" ]; then
+            echo "::warning::GCP_PROJECT_ID / GCP_SERVICE_ACCOUNT が未設定です。デプロイは継続しますが、AI 機能（チャット・副資材チェック）は「AI未設定」になります。"
+            echo "- ⚠️ **AI 設定（任意）**: GCP_PROJECT_ID / GCP_SERVICE_ACCOUNT 未設定 → AI 機能のみ無効（他は正常）" >> "$GITHUB_STEP_SUMMARY"
+          fi
+
+          echo "- ✅ **事前検証**: 必須シークレットはすべて登録済み" >> "$GITHUB_STEP_SUMMARY"
+          echo "✅ 事前検証 OK"
+
+  # ---------------------------------------------------------------------------
+  # テストゲート: 単体 → 結合 → シナリオ の順に実行。
+  # 前段が失敗した時点で以降は実行されず（run-test-stage.sh が非ゼロ終了）、デプロイは中断される。
+  #   単体   : DB 不要のロジックテスト（UndeuxSales.Tests.Unit）
+  #   結合   : API + PostgreSQL（UndeuxSales.Tests.Integration。service コンテナで DB を用意）
+  #   シナリオ: フロントエンド（Nuxt SPA）の型チェック＋静的ビルド（デプロイと同じ generate）
+  # ---------------------------------------------------------------------------
+  test:
+    name: テストゲート（単体・結合・シナリオ）
+    needs: preflight
+    runs-on: ubuntu-latest
+    services:
+      postgres:
+        image: postgres:16
+        env:
+          POSTGRES_USER: undeux
+          POSTGRES_PASSWORD: undeux
+          POSTGRES_DB: undeux
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U undeux -d undeux"
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 10
+    steps:
+      - name: チェックアウト
+        uses: actions/checkout@v4
+
+      - name: .NET SDK のセットアップ
+        uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: "8.0.x"
+
+      - name: "Node.js のセットアップ（シナリオ: フロントエンドビルド用）"
+        uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+          cache: npm
+          cache-dependency-path: frontend/package-lock.json
+
+      - name: 依存関係の復元
+        run: dotnet restore backend/UndeuxSales.sln
+
+      - name: ビルド（Release）
+        run: dotnet build backend/UndeuxSales.sln -c Release --no-restore
+
+      - name: 単体テスト
+        env:
+          STAGE_CMD: 'dotnet test backend/UndeuxSales.sln -c Release --no-build --filter "FullyQualifiedName~UndeuxSales.Tests.Unit"'
+        run: bash scripts/run-test-stage.sh "単体テスト" unit-test
+
+      - name: 結合テスト
+        env:
+          STAGE_CMD: 'dotnet test backend/UndeuxSales.sln -c Release --no-build --filter "FullyQualifiedName~UndeuxSales.Tests.Integration"'
+          # DatabaseFixture が参照するテスト DB 接続情報（service コンテナに合わせる）。
+          UNDEUX_TEST_PGHOST: localhost
+          UNDEUX_TEST_PGPORT: "5432"
+          UNDEUX_TEST_PGUSER: undeux
+          UNDEUX_TEST_PGPASSWORD: undeux
+          UNDEUX_TEST_PGADMINDB: undeux
+        run: bash scripts/run-test-stage.sh "結合テスト" integration-test
+
+      - name: シナリオテスト（フロントエンド 型チェック・静的ビルド）
+        env:
+          STAGE_CMD: 'cd frontend && npm ci && npm run typecheck && npm run generate'
+        run: bash scripts/run-test-stage.sh "シナリオテスト" scenario-test
+
+      - name: テストログをアーティファクトとして保存
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: deploy-logs
+          path: .deploy-logs/
+          if-no-files-found: ignore
+          retention-days: 30
+
+  # ---------------------------------------------------------------------------
+  # デプロイ: 全テストゲート通過時のみ実行。既存の再利用ワークフローをそのまま呼び出す（原則3）。
+  # バックエンド → フロントエンドの直列（新 API が先に存在しないと公開中フロントが 404 を踏むため）。
+  # ---------------------------------------------------------------------------
+  deploy-backend:
+    name: デプロイ（バックエンド / AWS EC2）
+    needs: [preflight, test]
+    uses: ./.github/workflows/deploy-backend.yml
+    secrets: inherit
+
+  deploy-frontend:
+    name: デプロイ（フロントエンド / Firebase Hosting）
+    needs: deploy-backend
+    uses: ./.github/workflows/deploy-frontend.yml
+    secrets: inherit
+
+  # ---------------------------------------------------------------------------
+  # 最終レポート: 成否にかかわらずパイプライン全体の結果を Step Summary に記録
+  # ---------------------------------------------------------------------------
+  report:
+    name: パイプライン結果レポート
+    needs: [preflight, test, deploy-backend, deploy-frontend]
+    if: always()
+    runs-on: ubuntu-latest
+    steps:
+      - name: 結果サマリーを出力
+        env:
+          PREFLIGHT_RESULT: ${{ needs.preflight.result }}
+          TEST_RESULT: ${{ needs.test.result }}
+          BACKEND_RESULT: ${{ needs.deploy-backend.result }}
+          FRONTEND_RESULT: ${{ needs.deploy-frontend.result }}
+        run: |
+          to_mark() {
+            case "$1" in
+              success)   echo "✅ 成功" ;;
+              failure)   echo "❌ 失敗" ;;
+              skipped)   echo "⏭️ スキップ（前段の失敗により未実行）" ;;
+              cancelled) echo "🚫 キャンセル" ;;
+              *)         echo "$1" ;;
+            esac
+          }
+
+          {
+            echo "# デプロイパイプライン結果"
+            echo ""
+            echo "| ステージ | 結果 |"
+            echo "|---------|------|"
+            echo "| 事前検証 | $(to_mark "$PREFLIGHT_RESULT") |"
+            echo "| テストゲート（単体・結合・シナリオ） | $(to_mark "$TEST_RESULT") |"
+            echo "| デプロイ（バックエンド / EC2） | $(to_mark "$BACKEND_RESULT") |"
+            echo "| デプロイ（フロントエンド / Firebase） | $(to_mark "$FRONTEND_RESULT") |"
+            echo ""
+            if [ "$BACKEND_RESULT" = "success" ] && [ "$FRONTEND_RESULT" = "success" ]; then
+              echo "🎉 デプロイが完了しました。"
+            else
+              echo "⚠️ デプロイは完了していません。失敗・スキップしたステージの Step Summary と"
+              echo "アーティファクト（テストゲート: \`deploy-logs\`）で「何がどのように失敗したか」を確認し、"
+              echo "修正後に再実行してください（手順: \`infra/deploy-guide.md\`）。"
+            fi
+          } >> "$GITHUB_STEP_SUMMARY"
