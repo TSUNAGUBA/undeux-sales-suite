@@ -83,8 +83,11 @@ export interface NavCategory {
 
 /**
  * 目的別カテゴリの定義。並び順は「全体モニタリング → 在庫マネジメント → アイテム分析 →
- * データ管理 → 探索・予測分析」という現状把握→深掘り→整備→探索の思考順序に合わせている。
- * OTB管理はバイヤー専用のため先頭に置く（サプライヤーには表示されない）。
+ * 副資材チェック → データ管理 → 探索・予測分析」という現状把握→深掘り→整備→探索の思考順序に
+ * 合わせている。OTB管理はバイヤー専用のため先頭に置く（サプライヤーには表示されない）。
+ *
+ * 副資材チェックは出荷前検品の独立した業務のため、データ管理配下のタブではなく
+ * トップレベルの独立カテゴリ（ホームのカード）として表示する（サプライヤー専用）。
  *
  * 旧「週間モニタリング」「ブランド/シリーズ分析」は独立カテゴリを廃し、アイテム分析配下の
  * タブへ統合した（URL は不変のため下位互換を維持）。
@@ -140,6 +143,18 @@ export const NAV_CATEGORIES: NavCategory[] = [
     ],
   },
   {
+    id: 'subsidiary-check',
+    label: '副資材チェック',
+    icon: Tags,
+    description: '指示書（工程表FAX等）とタグ画像をAIで突合し、レイアウト・順番・内容をチェックする',
+    // サプライヤー（メーカー）の出荷前副資材検品（タグ・下げ札・品質表示のAIチェック）。
+    // 独立した業務のため、データ管理配下ではなくトップレベルの独立メニューとして表示する。
+    roles: ['supplier'],
+    pages: [
+      { path: '/subsidiary-check', label: '副資材チェック', icon: Tags, matchSubroutes: true },
+    ],
+  },
+  {
     id: 'store',
     label: '店舗分析',
     icon: Store,
@@ -166,14 +181,12 @@ export const NAV_CATEGORIES: NavCategory[] = [
     id: 'data',
     label: 'データ管理',
     icon: Database,
-    description: '予算の登録と、商品マスタ・週次実績データの整備、副資材のAIチェックを行う',
+    description: '予算の登録と、商品マスタ・週次実績データの整備を行う',
     pages: [
       // 予算管理は両ロール（バイヤー=仕入予算/売上予算、サプライヤー=売上予算）。
       { path: '/mart/budget', label: '予算管理', icon: Wallet },
       // 商品マスタ・週次取込は自社データ整備のためサプライヤー（メーカー）向け。
       { path: '/product-master', label: '商品マスタ', icon: Shirt, matchSubroutes: true, roles: ['supplier'] },
-      // 副資材チェックはサプライヤー（メーカー）の出荷前副資材検品（タグ・下げ札・品質表示のAIチェック）。
-      { path: '/subsidiary-check', label: '副資材チェック', icon: Tags, matchSubroutes: true, roles: ['supplier'] },
       { path: '/imports', label: '週次取込', icon: Upload, roles: ['supplier'] },
       // 業態・部門マスタは商談チャットの選択肢や相談受付デスクの SoT 表示のため両ロールに公開する。
       { path: '/org-master', label: '業態・部門マスタ', icon: Building2 },
