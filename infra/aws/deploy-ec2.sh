@@ -45,7 +45,7 @@ echo "==> API を起動（EC2 上の nginx-proxy 経由で公開。API が正常
 echo "==> 不要になったイメージを削除"
 # 旧世代のイメージは pull で新タグへ入れ替わり dangling になるため、起動成功後にも掃除する
 # （プル前クリーンアップと両輪）。補助処理のため失敗してもデプロイ成功を覆さない
-# （|| true がないと set -e で非零終了し、deploy-all がフロント配信を偽陽性で中止する）。
+# （|| true がないと set -e で非零終了し、deploy パイプラインが backend 失敗としてフロント配信を偽陽性で中止する）。
 docker image prune -f || true
 
 # GHCR の認証情報を EC2 に残さない（ワークフローが渡す一時トークンのため logout する）。

@@ -743,7 +743,10 @@ sudo journalctl -k --since '-1h' | grep -i 'out of memory' | tail
 gh workflow run deploy.yml --repo tsunaguba/undeux-sales-suite --ref main
 ```
 
-個別にデプロイする場合（片方だけ更新したとき等）:
+> ⚠️ **緊急フォールバックのみ:** 個別ワークフロー（下記）は**テストゲート（単体・結合・シナリオ）を実行しません**。
+> 通常運用は必ず上記 `deploy.yml` を使用し、テストを通してからデプロイしてください。
+> `deploy.yml` が使えない緊急時に限り、個別に実行します（テストを迂回する点に注意。テストゲートの無効化・迂回は
+> オペレーター承認のもとで行うこと。CLAUDE.md「デプロイ運用」）:
 
 ```powershell
 gh workflow run deploy-backend.yml  --repo tsunaguba/undeux-sales-suite --ref main
