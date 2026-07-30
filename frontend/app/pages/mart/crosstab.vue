@@ -15,15 +15,23 @@
  */
 
 import type {
-  CrosstabDimensionInfo,
   CrosstabDimensionKey,
   CrosstabMatrixResponse,
-  CrosstabMetricInfo,
   CrosstabMetricKey,
   MetricDisplayMode,
   SalesFilterState,
   TemperatureArea,
 } from '~/types/api'
+import {
+  CROSSTAB_DEFAULT_METRICS,
+  CROSSTAB_DIMENSIONS,
+  CROSSTAB_LEGACY_DIMENSION_MAP,
+  CROSSTAB_METRICS,
+  CROSSTAB_STOCK_METRICS,
+  CROSSTAB_TEMP_METRICS,
+  crosstabDimension,
+  pickCrosstabDimensionKey,
+} from '~/utils/crosstabCatalog'
 
 useHead({ title: 'クロス集計 | UndeuxSales' })
 
@@ -34,72 +42,13 @@ const { get } = useApi()
 const { isBuilt, refreshStatus } = useMart()
 const route = useRoute()
 
-// ---------------------------------------------------------------
-// ディメンションカタログ（mart がサポートする軸の部分集合）。
-//
-// mart は帳票区分（chohyoKubun）・棚割1/2（tanawari1/tanawari2）を集計軸としては
-// 保持しないため候補から除外する（棚割1のフィルタは対応済み）。
-// ---------------------------------------------------------------
-
-// 商品系の軸は「商品記号 → 単品 → 品番3桁」の並び順（要望対応）。
-const DIMENSIONS: CrosstabDimensionInfo[] = [
-  { key: 'time:year', category: 'time', label: '年', isTimeAxis: true },
-  { key: 'time:quarter', category: 'time', label: '四半期', isTimeAxis: true },
-  { key: 'time:month', category: 'time', label: '月', isTimeAxis: true },
-  { key: 'category:department', category: 'category', label: '部門', isTimeAxis: false },
-  { key: 'category:businessType', category: 'category', label: '業態', isTimeAxis: false },
-  { key: 'category:season', category: 'category', label: '季節区分', isTimeAxis: false },
-  { key: 'category:shohinKigo', category: 'category', label: '商品記号', isTimeAxis: false },
-  { key: 'category:product', category: 'category', label: '単品（品番-単品）', isTimeAxis: false },
-  { key: 'category:hinban', category: 'category', label: '品番3桁', isTimeAxis: false },
-  { key: 'category:color', category: 'category', label: 'カラー', isTimeAxis: false },
-  { key: 'category:size', category: 'category', label: 'サイズ', isTimeAxis: false },
-]
-
-const DIMENSION_KEYS: ReadonlySet<CrosstabDimensionKey> = new Set(
-  DIMENSIONS.map((d) => d.key),
-)
-
-/** 旧 `?dimension=hinban` 形式を新 API 仕様の `category:xxx` に変換するマップ（mart 対応軸のみ）。 */
-const LEGACY_DIMENSION_MAP: Record<string, CrosstabDimensionKey> = {
-  department: 'category:department',
-  businessType: 'category:businessType',
-  season: 'category:season',
-  hinban: 'category:hinban',
-  product: 'category:product',
-  color: 'category:color',
-  size: 'category:size',
-  shohinKigo: 'category:shohinKigo',
-}
-
-/** ルートクエリから有効なディメンションキーを抽出。無効（mart 非対応軸含む）ならundefined。 */
-function pickDimensionKey(raw: unknown): CrosstabDimensionKey | undefined {
-  if (typeof raw !== 'string') return undefined
-  return DIMENSION_KEYS.has(raw as CrosstabDimensionKey)
-    ? (raw as CrosstabDimensionKey)
-    : undefined
-}
-
-// stock は店頭在庫（sales_weekly.zaikosu 由来の時点値）を表すため「店頭在庫」表記とする。
-const METRICS: CrosstabMetricInfo[] = [
-  { key: 'amount', label: '売上金額', format: 'currency' },
-  { key: 'quantity', label: '売上数量', format: 'number' },
-  { key: 'grossProfit', label: '粗利', format: 'currency' },
-  { key: 'sharePercent', label: '構成比率', format: 'percent' },
-  { key: 'stockDays', label: '在日（平均）', format: 'decimal' },
-  { key: 'sellThroughRate', label: '消化率', format: 'percent' },
-  { key: 'stock', label: '店頭在庫', format: 'number' },
-  { key: 'tempAvg', label: '週平均気温', format: 'temperature' },
-  { key: 'tempMax', label: '週最高気温', format: 'temperature' },
-  { key: 'tempMin', label: '週最低気温', format: 'temperature' },
-]
-
-/** 気温系メトリクス（時間軸＋エリア種別指定時のみ利用可能。在庫系とは排他）。 */
-const TEMP_METRICS: CrosstabMetricKey[] = ['tempAvg', 'tempMax', 'tempMin']
+// 集計軸・メトリクスのカタログは utils/crosstabCatalog.ts（SoT）へ集約済み。
+// 本ページはそのカタログを参照し、ページ固有の既定値のみをローカルに持つ。
 
 const DEFAULT_ROW: CrosstabDimensionKey = 'category:businessType'
 const DEFAULT_COL: CrosstabDimensionKey = 'time:year'
-const DEFAULT_METRICS: CrosstabMetricKey[] = ['amount', 'quantity', 'grossProfit']
+// 既定メトリクスはカタログ（SoT）を参照する。
+const DEFAULT_METRICS = CROSSTAB_DEFAULT_METRICS
 
 // ---------------------------------------------------------------
 // ローカル state
@@ -128,23 +77,21 @@ let skipNextDimensionWatch = false
 // メトリクスの利用可否（時間軸 ⇒ 在庫系を除外）
 //
 // SoT: バックエンドの CrosstabDimensionInfo.isTimeAxis と AvailableMetrics。
-// data 取得後は data.value 由来で判定し、未取得時のみ DIMENSIONS カタログから
+// data 取得後は data.value 由来で判定し、未取得時のみ CROSSTAB_DIMENSIONS カタログから
 // 算出する（API レスポンス到達前でも UI を破綻なく表示するためのフォールバック）。
 // ---------------------------------------------------------------
 
-const STOCK_METRICS: CrosstabMetricKey[] = ['stockDays', 'sellThroughRate', 'stock']
-
 /**
  * 行・列のいずれかが時間軸なら true。
- * 取得済みデータの dimensionInfo.isTimeAxis を優先し、未取得時は DIMENSIONS カタログから算出する。
+ * 取得済みデータの dimensionInfo.isTimeAxis を優先し、未取得時は CROSSTAB_DIMENSIONS カタログから算出する。
  */
 const hasTimeAxis = computed(() => {
   const d = data.value
   if (d) {
     return d.rowDimension.isTimeAxis || d.columnDimension.isTimeAxis
   }
-  const rowInfo = DIMENSIONS.find((x) => x.key === rowDimensionKey.value)
-  const colInfo = DIMENSIONS.find((x) => x.key === columnDimensionKey.value)
+  const rowInfo = crosstabDimension(rowDimensionKey.value)
+  const colInfo = crosstabDimension(columnDimensionKey.value)
   return Boolean(rowInfo?.isTimeAxis || colInfo?.isTimeAxis)
 })
 
@@ -159,12 +106,12 @@ const availableMetrics = computed<CrosstabMetricKey[]>(() => {
     return d.availableMetrics
   }
   if (hasTimeAxis.value) {
-    const base = METRICS
-      .filter((m) => !STOCK_METRICS.includes(m.key) && !TEMP_METRICS.includes(m.key))
+    const base = CROSSTAB_METRICS
+      .filter((m) => !CROSSTAB_STOCK_METRICS.includes(m.key) && !CROSSTAB_TEMP_METRICS.includes(m.key))
       .map((m) => m.key)
-    return temperatureArea.value ? [...base, ...TEMP_METRICS] : base
+    return temperatureArea.value ? [...base, ...CROSSTAB_TEMP_METRICS] : base
   }
-  return METRICS.filter((m) => !TEMP_METRICS.includes(m.key)).map((m) => m.key)
+  return CROSSTAB_METRICS.filter((m) => !CROSSTAB_TEMP_METRICS.includes(m.key)).map((m) => m.key)
 })
 
 // 選択中メトリクスを利用可能集合へ健全化する（時間軸で在庫系、エリア未選択/時間軸なしで気温系を自動除外）。
@@ -243,7 +190,7 @@ function assignFilter(next: SalesFilterState): void {
 // （実際は CrossTabConditionPanel の rowChoices/colChoices で除外しているため発生しない）
 watch([rowDimensionKey, columnDimensionKey], ([r, c]) => {
   if (r === c) {
-    const fallback = DIMENSIONS.find((d) => d.key !== r)
+    const fallback = CROSSTAB_DIMENSIONS.find((d) => d.key !== r)
     if (fallback) {
       columnDimensionKey.value = fallback.key
     }
@@ -286,10 +233,10 @@ watch([rowDimensionKey, columnDimensionKey, temperatureArea], (next, prev) => {
 
 onMounted(async () => {
   // 旧形式 `?dimension=xxx` 互換および新形式 `?rowDimension=&columnDimension=` を解釈する。
-  const queryRow = pickDimensionKey(route.query.rowDimension)
-  const queryCol = pickDimensionKey(route.query.columnDimension)
+  const queryRow = pickCrosstabDimensionKey(route.query.rowDimension)
+  const queryCol = pickCrosstabDimensionKey(route.query.columnDimension)
   const legacyDim = typeof route.query.dimension === 'string'
-    ? LEGACY_DIMENSION_MAP[route.query.dimension]
+    ? CROSSTAB_LEGACY_DIMENSION_MAP[route.query.dimension]
     : undefined
 
   if (queryRow || queryCol) {
@@ -327,8 +274,8 @@ onMounted(async () => {
     <div class="flex min-h-0 flex-1 flex-col gap-3 lg:flex-row lg:gap-4">
       <div class="lg:w-80 lg:shrink-0 lg:overflow-y-auto xl:w-96">
         <CrossTabConditionPanel
-          :dimensions="DIMENSIONS"
-          :metrics="METRICS"
+          :dimensions="CROSSTAB_DIMENSIONS"
+          :metrics="CROSSTAB_METRICS"
           :row-dimension-key="rowDimensionKey"
           :column-dimension-key="columnDimensionKey"
           :selected-metrics="selectedMetrics"
@@ -377,7 +324,7 @@ onMounted(async () => {
               v-if="data"
               :data="data"
               :selected-metrics="selectedMetrics"
-              :metrics="METRICS"
+              :metrics="CROSSTAB_METRICS"
               :display-mode="metricDisplayMode"
             />
           </div>

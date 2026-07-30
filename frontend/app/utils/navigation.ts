@@ -27,6 +27,7 @@ import {
   ListOrdered,
   MessagesSquare,
   Package,
+  PieChart,
   ScatterChart,
   Shirt,
   SlidersHorizontal,
@@ -199,6 +200,7 @@ export const NAV_CATEGORIES: NavCategory[] = [
     description: '集計軸を切り替えた多角集計と統計分析・売上予測を行う',
     pages: [
       { path: '/mart/crosstab', label: 'クロス集計', icon: LayoutGrid },
+      { path: '/mart/department', label: '部門分析', icon: PieChart },
       { path: '/mart/ranking', label: 'ランキング分析', icon: ListOrdered },
       { path: '/mart/scatter', label: '散布図・回帰分析', icon: ScatterChart },
       { path: '/mart/simulation', label: '重回帰シミュレーター', icon: SlidersHorizontal },
