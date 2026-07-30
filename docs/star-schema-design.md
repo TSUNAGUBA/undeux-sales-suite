@@ -408,10 +408,11 @@ flowchart TD
 
 ---
 
-## 14. 実装状況（分析8ページ フル対応）
+## 14. 実装状況（分析9ページ フル対応）
 
 「DB＝新スキーマ新設／API＝既存に追加／画面＝新ページ新設（既存は不変）」の方針で、
-分析8ページのスタースキーマ版を end-to-end で実装した。
+分析8ページのスタースキーマ版を end-to-end で実装した。後追いで**部門分析（`/mart/department`）**を
+追加し（既存の `summary`/`breakdown`/`crosstab` API を再利用。新規 API・新規スキーマは不要）、分析画面は計9ページとなった。
 
 ### 実装済み
 
@@ -421,7 +422,7 @@ flowchart TD
 | 気温投入 | `db/climate_daily.csv`（東京/札幌/那覇）を DataLoader が `mart.dim_climate` へ投入（毎起動で冪等な TRUNCATE+COPY、**非ブロッキング**：失敗してもデプロイを止めない。CSV 未配置時はスキップ） | `DataLoader/Program.cs`・`Core/Parsing/ClimateCsvReader.cs` |
 | API | `GET /api/mart/{status,summary,breakdown,inventory,products,crosstab,ranking,weekly-series,markdown,introductions,introduction-options}`、**`GET /api/mart/inventory/{actions,items}`（在庫アクション分析: 滞留=在庫日数60日超×消化率75%未満・不動=直近8週出荷ゼロの自動抽出。閾値 SoT は `InventoryHealthRules`、不動判定は直近26週限定の last_sold 方式＝ウィンドウ関数・フルスキャン回避、在庫金額は同一グレイン1:1の `fact_sales_weekly.cost_price` 結合、明細は自然キー返却）**、`POST /api/mart/rebuild`（認証ユーザー・**非同期**：即時応答＋`status` ポーリング） | `MartController.cs`・`MartAnalyticsRepository.cs`・`MartIntroductionQuery.cs`・`MartInventoryActionModels.cs`・`QueryModels.cs`・`InventoryHealthRules.cs` |
 | 共有ロジック | クロス集計マトリクス組立・ランキング組立を sales 系と共有（プレゼンテーション非依存の抽出。重複排除＝DRY）。在日バケット述語は `StockDaysSql` で sales 系（`zainiti`）と mart 系（`stock_days`）が共有 | `CrosstabMatrixBuilder.cs`・`RankingBuilder.cs`・`SalesQueryFilter.cs` |
-| 画面 | `/mart`（全社サマリー）・`/mart/sales`・**`/mart/products`（一覧=画像カード／`/mart/products/{id}`=商品詳細分析）**・`/mart/inventory`（在庫マネジメント: ページ内4タブ＝ダッシュボード/在庫一覧/滞留/不動、`?tab=` 同期）・`/mart/crosstab`・`/mart/ranking`・`/mart/scatter`・`/mart/simulation`・`/mart/introductions`（商品導入管理）。**プロトタイプ段階の旧分析ページは廃止し、本群が分析画面の正**（`/` はホーム＝目的別メニューで、各ページへはカテゴリのタブで遷移。「（スタースキーマ）」の画面表記も廃止）。mart 未構築時はガード表示 | `frontend/app/pages/mart/**/*.vue`・`utils/navigation.ts`・`composables/useMart.ts`・`components/MartNotBuiltNotice.vue`・`types/api.ts` |
+| 画面 | `/mart`（全社サマリー）・`/mart/sales`・**`/mart/products`（一覧=画像カード／`/mart/products/{id}`=商品詳細分析）**・`/mart/inventory`（在庫マネジメント: ページ内4タブ＝ダッシュボード/在庫一覧/滞留/不動、`?tab=` 同期）・`/mart/crosstab`（クロス集計。各ページに散在していたクロス集計を集約する正）・**`/mart/department`（部門分析。部門軸の内訳＋部門×任意軸のクロス集計）**・`/mart/ranking`・`/mart/scatter`・`/mart/simulation`・`/mart/introductions`（商品導入管理）。**プロトタイプ段階の旧分析ページは廃止し、本群が分析画面の正**（`/` はホーム＝目的別メニューで、各ページへはカテゴリのタブで遷移。「（スタースキーマ）」の画面表記も廃止）。mart 未構築時はガード表示。集計軸・メトリクスのカタログは `utils/crosstabCatalog.ts` を SoT として共有 | `frontend/app/pages/mart/**/*.vue`・`utils/navigation.ts`・`utils/crosstabCatalog.ts`・`composables/useMart.ts`・`components/MartNotBuiltNotice.vue`・`types/api.ts` |
 
 - **グレイン:** 売上・在庫とも 週×小売×SKU。売上は数量・金額・粗利を事前計算列で保持。在庫は時点値（在庫数・累計売上/納品・発注・先付）＋在日（平均集計）。
 - **在庫スナップショット:** 「期間内最新取込週で在庫取得」ロジックを `fact_inventory_snapshot` 参照に一元化（設計 §3.3）。全社サマリーKPIに在庫数・消化率を追加。
@@ -429,7 +430,7 @@ flowchart TD
 - **mart フィルタ:** 期間・部門・業態・季節・品番・**商品記号（shohinKigos。業態×記号×品番の自然キーで単一商品へ絞る商品詳細分析用）**に加え、**棚割1**（`dim_product.attributes->>'tanawari1'`。SCD1＝最新取込週の値）と**平均在庫日数（在日）バケット**（同一グレインの `fact_inventory_snapshot.stock_days` を EXISTS 参照。sales 系の週次行 `zainiti` フィルタと同一意味論）に対応。
 - **週次系列・散布図素材の拡張:** `weekly-series` は週ごとの店頭在庫・在日・消化率を、`markdown` は型番ごとの季節・店頭在庫・平均在庫日数を併せて返す（売上分析の複合チャート「週次売上推移グラフ」・週次明細・型番別明細の素材）。sales 系 `/api/analysis/*` も同一契約。
 - **商品導入管理:** 導入日（`sales_weekly.donyu_date`、YYYYMMDD 文字列。`'0'`・`'00000000'`・非8桁は未設定扱い）を `dim_sku.attributes->>'donyu'` に保持し（文字列比較＝日付順。型変換失敗で再構築が止まるリスクを回避）、商品単位の導入一覧・導入時期/導入日 From-To・業態（タグ・複数選択）・部門・ブランド・服種（品番CD）・担当者・キーワードのフィルタを提供する。**商品の導入日の定義**＝「各SKUの現在値（SCD1: 最新取込行の導入日）のうち商品内で最小」。同一SKUが複数の導入日を持つ場合、過去の導入履歴ではなく現在値を採用する（SCD1の設計判断）。
-- **商品詳細分析（/mart/products/{id}）:** 一覧は商品マスタと同じ画像カード表現（`ProductMasterCard` / `ProductMasterFilters` を再利用。対象はマスタ登録商品）。詳細は「画像・基本情報・サマリー・SKU情報・週次売上推移グラフ（売上数量/売上金額=折れ線、店頭在庫=棒、気温=折れ線）・クロス集計（行・列とメトリクスを選択、商品スコープ固定）」で構成。マスタ属性は `/api/product-master/{id}`、集計は商品の自然キーを businessTypes/shohinKigos/hinbans に渡した `/api/mart/*` から取得する。
+- **商品詳細分析（/mart/products/{id}）:** 一覧は商品マスタと同じ画像カード表現（`ProductMasterCard` / `ProductMasterFilters` を再利用。対象はマスタ登録商品）。詳細は「画像・基本情報・サマリー・SKU情報・週次売上推移グラフ（売上数量/売上金額=折れ線、店頭在庫=棒、気温=折れ線）」で構成。クロス集計は各ページに埋め込まず専用ページ `/mart/crosstab` に集約し、商品詳細からは当該商品の業態×品番（品番3桁）を共有フィルタへ引き継いでドリルダウンする（共有フィルタに商品記号軸が無いためスコープは品番3桁単位）。マスタ属性は `/api/product-master/{id}`、集計は商品の自然キーを businessTypes/shohinKigos/hinbans に渡した `/api/mart/*` から取得する。
 - **条件設定の導線:** 各分析ページは「フィルタ → 集計単位 → 表示集計値」の順に設定コントロールを配置する（操作者の思考順序に一致させる）。
 - **対応軸の差分（設計上の制約）:** mart は帳票区分・棚割を**集計軸（ディメンション）としては**保持しないため、クロス集計／ランキングの対応軸は**サブセット**（帳票区分・棚割1/2を除く。棚割1は上記のとおり**フィルタとしては**対応）。フロントは対応軸のみ提示し、API も未対応軸には 400 を返す。日次トレンドは `fact_sales_daily` 未実装のため mart 売上分析は週次のみ。**倉庫在庫**はソース（売上参照DB）に店頭/倉庫の在庫区分が無いため対象外（`zaikosu` は店頭在庫として扱う。design.md §11.4 と同一の判断）。
 - **再構築:** `sales_weekly` ＋ 商品マスタから `mart.rebuild()` で全再構築（冪等・advisory lock で直列化）。商品マスタの自然キー重複は `DISTINCT ON`（`updated_at` 最新）で1件に絞り、一意制約違反を回避。

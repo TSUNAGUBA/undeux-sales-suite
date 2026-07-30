@@ -24,11 +24,6 @@ import {
   TrendingUp,
 } from 'lucide-vue-next'
 import type {
-  CrosstabDimensionInfo,
-  CrosstabDimensionKey,
-  CrosstabMatrixResponse,
-  CrosstabMetricInfo,
-  CrosstabMetricKey,
   ItemDetailResponse,
   KpiCardItem,
   MasterProductDetail,
@@ -46,8 +41,9 @@ const route = useRoute()
 const router = useRouter()
 const { get } = useApi()
 const { isBuilt, refreshStatus } = useMart()
-// 年度の選択肢（/api/filters）だけを共有から読む。共有フィルタ state は変更しない。
-const { options: sharedOptions, optionsError, loadOptions, years } = useFilters('mart-filter')
+// 年度の選択肢（/api/filters）を共有から読む。加えて「クロス集計」ページへドリルダウンする際は
+// 共有フィルタ（mart-filter）をリセットし、この商品のスコープ（業態・品番・年度）だけを引き継ぐ（openCrosstab）。
+const { filter, options: sharedOptions, optionsError, loadOptions, years, reset: resetSharedFilter } = useFilters('mart-filter')
 
 const productId = computed(() => String(route.params.productId ?? ''))
 
@@ -449,107 +445,28 @@ const itemDetailView = computed(() => {
 })
 
 // ---------------------------------------------------------------
-// クロス集計（商品スコープ固定。行・列とメトリクスのみ選択）
+// クロス集計（専用ページ /mart/crosstab へ集約）
+//
+// 詳細なクロス集計（カラー×サイズ等）は各ページに埋め込まず「クロス集計」メニューへ一本化した。
+// ここではこの商品のスコープ（業態・品番・年度）を共有フィルタ（mart-filter）へ引き継いでから
+// 専用ページへ遷移するドリルダウンだけを提供する（在庫マネジメント等の既存ドリルダウンと同パターン）。
 // ---------------------------------------------------------------
 
-const DETAIL_DIMENSIONS: CrosstabDimensionInfo[] = [
-  { key: 'category:color', category: 'category', label: 'カラー', isTimeAxis: false },
-  { key: 'category:size', category: 'category', label: 'サイズ', isTimeAxis: false },
-  { key: 'category:product', category: 'category', label: '単品（品番-単品）', isTimeAxis: false },
-  { key: 'time:year', category: 'time', label: '年', isTimeAxis: true },
-  { key: 'time:quarter', category: 'time', label: '四半期', isTimeAxis: true },
-  { key: 'time:month', category: 'time', label: '月', isTimeAxis: true },
-]
-
-// 気温系は商品スコープのクロス集計では提供しない（週次売上推移グラフ側で表現する）。
-const DETAIL_METRICS: CrosstabMetricInfo[] = [
-  { key: 'quantity', label: '売上数量', format: 'number' },
-  { key: 'amount', label: '売上金額', format: 'currency' },
-  { key: 'grossProfit', label: '粗利', format: 'currency' },
-  { key: 'sharePercent', label: '構成比率', format: 'percent' },
-  { key: 'stock', label: '店頭在庫', format: 'number' },
-  { key: 'sellThroughRate', label: '消化率', format: 'percent' },
-  { key: 'stockDays', label: '在日（平均）', format: 'decimal' },
-]
-const STOCK_METRICS: CrosstabMetricKey[] = ['stock', 'sellThroughRate', 'stockDays']
-
-const rowDimensionKey = ref<CrosstabDimensionKey>('category:color')
-const columnDimensionKey = ref<CrosstabDimensionKey>('category:size')
-const selectedMetrics = ref<CrosstabMetricKey[]>(['quantity', 'stock'])
-
-const rowChoices = computed(() =>
-  DETAIL_DIMENSIONS.filter((d) => d.key !== columnDimensionKey.value),
-)
-const colChoices = computed(() =>
-  DETAIL_DIMENSIONS.filter((d) => d.key !== rowDimensionKey.value),
-)
-
-const hasTimeAxis = computed(() => {
-  const row = DETAIL_DIMENSIONS.find((d) => d.key === rowDimensionKey.value)
-  const col = DETAIL_DIMENSIONS.find((d) => d.key === columnDimensionKey.value)
-  return Boolean(row?.isTimeAxis || col?.isTimeAxis)
-})
-
-const availableMetrics = computed<CrosstabMetricKey[]>(() =>
-  hasTimeAxis.value
-    ? DETAIL_METRICS.filter((m) => !STOCK_METRICS.includes(m.key)).map((m) => m.key)
-    : DETAIL_METRICS.map((m) => m.key),
-)
-
-// 時間軸に切り替えたら在庫系メトリクスを自動解除する（クロス集計ページと同じ健全化）。
-watch(availableMetrics, (avail) => {
-  const after = selectedMetrics.value.filter((m) => avail.includes(m))
-  if (after.length !== selectedMetrics.value.length) {
-    selectedMetrics.value = after.length > 0 ? after : ['quantity']
-  }
-})
-
-function toggleMetric(key: CrosstabMetricKey): void {
-  const set = new Set(selectedMetrics.value)
-  if (set.has(key)) {
-    if (set.size === 1) return // 最低1つは残す
-    set.delete(key)
-  } else {
-    set.add(key)
-  }
-  selectedMetrics.value = [...set]
-}
-
-const crosstab = ref<CrosstabMatrixResponse | null>(null)
-const crosstabLoading = ref(false)
-const crosstabError = ref<string | null>(null)
-
-// 行・列切替の連打に対する世代ガード（loadAnalytics と同様）。
-let crosstabRequestSeq = 0
-
-async function loadCrosstab(): Promise<void> {
+function openCrosstab(): void {
   const summary = detail.value?.summary
-  if (!summary || !isBuilt.value) {
-    // in-flight の旧応答が後着でこのリセットを上書きしないよう世代を進める。
-    ++crosstabRequestSeq
-    crosstab.value = null
-    return
-  }
-  const seq = ++crosstabRequestSeq
-  crosstabLoading.value = true
-  crosstabError.value = null
-  try {
-    const result = await get<CrosstabMatrixResponse>('/api/mart/crosstab', {
-      ...martQueryOf(summary),
-      rowDimension: rowDimensionKey.value,
-      columnDimension: columnDimensionKey.value,
-    })
-    if (seq !== crosstabRequestSeq) return
-    crosstab.value = result
-  } catch (error) {
-    if (seq === crosstabRequestSeq) {
-      crosstabError.value = apiErrorMessage(error)
-    }
-  } finally {
-    if (seq === crosstabRequestSeq) {
-      crosstabLoading.value = false
-    }
-  }
+  if (!summary) return
+  // 共有フィルタ（mart-filter）を一旦リセットし、この商品の業態×品番(3桁)＋表示中の年度だけを
+  // 引き継いでクロス集計ページへ遷移する（複数商品ドリルダウンでの絞り込み蓄積・他ページの残存
+  // フィルタ混入を防ぐ。set で置換するため addToFilter の累積は使わない）。
+  // 共有フィルタに 商品記号 の軸が無いため、スコープは品番3桁単位（同一品番の兄弟商品を含む）。
+  resetSharedFilter()
+  filter.value.year = year.value
+  filter.value.businessTypes = [summary.businessCategoryCd]
+  filter.value.hinbans = [summary.productTypeCrd]
+  void navigateTo({
+    path: '/mart/crosstab',
+    query: { rowDimension: 'category:color', columnDimension: 'category:size' },
+  })
 }
 
 // ---------------------------------------------------------------
@@ -558,23 +475,16 @@ async function loadCrosstab(): Promise<void> {
 
 const initialized = ref(false)
 
-// 期間（年度）は全 mart 集計（サマリー・週次・SKU実績・クロス集計）に効く。
+// 期間（年度）は全 mart 集計（サマリー・週次・SKU実績）に効く。
 watch(year, () => {
   if (!initialized.value) return
   void loadAnalytics()
-  void loadCrosstab()
 })
 
 // エリアは週次系列の気温にのみ効くため、週次系列だけを再取得する。
 watch(area, () => {
   if (!initialized.value) return
   void loadWeeklyOnly()
-})
-
-// 行・列の変更はクロス集計のみ再取得。同一になった場合は colChoices/rowChoices で防いでいる。
-watch([rowDimensionKey, columnDimensionKey], () => {
-  if (!initialized.value) return
-  void loadCrosstab()
 })
 
 function goBack(): void {
@@ -589,11 +499,11 @@ function goBack(): void {
 async function reloadAll(): Promise<void> {
   await loadMaster()
   if (detail.value) {
-    // loadCrosstab は同期的に isBuilt を判定するため、mart ページを経由しない直接アクセスでも
-    // クロス集計が無言で空にならないよう、構築状態を先に取得してから並行ロードする
+    // 直接アクセス（mart ページを経由しない流入）でも集計が無言で空にならないよう、
+    // 構築状態を先に取得してから集計をロードする
     // （refreshStatus は冪等。失敗時は loadAnalytics 側の catch でエラー表示される）。
     await refreshStatus().catch(() => undefined)
-    await Promise.all([loadAnalytics(), loadCrosstab()])
+    await loadAnalytics()
   }
 }
 
@@ -843,72 +753,23 @@ onMounted(async () => {
               </p>
             </section>
 
-            <!-- クロス集計 -->
+            <!-- クロス集計（専用メニューへ集約） -->
             <section class="space-y-2">
               <h2 class="text-sm font-semibold text-slate-700">クロス集計</h2>
-              <div class="rounded-xl border border-slate-200 bg-white p-3 shadow-sm">
-                <div class="flex flex-wrap items-end gap-3">
-                  <div>
-                    <label class="mb-1 block text-xs font-medium text-slate-500">行（縦軸）</label>
-                    <select
-                      v-model="rowDimensionKey"
-                      class="rounded-lg border border-slate-300 bg-white px-3 py-2 text-sm"
-                      :disabled="crosstabLoading"
-                    >
-                      <option v-for="d in rowChoices" :key="d.key" :value="d.key">{{ d.label }}</option>
-                    </select>
-                  </div>
-                  <div>
-                    <label class="mb-1 block text-xs font-medium text-slate-500">列（横軸）</label>
-                    <select
-                      v-model="columnDimensionKey"
-                      class="rounded-lg border border-slate-300 bg-white px-3 py-2 text-sm"
-                      :disabled="crosstabLoading"
-                    >
-                      <option v-for="d in colChoices" :key="d.key" :value="d.key">{{ d.label }}</option>
-                    </select>
-                  </div>
-                  <div class="flex flex-wrap items-center gap-x-3 gap-y-1">
-                    <label
-                      v-for="m in DETAIL_METRICS"
-                      :key="m.key"
-                      class="flex items-center gap-1.5 text-sm"
-                      :class="
-                        availableMetrics.includes(m.key)
-                          ? 'cursor-pointer text-slate-700'
-                          : 'cursor-not-allowed text-slate-300'
-                      "
-                    >
-                      <input
-                        type="checkbox"
-                        :checked="selectedMetrics.includes(m.key)"
-                        :disabled="!availableMetrics.includes(m.key)"
-                        class="accent-indigo-600 disabled:opacity-40"
-                        @change="toggleMetric(m.key)"
-                      >
-                      {{ m.label }}
-                    </label>
-                  </div>
-                </div>
-                <p v-if="hasTimeAxis" class="mt-1 text-xs text-slate-400">
-                  在日・消化率・店頭在庫は時間軸（年・四半期・月）との組合せでは表示されません。
+              <div class="rounded-xl border border-slate-200 bg-white p-4 shadow-sm">
+                <p class="text-sm text-slate-600">
+                  カラー×サイズや年・四半期などの詳細なクロス集計は、専用の「クロス集計」ページに集約しました。
+                  この商品の業態・品番（品番3桁：{{ detail?.summary.productTypeCrd ?? '—' }}）を条件に引き継いで開きます。
                 </p>
+                <button
+                  type="button"
+                  class="mt-3 inline-flex items-center gap-1.5 rounded-lg bg-indigo-600 px-3 py-2 text-sm font-medium text-white transition-colors hover:bg-indigo-700 focus:outline-none focus:ring-2 focus:ring-indigo-400"
+                  @click="openCrosstab"
+                >
+                  <ExternalLink class="h-4 w-4" />
+                  クロス集計で分析する
+                </button>
               </div>
-
-              <StatusBlock
-                :loading="crosstabLoading"
-                :error="crosstabError"
-                :empty="crosstab !== null && crosstab.rowLabels.length === 0"
-                empty-message="該当するデータがありません。期間を見直してください。"
-              >
-                <CrossTabTable
-                  v-if="crosstab"
-                  :data="crosstab"
-                  :selected-metrics="selectedMetrics"
-                  :metrics="DETAIL_METRICS"
-                  display-mode="stacked"
-                />
-              </StatusBlock>
             </section>
           </div>
         </StatusBlock>
