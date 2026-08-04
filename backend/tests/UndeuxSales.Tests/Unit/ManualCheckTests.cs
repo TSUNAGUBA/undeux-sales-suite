@@ -8,7 +8,7 @@ public sealed class ManualCheckComparerTests
 {
     // ---- ビルダ ----
 
-    private static ManualInputField Text(string key, string value, bool required = false) =>
+    private static ManualInputField Text(string key, string value) =>
         new(key, key, ManualFieldValueType.String, false, ManualFieldCompareMode.Text,
             new[] { value }, Array.Empty<RatioComponent>());
 
