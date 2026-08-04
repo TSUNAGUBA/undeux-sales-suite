@@ -46,6 +46,13 @@ public sealed class ManualCheckService
     /// <summary>項目ラベルの最大文字数。</summary>
     public const int MaxLabelLength = 100;
 
+    /// <summary>
+    /// 項目キーの最大文字数（TagPatternController.MaxKeyLength と同値）。
+    /// key/label は AI プロンプト（<see cref="ManualCheckPromptBuilder.BuildUserPrompt"/>）へ渡るため、
+    /// 直接送信経路（パターン非経由の input）でも長さを制限して増幅・注入を防ぐ。
+    /// </summary>
+    public const int MaxKeyLength = 60;
+
     private readonly ManualCheckRepository _repository;
     private readonly SubsidiaryCheckRepository _subsidiaryRepository;
     private readonly TagPatternRepository _patternRepository;
@@ -425,6 +432,13 @@ public sealed class ManualCheckService
                 throw new AppException(ErrorCodes.InvalidRequest, 400, "項目キーが空の入力があります。");
             }
 
+            // key/label は AI プロンプトへ渡るため長さを制限する（増幅・注入防止）。
+            if (field.Key.Trim().Length > MaxKeyLength)
+            {
+                throw new AppException(ErrorCodes.InvalidRequest, 400,
+                    $"項目キーは {MaxKeyLength} 文字以内にしてください（{field.Key}）。");
+            }
+
             if (!seenKeys.Add(field.Key.Trim()))
             {
                 throw new AppException(ErrorCodes.InvalidRequest, 400,
@@ -443,15 +457,11 @@ public sealed class ManualCheckService
                     $"未知の突合方式です（{field.Key}: {field.Compare}）。");
             }
 
-            var filled = FieldHasValue(field);
-            if (field.Required && !filled)
-            {
-                throw new AppException(ErrorCodes.InvalidRequest, 400,
-                    $"必須項目「{(string.IsNullOrWhiteSpace(field.Label) ? field.Key : field.Label)}」が未入力です。");
-            }
-
+            // 必須項目の未入力チェックはフォーム側（タグパターンの required）で行う。
+            // 入力スナップショット（ManualInputField）は required を持たず、サーバは構造的検証
+            // （キー・長さ・上限・「最低1項目に値あり」）に専念する。
             ValidateFieldCardinalityAndLength(field);
-            hasAnyValue |= filled;
+            hasAnyValue |= FieldHasValue(field);
         }
 
         if (!hasAnyValue)

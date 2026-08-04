@@ -1103,8 +1103,9 @@ CREATE INDEX IF NOT EXISTS ix_subsidiary_manual_check_image_check
     ON subsidiary_manual_check_image (check_id);
 
 -- 添付キャプチャ相当の既定パターン（品番/身長/胸囲/サイズ/組成/洗濯表示/補足/販売元/問合せ先/電話/原産国）を
--- 1件だけ投入する（冪等。既に1件でもパターンがあれば投入しない＝運用中の編集を巻き戻さない・原則2）。
--- pattern_id はシード判定用の固定 UUID（WHERE NOT EXISTS と併用し、再適用で重複投入しない）。
+-- 初期投入する。冪等性は WHERE NOT EXISTS（＝パターンが1件でもあれば投入しない）で担保し、
+-- 運用中に追加・編集したパターンやシード自体の編集を再適用で巻き戻さない（原則2）。
+-- pattern_id の固定 UUID は冪等判定には関与せず、シード行を後から安定して識別するための固定値。
 INSERT INTO subsidiary_tag_pattern (pattern_id, name, description, fields, created_by, updated_by)
 SELECT
     '00000000-0000-0000-0000-0000000000c1'::uuid,

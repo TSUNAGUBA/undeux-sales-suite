@@ -65,6 +65,8 @@ const selectedPattern = computed(
 // ---- 動的フォームの状態 ----
 
 interface RatioRow {
+  /** 中途削除時に v-for の :key を安定させ、フォーカス/IME を保つための行 ID。 */
+  id: number
   material: string
   percent: string
 }
@@ -73,21 +75,29 @@ interface FieldState {
   def: TagPattern['fields'][number]
   /** text/number/careIcon の値（careIcon はアイコンコード列）。 */
   values: string[]
+  /** 複数入力（文字列）行の安定 :key。values と要素数を対応させて増減する。 */
+  valueIds: number[]
   /** ratio（組成）の成分。UI では percent は文字列で持ち、送信時に数値化する。 */
   ratios: RatioRow[]
+}
+
+// 複数入力・組成行の安定 :key 用の単調増加 ID（インデックス :key の中途削除グリッチ回避）。
+let rowUid = 0
+function nextId(): number {
+  return rowUid++
 }
 
 const fieldStates = ref<FieldState[]>([])
 
 function buildFieldState(def: TagPattern['fields'][number]): FieldState {
   if (def.compare === 'ratio') {
-    return { def, values: [], ratios: [{ material: '', percent: '' }] }
+    return { def, values: [], valueIds: [], ratios: [{ id: nextId(), material: '', percent: '' }] }
   }
   if (def.compare === 'careIcon') {
-    return { def, values: [], ratios: [] }
+    return { def, values: [], valueIds: [], ratios: [] }
   }
   // text / number（単数・複数とも1行から開始）
-  return { def, values: [''], ratios: [] }
+  return { def, values: [''], valueIds: [nextId()], ratios: [] }
 }
 
 function applyPattern(pattern: TagPattern): void {
@@ -105,20 +115,25 @@ function onPatternChange(event: Event): void {
 
 function addValue(state: FieldState): void {
   state.values.push('')
+  state.valueIds.push(nextId())
 }
 
 function removeValue(state: FieldState, index: number): void {
   state.values.splice(index, 1)
-  if (state.values.length === 0) state.values.push('')
+  state.valueIds.splice(index, 1)
+  if (state.values.length === 0) {
+    state.values.push('')
+    state.valueIds.push(nextId())
+  }
 }
 
 function addRatio(state: FieldState): void {
-  state.ratios.push({ material: '', percent: '' })
+  state.ratios.push({ id: nextId(), material: '', percent: '' })
 }
 
 function removeRatio(state: FieldState, index: number): void {
   state.ratios.splice(index, 1)
-  if (state.ratios.length === 0) state.ratios.push({ material: '', percent: '' })
+  if (state.ratios.length === 0) state.ratios.push({ id: nextId(), material: '', percent: '' })
 }
 
 // ---- 対象商品ラベル（任意・自由記述） ----
@@ -364,7 +379,7 @@ onMounted(() => {
               <div v-else-if="state.def.compare === 'ratio'" class="mt-2 space-y-2">
                 <div
                   v-for="(row, index) in state.ratios"
-                  :key="index"
+                  :key="row.id"
                   class="flex flex-wrap items-center gap-2"
                 >
                   <span class="text-xs text-slate-400">{{ index + 1 }}.</span>
@@ -374,6 +389,7 @@ onMounted(() => {
                     placeholder="材質（例: 綿）"
                     class="min-w-0 flex-1 rounded-lg border border-slate-300 px-3 py-2 text-sm focus:border-indigo-400 focus:outline-none"
                     :disabled="submitting"
+                    :aria-label="`${state.def.label || state.def.key} 材質 ${index + 1}`"
                   >
                   <div class="flex items-center gap-1">
                     <input
@@ -383,6 +399,7 @@ onMounted(() => {
                       placeholder="割合"
                       class="w-20 rounded-lg border border-slate-300 px-3 py-2 text-sm focus:border-indigo-400 focus:outline-none"
                       :disabled="submitting"
+                      :aria-label="`${state.def.label || state.def.key} 割合 ${index + 1}`"
                     >
                     <span class="text-sm text-slate-400">%</span>
                   </div>
@@ -408,13 +425,14 @@ onMounted(() => {
 
               <!-- 複数入力（文字列） -->
               <div v-else-if="state.def.multiple" class="mt-2 space-y-2">
-                <div v-for="(_, index) in state.values" :key="index" class="flex items-center gap-2">
+                <div v-for="(_, index) in state.values" :key="state.valueIds[index]" class="flex items-center gap-2">
                   <span class="text-xs text-slate-400">{{ index + 1 }}.</span>
                   <input
                     v-model="state.values[index]"
                     type="text"
                     class="min-w-0 flex-1 rounded-lg border border-slate-300 px-3 py-2 text-sm focus:border-indigo-400 focus:outline-none"
                     :disabled="submitting"
+                    :aria-label="`${state.def.label || state.def.key} ${index + 1}件目`"
                   >
                   <button
                     type="button"
@@ -440,10 +458,11 @@ onMounted(() => {
               <div v-else class="mt-2">
                 <input
                   v-model="state.values[0]"
-                  :type="state.def.valueType === 'number' ? 'text' : 'text'"
+                  type="text"
                   :inputmode="state.def.valueType === 'number' ? 'decimal' : undefined"
                   class="w-full max-w-md rounded-lg border border-slate-300 px-3 py-2 text-sm focus:border-indigo-400 focus:outline-none"
                   :disabled="submitting"
+                  :aria-label="state.def.label || state.def.key"
                 >
               </div>
             </div>

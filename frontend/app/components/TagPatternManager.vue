@@ -50,6 +50,8 @@ interface Draft {
   description: string
   isActive: boolean
   fields: TagPatternField[]
+  /** 項目行の安定 :key（中途削除時のフォーカス/IME グリッチ回避。バックエンドには送らない）。 */
+  fieldIds: number[]
 }
 
 const draft = ref<Draft | null>(null)
@@ -58,6 +60,11 @@ const saveError = ref<ApiError | null>(null)
 
 const VALUE_TYPES: ManualFieldValueType[] = ['string', 'number']
 const COMPARE_MODES: ManualFieldCompareMode[] = ['text', 'ratio', 'careIcon']
+
+let fieldUid = 0
+function nextFieldId(): number {
+  return fieldUid++
+}
 
 function newField(): TagPatternField {
   return { key: '', label: '', valueType: 'string', multiple: false, compare: 'text', required: false }
@@ -71,6 +78,7 @@ function startCreate(): void {
     description: '',
     isActive: true,
     fields: [newField()],
+    fieldIds: [nextFieldId()],
   }
 }
 
@@ -83,6 +91,7 @@ function startEdit(pattern: TagPattern): void {
     isActive: pattern.isActive,
     // ディープコピー（編集を保存まで一覧へ波及させない）。
     fields: pattern.fields.map((f) => ({ ...f })),
+    fieldIds: pattern.fields.map(() => nextFieldId()),
   }
 }
 
@@ -92,11 +101,15 @@ function cancelEdit(): void {
 }
 
 function addField(): void {
-  draft.value?.fields.push(newField())
+  if (!draft.value) return
+  draft.value.fields.push(newField())
+  draft.value.fieldIds.push(nextFieldId())
 }
 
 function removeField(index: number): void {
-  draft.value?.fields.splice(index, 1)
+  if (!draft.value) return
+  draft.value.fields.splice(index, 1)
+  draft.value.fieldIds.splice(index, 1)
 }
 
 /** 突合方式に応じて既定の単複を補正する（組成・洗濯表示は複数前提）。 */
@@ -258,7 +271,8 @@ onMounted(() => {
           </button>
         </div>
 
-        <div class="mt-2 overflow-x-auto">
+        <!-- PC はテーブル（md 以上）。モバイルはカード（DataTable と同じ md: 切替方針・原則8）。 -->
+        <div class="mt-2 hidden overflow-x-auto md:block">
           <table class="w-full min-w-[640px] text-xs">
             <thead>
               <tr class="text-left text-slate-400">
@@ -272,7 +286,7 @@ onMounted(() => {
               </tr>
             </thead>
             <tbody>
-              <tr v-for="(field, index) in draft.fields" :key="index" class="border-t border-slate-100">
+              <tr v-for="(field, index) in draft.fields" :key="draft.fieldIds[index]" class="border-t border-slate-100">
                 <td class="px-1 py-1">
                   <input
                     v-model="field.key"
@@ -331,6 +345,79 @@ onMounted(() => {
             </tbody>
           </table>
         </div>
+
+        <!-- モバイル: 項目ごとのカード（各コントロールをラベル付きで縦積み） -->
+        <ul class="mt-2 space-y-3 md:hidden">
+          <li
+            v-for="(field, index) in draft.fields"
+            :key="draft.fieldIds[index]"
+            class="rounded-lg border border-slate-200 p-3"
+          >
+            <div class="flex items-center justify-between">
+              <span class="text-xs font-semibold text-slate-500">項目 {{ index + 1 }}</span>
+              <button
+                type="button"
+                class="rounded p-1 text-slate-400 hover:text-rose-600 disabled:opacity-40"
+                :disabled="saving"
+                aria-label="項目を削除"
+                @click="removeField(index)"
+              >
+                <Trash2 class="h-3.5 w-3.5" />
+              </button>
+            </div>
+            <div class="mt-2 grid grid-cols-2 gap-2 text-xs">
+              <label class="col-span-2 flex flex-col gap-1">
+                <span class="text-slate-500">キー</span>
+                <input
+                  v-model="field.key"
+                  type="text"
+                  placeholder="productNumber"
+                  class="rounded border border-slate-300 px-2 py-1.5 font-mono focus:border-indigo-400 focus:outline-none"
+                  :disabled="saving"
+                >
+              </label>
+              <label class="col-span-2 flex flex-col gap-1">
+                <span class="text-slate-500">ラベル</span>
+                <input
+                  v-model="field.label"
+                  type="text"
+                  placeholder="品番"
+                  class="rounded border border-slate-300 px-2 py-1.5 focus:border-indigo-400 focus:outline-none"
+                  :disabled="saving"
+                >
+              </label>
+              <label class="flex flex-col gap-1">
+                <span class="text-slate-500">型</span>
+                <select
+                  v-model="field.valueType"
+                  class="rounded border border-slate-300 px-1 py-1.5 focus:border-indigo-400 focus:outline-none"
+                  :disabled="saving"
+                >
+                  <option v-for="t in VALUE_TYPES" :key="t" :value="t">{{ manualValueTypeLabel(t) }}</option>
+                </select>
+              </label>
+              <label class="flex flex-col gap-1">
+                <span class="text-slate-500">突合方式</span>
+                <select
+                  v-model="field.compare"
+                  class="rounded border border-slate-300 px-1 py-1.5 focus:border-indigo-400 focus:outline-none"
+                  :disabled="saving"
+                  @change="onCompareChange(field)"
+                >
+                  <option v-for="c in COMPARE_MODES" :key="c" :value="c">{{ manualCompareModeLabel(c) }}</option>
+                </select>
+              </label>
+              <label class="flex items-center gap-1.5">
+                <input v-model="field.multiple" type="checkbox" :disabled="saving">
+                <span class="text-slate-600">複数</span>
+              </label>
+              <label class="flex items-center gap-1.5">
+                <input v-model="field.required" type="checkbox" :disabled="saving">
+                <span class="text-slate-600">必須</span>
+              </label>
+            </div>
+          </li>
+        </ul>
       </div>
 
       <div v-if="saveError" class="mt-3 rounded-lg bg-red-50 p-3 text-sm text-red-700">
