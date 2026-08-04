@@ -42,7 +42,7 @@ public static class SubsidiaryCheckResponseParser
             return SubsidiaryCheckParseResult.Failure("AI 応答が空です。");
         }
 
-        var json = ExtractFirstJsonObject(responseText);
+        var json = JsonBlockExtractor.ExtractFirstJsonObject(responseText);
         if (json is null)
         {
             return SubsidiaryCheckParseResult.Failure("AI 応答から JSON オブジェクトを抽出できませんでした。");
@@ -77,64 +77,6 @@ public static class SubsidiaryCheckResponseParser
         return findings.Count == 0
             ? SubsidiaryCheckParseResult.Failure("AI 応答に有効な指摘（title / detail のある findings）がありません。")
             : SubsidiaryCheckParseResult.Ok(findings);
-    }
-
-    /// <summary>
-    /// テキスト中の最初のバランスした JSON オブジェクトを抽出する。
-    /// 文字列リテラル内の波括弧・エスケープを考慮する（コードフェンスや前後の説明文はそのまま読み飛ばされる）。
-    /// </summary>
-    private static string? ExtractFirstJsonObject(string text)
-    {
-        var start = text.IndexOf('{');
-        if (start < 0)
-        {
-            return null;
-        }
-
-        var depth = 0;
-        var inString = false;
-        var escaped = false;
-        for (var i = start; i < text.Length; i++)
-        {
-            var c = text[i];
-            if (inString)
-            {
-                if (escaped)
-                {
-                    escaped = false;
-                }
-                else if (c == '\\')
-                {
-                    escaped = true;
-                }
-                else if (c == '"')
-                {
-                    inString = false;
-                }
-
-                continue;
-            }
-
-            switch (c)
-            {
-                case '"':
-                    inString = true;
-                    break;
-                case '{':
-                    depth++;
-                    break;
-                case '}':
-                    depth--;
-                    if (depth == 0)
-                    {
-                        return text.Substring(start, i - start + 1);
-                    }
-
-                    break;
-            }
-        }
-
-        return null;
     }
 
     private static string NormalizeCategory(string? category)

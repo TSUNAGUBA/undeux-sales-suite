@@ -1363,3 +1363,144 @@ export interface SubsidiaryRuleBook {
   /** 出典の総括文。 */
   source: string
 }
+
+// ============================================================
+//  手入力チェック（手入力表示項目 × タグ画像の AI 抽出値の突合）
+// ============================================================
+
+/** 項目の値型（string=文字列 / number=数値。数値も全角→半角正規化で突合する）。 */
+export type ManualFieldValueType = 'string' | 'number'
+
+/** 項目の突合方式（text=文字列突合 / ratio=組成割合突合 / careIcon=洗濯アイコン列突合）。 */
+export type ManualFieldCompareMode = 'text' | 'ratio' | 'careIcon'
+
+/** 項目単位の突合判定（match=一致 / mismatch=相違 / warn=要確認 / missing=タグに見当たらず）。 */
+export type ManualCheckVerdict = 'match' | 'mismatch' | 'warn' | 'missing'
+
+/** タグパターンの項目定義（入力フォーム構成と突合方式の両方を駆動する）。 */
+export interface TagPatternField {
+  key: string
+  label: string
+  valueType: ManualFieldValueType
+  multiple: boolean
+  compare: ManualFieldCompareMode
+  required: boolean
+}
+
+/** タグパターン（手入力フォームの構成テンプレート）。 */
+export interface TagPattern {
+  patternId: string
+  name: string
+  description: string
+  fields: TagPatternField[]
+  isActive: boolean
+  createdBy: string
+  createdAt: string
+  updatedBy: string
+  updatedAt: string
+}
+
+/** タグパターンの新規作成／更新の入力。 */
+export interface TagPatternUpsert {
+  name: string
+  description: string
+  fields: TagPatternField[]
+  isActive: boolean
+}
+
+/** 組成（ratio）の1成分。割合未入力は null。 */
+export interface RatioComponent {
+  material: string
+  percent: number | null
+}
+
+/** 手入力の1項目のスナップショット（text/number/careIcon は values、ratio は ratios を使う）。 */
+export interface ManualInputField {
+  key: string
+  label: string
+  valueType: ManualFieldValueType
+  multiple: boolean
+  compare: ManualFieldCompareMode
+  /** text/number は各値、careIcon はアイコンコードを並び順で保持。 */
+  values: string[]
+  /** ratio（組成）の成分。 */
+  ratios: RatioComponent[]
+}
+
+/** 手入力チェックの入力全体（実行時スナップショット。POST の input フィールドに JSON で載せる）。 */
+export interface ManualCheckInput {
+  patternId: string | null
+  patternName: string
+  fields: ManualInputField[]
+}
+
+/** 項目単位の突合結果（1項目1件）。 */
+export interface ManualFieldResult {
+  key: string
+  label: string
+  compare: ManualFieldCompareMode
+  verdict: ManualCheckVerdict
+  /** 手入力値の表示文字列。 */
+  expected: string
+  /** タグ読取値の表示文字列（見当たらない場合 null）。 */
+  extracted: string | null
+  /** 一致/相違の説明。 */
+  detail: string
+  /** 組成・洗濯アイコン等の内訳（手入力側）。 */
+  expectedItems: string[]
+  /** 組成・洗濯アイコン等の内訳（タグ読取側）。 */
+  extractedItems: string[]
+}
+
+/** 手入力チェック履歴一覧の1件。 */
+export interface ManualCheckSummary {
+  checkId: string
+  productId: string | null
+  productLabel: string
+  patternId: string | null
+  patternName: string
+  status: SubsidiaryCheckStatus
+  judgment: SubsidiaryCheckJudgment | null
+  fieldCount: number
+  matchCount: number
+  mismatchCount: number
+  warnCount: number
+  imageCount: number
+  aiModel: string | null
+  errorMessage: string | null
+  createdBy: string
+  createdAt: string
+  checkedAt: string | null
+  startedAt: string | null
+}
+
+/** GET /api/subsidiary-check/manual/{checkId} のレスポンス（結果詳細）。 */
+export interface ManualCheckDetail {
+  summary: ManualCheckSummary
+  input: ManualCheckInput
+  results: ManualFieldResult[]
+  images: SubsidiaryCheckImageInfo[]
+  product: SubsidiaryCheckProductInfo | null
+}
+
+/** GET /api/subsidiary-check/manual のレスポンス（ページング付き履歴一覧）。 */
+export interface ManualCheckPage {
+  items: ManualCheckSummary[]
+  totalCount: number
+  page: number
+  pageSize: number
+}
+
+/** 洗濯表示アイコン（マスタ1件。svg は自己完結のインライン SVG）。 */
+export interface CareIcon {
+  code: string
+  category: string
+  label: string
+  svg: string
+}
+
+/** GET /api/subsidiary-check/manual/care-icons のレスポンス。 */
+export interface CareIconCatalogResponse {
+  icons: CareIcon[]
+  source: string
+}

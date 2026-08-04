@@ -322,7 +322,11 @@ public sealed class SubsidiaryCheckRepository
         return await QueryProductInfoAsync(connection, productId, cancellationToken);
     }
 
-    private static async Task<SubsidiaryCheckProductInfo?> QueryProductInfoAsync(
+    /// <summary>
+    /// 商品情報＋付属情報を1クエリで取得する（既存接続を使う）。手入力チェック
+    /// （<see cref="ManualCheckRepository"/>）の詳細組立でも共用するため internal 公開する（原則3）。
+    /// </summary>
+    internal static async Task<SubsidiaryCheckProductInfo?> QueryProductInfoAsync(
         Npgsql.NpgsqlConnection connection, Guid productId, CancellationToken cancellationToken)
     {
         var row = await connection.QuerySingleOrDefaultAsync<ProductInfoRow>(new CommandDefinition("""
