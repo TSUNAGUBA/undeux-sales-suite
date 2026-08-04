@@ -1003,6 +1003,131 @@ COMMENT ON COLUMN m_product_attachment.display_order       IS '表示の順序�
 COMMENT ON COLUMN m_product_attachment.quality_notes       IS '注意事項・デメリット表記等';
 
 -- ============================================================
+--  副資材チェック（手入力 × タグ画像の突合検証）
+-- ------------------------------------------------------------
+--  既存の subsidiary_check（指示書画像 × タグ画像の AI 検品）とは別系統の、
+--  「手入力した表示項目」と「タグ画像から AI が読み取った内容」を項目単位で
+--  突き合わせる検証機能。基本は文字列突合、洗濯表示（選択アイコン）は列・並び順の
+--  特殊突合になる（比較ロジックの SoT は Core の ManualCheckComparer）。
+--
+--  subsidiary_manual_check       : 手入力チェックの実行記録。SoT は本テーブル（記録系。
+--                                  再実行で判定・履歴を巻き戻さない・原則2）。既存 subsidiary_check と
+--                                  同じ非同期実行（processing→completed/failed・孤児 rerun）方式に揃える。
+--  subsidiary_manual_check_image : 検証対象のタグ画像原本。チェックに従属し連鎖削除される。
+--  subsidiary_tag_pattern        : 入力フォームを構成するタグパターン（項目の組合せ・型・単複・
+--                                  突合方式）。SoT はアプリ（画面から CRUD する設定系データ）。
+--  洗濯表示アイコンのマスタはコード側の静的カタログ（Core の CareIconCatalog）で持ち、
+--  DB テーブルは設けない（原本 SVG を含む不変の参照データのため）。
+--  uuid PK はアプリ側生成（m_product / subsidiary_check と同じ流儀）。
+--  テーブル定義順は FK 依存に従う（subsidiary_tag_pattern → subsidiary_manual_check →
+--  subsidiary_manual_check_image。参照先を先に作成する）。
+-- ============================================================
+CREATE TABLE IF NOT EXISTS subsidiary_tag_pattern (
+    pattern_id  uuid PRIMARY KEY,
+    name        text NOT NULL,
+    description text NOT NULL DEFAULT '',
+    -- 項目定義の配列（key/label/valueType/multiple/compare/required。API ワイヤ形式と同一の JSON）。
+    -- 項目は「フォーム構成」と「突合方式」の両方を駆動するため、両者で単一の定義を共有する（原則3・原則6）。
+    fields      jsonb NOT NULL,
+    is_active   boolean NOT NULL DEFAULT true,
+    created_by  text NOT NULL DEFAULT '',
+    created_at  timestamptz NOT NULL DEFAULT now(),
+    updated_by  text NOT NULL DEFAULT '',
+    updated_at  timestamptz NOT NULL DEFAULT now()
+);
+
+COMMENT ON TABLE  subsidiary_tag_pattern IS '手入力チェックのタグパターン（SoT: アプリ。画面から CRUD する設定系データ）。項目の組合せ・型・単複・突合方式を定義し、入力フォーム構成と突合方式の両方を駆動する';
+COMMENT ON COLUMN subsidiary_tag_pattern.fields    IS '項目定義配列（key/label/valueType(string|number)/multiple/compare(text|ratio|careIcon)/required。API ワイヤ形式と同一の JSON）';
+COMMENT ON COLUMN subsidiary_tag_pattern.is_active IS '新規チェックのパターン選択肢に出すか（false=アーカイブ。既存チェックの pattern_id 参照は温存）';
+
+CREATE INDEX IF NOT EXISTS ix_subsidiary_tag_pattern_active
+    ON subsidiary_tag_pattern (is_active, updated_at DESC);
+
+CREATE TABLE IF NOT EXISTS subsidiary_manual_check (
+    check_id       uuid PRIMARY KEY,
+    product_id     uuid REFERENCES m_product(product_id) ON DELETE SET NULL,
+    product_label  text NOT NULL DEFAULT '',
+    pattern_id     uuid REFERENCES subsidiary_tag_pattern(pattern_id) ON DELETE SET NULL,
+    pattern_name   text NOT NULL DEFAULT '',
+    status         text NOT NULL DEFAULT 'processing'
+                       CHECK (status IN ('processing', 'completed', 'failed')),
+    judgment       text CHECK (judgment IN ('pass', 'warn', 'fail')),
+    field_count    int  NOT NULL DEFAULT 0,
+    match_count    int  NOT NULL DEFAULT 0,
+    mismatch_count int  NOT NULL DEFAULT 0,
+    warn_count     int  NOT NULL DEFAULT 0,
+    -- 手入力のスナップショット（項目定義＋入力値。API ワイヤ形式と同一の JSON・camelCase）。
+    -- タグパターン削除後・項目変更後も「実行時に何を入力したか」を復元できるよう非正規化保持する。
+    input          jsonb NOT NULL,
+    -- 項目単位の突合結果（expected/extracted/verdict 等。API ワイヤ形式と同一の JSON）。
+    -- ※非正規化の根拠: 結果は親チェック単位でのみ読む不変の記録で、項目単位の横断検索要件がない。
+    results        jsonb,
+    ai_model       text,
+    error_message  text,
+    created_by     text NOT NULL DEFAULT '',
+    created_at     timestamptz NOT NULL DEFAULT now(),
+    checked_at     timestamptz,
+    started_at     timestamptz
+);
+
+COMMENT ON TABLE  subsidiary_manual_check IS '副資材の手入力チェック実行記録（SoT: 本テーブル。記録系データ。再実行での巻き戻し禁止・原則2）';
+COMMENT ON COLUMN subsidiary_manual_check.product_id     IS '対象商品（任意）。商品マスタ削除時も記録は温存する（SET NULL）';
+COMMENT ON COLUMN subsidiary_manual_check.product_label  IS '表示用スナップショット（品番等）。商品マスタ削除後も履歴表示できるよう保持する';
+COMMENT ON COLUMN subsidiary_manual_check.pattern_id     IS '使用したタグパターン（任意）。パターン削除時も記録は温存する（SET NULL）';
+COMMENT ON COLUMN subsidiary_manual_check.pattern_name   IS '実行時のタグパターン名スナップショット（パターン削除・改名後の履歴表示用）';
+COMMENT ON COLUMN subsidiary_manual_check.status         IS 'チェック状態: processing / completed / failed';
+COMMENT ON COLUMN subsidiary_manual_check.judgment       IS '判定: pass=合格 / warn=要確認 / fail=要修正（completed 時のみ）';
+COMMENT ON COLUMN subsidiary_manual_check.input          IS '手入力スナップショット（項目定義＋入力値。API ワイヤ形式と同一の JSON）';
+COMMENT ON COLUMN subsidiary_manual_check.results        IS '項目単位の突合結果（API ワイヤ形式と同一の JSON）。非正規化。completed 時のみ';
+COMMENT ON COLUMN subsidiary_manual_check.ai_model       IS 'タグ読取に使用した AI モデル ID（表示用）';
+COMMENT ON COLUMN subsidiary_manual_check.started_at     IS '最後に AI 実行を開始した日時。孤児判定（滞留超過）とクレームの基準時刻';
+
+CREATE INDEX IF NOT EXISTS ix_subsidiary_manual_check_created
+    ON subsidiary_manual_check (created_at DESC);
+
+CREATE TABLE IF NOT EXISTS subsidiary_manual_check_image (
+    image_id      uuid PRIMARY KEY,
+    check_id      uuid NOT NULL REFERENCES subsidiary_manual_check(check_id) ON DELETE CASCADE,
+    file_name     text NOT NULL,
+    content_type  text NOT NULL,
+    size_bytes    bigint NOT NULL,
+    data          bytea NOT NULL,
+    sort_order    int NOT NULL DEFAULT 0
+);
+
+COMMENT ON TABLE  subsidiary_manual_check_image IS '手入力チェックのタグ画像原本。チェック（subsidiary_manual_check）に従属し連鎖削除される';
+COMMENT ON COLUMN subsidiary_manual_check_image.content_type IS 'image/jpeg または image/png';
+COMMENT ON COLUMN subsidiary_manual_check_image.sort_order   IS 'タグ画像の表示順（アップロード順）';
+
+CREATE INDEX IF NOT EXISTS ix_subsidiary_manual_check_image_check
+    ON subsidiary_manual_check_image (check_id);
+
+-- 添付キャプチャ相当の既定パターン（品番/身長/胸囲/サイズ/組成/洗濯表示/補足/販売元/問合せ先/電話/原産国）を
+-- 初期投入する。冪等性は WHERE NOT EXISTS（＝パターンが1件でもあれば投入しない）で担保し、
+-- 運用中に追加・編集したパターンやシード自体の編集を再適用で巻き戻さない（原則2）。
+-- pattern_id の固定 UUID は冪等判定には関与せず、シード行を後から安定して識別するための固定値。
+INSERT INTO subsidiary_tag_pattern (pattern_id, name, description, fields, created_by, updated_by)
+SELECT
+    '00000000-0000-0000-0000-0000000000c1'::uuid,
+    '標準タグ（un.deux 下げ札）',
+    '添付の下げ札レイアウトに準拠した既定パターン。必要に応じて複製・編集してください。',
+    $json$[
+      {"key":"productNumber","label":"品番","valueType":"string","multiple":false,"compare":"text","required":true},
+      {"key":"height","label":"身長","valueType":"string","multiple":false,"compare":"text","required":false},
+      {"key":"chest","label":"胸囲","valueType":"string","multiple":false,"compare":"text","required":false},
+      {"key":"size","label":"サイズ","valueType":"string","multiple":false,"compare":"text","required":false},
+      {"key":"composition","label":"組成表示","valueType":"string","multiple":true,"compare":"ratio","required":false},
+      {"key":"careLabels","label":"洗濯表示","valueType":"string","multiple":true,"compare":"careIcon","required":false},
+      {"key":"note","label":"補足説明","valueType":"string","multiple":false,"compare":"text","required":false},
+      {"key":"seller","label":"販売元","valueType":"string","multiple":false,"compare":"text","required":false},
+      {"key":"contact","label":"お問い合わせ先","valueType":"string","multiple":false,"compare":"text","required":false},
+      {"key":"phone","label":"電話","valueType":"string","multiple":false,"compare":"text","required":false},
+      {"key":"originCountry","label":"原産国","valueType":"string","multiple":false,"compare":"text","required":false}
+    ]$json$::jsonb,
+    'system', 'system'
+WHERE NOT EXISTS (SELECT 1 FROM subsidiary_tag_pattern);
+
+-- ============================================================
 --  ナレッジストア（RAG）: knowledge スキーマ
 -- ------------------------------------------------------------
 --  設計思想は docs/platform-design/detailed-design/DD-04（根拠必須・SoT→派生の

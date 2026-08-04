@@ -1,7 +1,10 @@
-type RequestBody = Record<string, unknown> | FormData
+// 送信ボディ。JSON 化するオブジェクト（インラインリテラルと型付きインターフェースの両方）または
+// multipart の FormData。型付きインターフェースは Record<string, unknown> の添字シグネチャを満たさないため、
+// オブジェクト全般を受ける object を含める（$fetch が JSON 直列化する）。
+type RequestBody = Record<string, unknown> | object | FormData
 
 interface ApiRequestOptions {
-  method?: 'GET' | 'POST'
+  method?: 'GET' | 'POST' | 'PUT' | 'DELETE'
   query?: Record<string, unknown>
   body?: RequestBody
 }
@@ -31,5 +34,9 @@ export function useApi() {
       request<T>(path, { method: 'GET', query }),
     post: <T>(path: string, body?: RequestBody): Promise<T> =>
       request<T>(path, { method: 'POST', body }),
+    put: <T>(path: string, body?: RequestBody): Promise<T> =>
+      request<T>(path, { method: 'PUT', body }),
+    del: <T = void>(path: string): Promise<T> =>
+      request<T>(path, { method: 'DELETE' }),
   }
 }

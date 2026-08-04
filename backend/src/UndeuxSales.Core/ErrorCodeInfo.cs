@@ -139,6 +139,11 @@ public static class ErrorCodes
         "指定された副資材チェック（または画像）が見つかりません。",
         "一覧を再読み込みして最新の状態を確認してください。");
 
+    public static readonly ErrorCodeInfo TagPatternNotFound = new(
+        "UNDX-DATA-006",
+        "指定されたタグパターンが見つかりません。",
+        "一覧を再読み込みして最新の状態を確認してください（他のユーザーが削除した可能性があります）。");
+
     public static readonly ErrorCodeInfo AiCallFailed = new(
         "UNDX-AI-001",
         "AI 応答の生成に失敗しました（LLM 呼出エラー/タイムアウト）。",
@@ -183,6 +188,7 @@ public static class ErrorCodes
         FlagNotFound,
         KnowledgeNotFound,
         SubsidiaryCheckNotFound,
+        TagPatternNotFound,
         AiCallFailed,
         AiNotConfigured,
         AiResponseUnparseable,

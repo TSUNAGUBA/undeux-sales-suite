@@ -87,6 +87,8 @@ graph LR
 | `m_buyer_section` / `m_section_department` / `m_contact_desk` | しまむらグループ組織マスタ（業態×商品部×部門の相関・相談受付デスク）。初期値は「お取引の基準 総括編」由来、以後は運用者修正が正（§12.1） |
 | `knowledge.entry` / `knowledge.chunk` / `knowledge.chunk_embedding` | ナレッジストア（RAG）。entry が原本の SoT、chunk / embedding は再生成可能な派生（§12.2） |
 | `subsidiary_check` / `subsidiary_check_image` | 副資材チェックの実行記録と入力画像（指示書・タグ）。記録系データとして保護し、再実行は failed と孤児化した processing のみ（§13） |
+| `subsidiary_manual_check` / `subsidiary_manual_check_image` | 手入力チェック（手入力表示項目 × タグ画像の突合）の実行記録とタグ画像。`subsidiary_check` と同じ非同期・記録保護方針（§13.6） |
+| `subsidiary_tag_pattern` | 手入力チェックの入力フォーム構成テンプレート（項目の組合せ・型・単複・突合方式）。SoT はアプリ（画面から CRUD する設定系データ。§13.6） |
 | `m_product_attachment` | 商品マスタ付属情報（組成・原産国・洗濯表示・表示順序等）。副資材チェックの突合元ネタ・商品マスタ詳細に表示（§9.6・§13） |
 
 - ファクトテーブルの主キーは意味を持たない代理キー（`bigint` 採番）。
@@ -103,8 +105,11 @@ graph LR
 | コードマスタ | 売上参照ファクト | `department` 他（取込時に同一トランザクションで導出） |
 | 在庫アクションフラグ（発注停止候補・値下げ候補・対応状況） | `inventory_action_flag`（ユーザー判断の記録。public スキーマ） | なし（mart 非依存。明細表示時に自然キーで都度結合） |
 | 副資材チェック記録（判定・指摘・入力画像） | `subsidiary_check` / `subsidiary_check_image`（AI 実行結果の不変記録） | なし（findings は jsonb で親チェック単位のみ参照） |
+| 手入力チェック記録（判定・突合結果・手入力・タグ画像） | `subsidiary_manual_check` / `subsidiary_manual_check_image`（不変記録。input/results は jsonb） | なし（親チェック単位のみ参照） |
+| タグパターン（入力フォーム構成） | `subsidiary_tag_pattern`（画面から CRUD する設定系データ） | 手入力フォーム構成・突合方式の駆動元 |
 | 商品マスタ付属情報 | 運用部門の管理ファイル → `m_product_attachment`（SQL 直接投入。§9.6） | AI チェックプロンプト・商品マスタ詳細表示 |
 | 副資材チェックルール（アイコン優先順位・禁止用語・表示順序・寸法） | Core `SubsidiaryCheckRuleCatalog`（出典: しまむら規定資料。§13.4） | ルールブック API 応答・AI プロンプトのルールテキスト（同一カタログから生成） |
+| 洗濯表示アイコン（絵表示記号の SVG マスタ） | Core `CareIconCatalog`（自己完結インライン SVG。JIS L0001/ISO 3758 準拠の簡略図。§13.6） | 手入力の選択 UI・AI 抽出のアイコン辞書・突合の選択肢 |
 
 ## 5. データフロー（取込）
 
@@ -164,6 +169,13 @@ flowchart TD
 | GET | `/api/subsidiary-check/{checkId}/images/{imageId}` | 入力画像バイナリ。**同時取得数を制限しており、順番待ちが上限を超えると 429（`UNDX-REQ-009`）**（§13.5） |
 | POST | `/api/subsidiary-check/{checkId}/rerun` | AI 再実行（**status=failed、または最後の実行開始（`started_at`）から20分超の processing（孤児回復）**。completed は記録保護のため 400／受付上限超過は 429） |
 | GET | `/api/subsidiary-check/rules` | ルールブック（しまむら副資材規定カタログ） |
+| GET | `/api/subsidiary-check/manual` | 手入力チェック履歴（`page`・`pageSize`。作成日時降順） |
+| POST | `/api/subsidiary-check/manual` | 手入力チェック登録（multipart: `productId`?・`productLabel`?・`input`（手入力スナップショット JSON）・`tagImages` 1〜3）。記録を作成して **AI 抽出・突合はバックグラウンド実行**し、processing の詳細を即座に返す（**要 AI 設定／受付上限超過は 429**） |
+| GET | `/api/subsidiary-check/manual/{checkId}` | 手入力チェック詳細（判定・項目別突合結果・手入力・画像メタ・商品情報） |
+| GET | `/api/subsidiary-check/manual/{checkId}/images/{imageId}` | タグ画像バイナリ（副資材チェックと同じ配信枠を共有。順番待ち超過は 429） |
+| POST | `/api/subsidiary-check/manual/{checkId}/rerun` | 手入力チェック再実行（failed／孤児 processing のみ。completed は 400／受付上限超過は 429） |
+| GET | `/api/subsidiary-check/manual/care-icons` | 洗濯表示アイコンのマスタ（選択 UI・突合の選択肢。`CareIconCatalog` の静的応答） |
+| GET/POST/PUT/DELETE | `/api/subsidiary-check/tag-patterns[/{patternId}]` | タグパターン CRUD（一覧`includeInactive`?・取得・作成・更新・削除。未存在は 404 `UNDX-DATA-006`） |
 | GET | `/api/error-codes` | エラーコード一覧 |
 
 共通フィルタ（クエリ）: `from`・`to`（取込週）、`departments`・`businessTypes`・`seasons`・`tanawari1`（複数可）、
@@ -255,7 +267,7 @@ flowchart TD
 | AUTH | `UNDX-AUTH-001` | 認証エラー |
 | REQ | `UNDX-REQ-001`〜`009` | リクエスト検証エラー（`004`〜`008` は副資材チェックの画像検証: 未指定/形式不正/サイズ超過/枚数超過/合計サイズ超過。`008` はリクエストサイズ超過の共通マップにも使用。`009` は副資材チェックの同時実行の上限による一時的拒否＝429。AI チェックの受付上限と画像配信の順番待ち超過の2経路で共用） |
 | IMP | `UNDX-IMP-001`〜`005` | 取込処理エラー |
-| DATA / SYS | `UNDX-DATA-001`〜`005` / `UNDX-SYS-001` | データ層 / 商品未登録 / フラグ未存在 / ナレッジ・マスタ未存在 / 副資材チェック未存在 / 想定外エラー |
+| DATA / SYS | `UNDX-DATA-001`〜`006` / `UNDX-SYS-001` | データ層 / 商品未登録 / フラグ未存在 / ナレッジ・マスタ未存在 / 副資材チェック未存在 / タグパターン未存在 / 想定外エラー |
 | AI | `UNDX-AI-001` / `UNDX-AI-008` / `UNDX-AI-009` | LLM 呼出失敗（502 または SSE error イベント） / AI 未設定（503。DD-04 の `UNDX-AI-*` 領域を継承） / AI 応答の解析失敗（`002`〜`007` は DD-04 予約済みのため `009` を採番） |
 
 ## 9. 商品マスタ（m_product / m_product_sku）
@@ -659,3 +671,32 @@ flowchart TD
   なお `started_at` は後から追加した列のため、それ以前に作成された行では NULL になる。
   滞留判定は `COALESCE(started_at, created_at)` で評価し、旧データも
   「作成時刻からの経過」で孤児判定できるようにしている（下位互換・原則7）。
+
+### 13.7 手入力チェック（手入力 × タグ画像の突合）
+
+画像 × 画像の副資材チェック（§13.1〜13.6）とは別系統で、**手入力した表示項目**と
+**タグ画像から AI が読み取った内容**を項目単位で突き合わせる検証機能。画面は
+`/subsidiary-check` のタブ（手入力チェック／手入力履歴／タグパターン設定）として同居する。
+
+- **独立抽出 → コード側突合:** AI にはタグ画像と「読み取るべき項目（キー・ラベル・複数可否・
+  突合方式のヒント）」および洗濯アイコン辞書だけを渡し、**手入力の期待値は渡さない**
+  （AI が期待値を追認しないための独立抽出。プロンプトインジェクション経路も塞ぐ）。
+  一致/相違の判定は Core `ManualCheckComparer`（純粋関数）で行う。
+- **突合方式（`ManualFieldCompareMode`）:** `text`＝文字列突合（NFKC 正規化＋空白除去＋大文字化で
+  「１１０」＝「110」等の表記揺れを吸収）、`ratio`＝組成の成分＋割合突合（並び順違いは要確認）、
+  `careIcon`＝洗濯アイコンの**種類と並び順を含めた**列突合（並び順違いは相違＝要修正。アイコンは
+  優先順位順が規定のため）。AI が判読できなかった項目は相違ではなく missing/warn へ倒す（原則4）。
+- **タグパターン（`subsidiary_tag_pattern`）:** 入力フォームの項目構成（項目・型・単複・突合方式）を
+  画面から CRUD できる設定系データ。項目定義は「フォーム構成」と「突合方式」の両方を単一定義で駆動する
+  （原則3・原則6）。実行時の入力は `subsidiary_manual_check.input`（jsonb）へスナップショット保存し、
+  パターン改変・削除後も履歴を復元できる（パターン FK は `ON DELETE SET NULL`、`pattern_name` は写しを保持）。
+  既定パターン（品番/身長/胸囲/サイズ/組成/洗濯表示/補足/販売元/問合せ先/電話/原産国）を schema で
+  冪等シード（既に1件でもあれば投入しない＝運用中の編集を巻き戻さない・原則2）。
+- **洗濯アイコンマスタ（`CareIconCatalog`）:** JIS L0001/ISO 3758 準拠の絵表示記号を**外部依存のない
+  自己完結インライン SVG** としてコード内蔵（ライセンス・CSP・外部取得の不確実性を回避）。
+  選択 UI・AI 抽出のアイコン辞書・突合の選択肢の SoT。
+- **共有する実行基盤:** 非同期実行（processing→completed/failed・孤児 rerun）・受付枠・**AI 呼出の
+  同時実行スロット（同時1件）**・画像配信枠は `SubsidiaryCheckService` と共有する
+  （`RunUnderAiCallSlotAsync` 経由で同一セマフォを使い、機能追加後もメモリ収支（§13.5）を保つ）。
+- **残課題:** バックエンドの統合テスト（DB を要する登録→バックグラウンド→completed/failed の E2E）は
+  比較エンジン・パーサ・アイコンマスタの単体テストに続く追加課題とする。

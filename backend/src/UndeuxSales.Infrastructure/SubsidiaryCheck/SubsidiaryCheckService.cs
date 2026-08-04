@@ -116,6 +116,22 @@ public sealed class AiCheckSlotLease : IDisposable
     private bool TryTakeOwnership() => Interlocked.Exchange(ref _owned, 0) == 1;
 }
 
+/// <summary>共有 AI 呼出スロットの実行結果（<see cref="SubsidiaryCheckService.RunUnderAiCallSlotAsync"/>）。</summary>
+public enum AiCallSlotOutcome
+{
+    /// <summary>スロットを取得し、呼出が完了した（<see cref="AiCallSlotResult.ResponseText"/> に応答）。</summary>
+    Completed,
+
+    /// <summary>順番待ちが上限を超え、AI を呼び出さずに打ち切った。</summary>
+    QueueTimedOut,
+
+    /// <summary>AI 呼出が呼出タイムアウトで打ち切られた。</summary>
+    CallTimedOut,
+}
+
+/// <summary>共有 AI 呼出スロットの実行結果。</summary>
+public sealed record AiCallSlotResult(AiCallSlotOutcome Outcome, string? ResponseText);
+
 /// <summary>
 /// 副資材チェックのオーケストレーション。
 /// <para>
@@ -977,6 +993,52 @@ public sealed class SubsidiaryCheckService
         => data.Length >= 4 && data[0] == 0x89 && data[1] == 0x50 && data[2] == 0x4E && data[3] == 0x47;
 
     /// <summary>
+    /// 共有 AI 呼出スロット（<see cref="AiCallSemaphore"/>・同時実行1件）を順番待ち上限
+    /// （<see cref="AiCallQueueTimeout"/>）つきで取得し、呼出タイムアウト（<see cref="AiCallTimeout"/>）
+    /// つきで <paramref name="call"/> を実行する。
+    /// <para>
+    /// <b>機能横断で同一セマフォを共有する（CRITICAL）:</b> 副資材チェック（findings 抽出）と
+    /// 手入力チェック（<see cref="ManualCheckService"/> のタグ項目抽出）が本メソッド経由で
+    /// <b>同じ <see cref="AiCallSemaphore"/></b> を使うことで、AI 呼出（1件あたりピーク約70MiB）の
+    /// 同時実行数を機能をまたいで1に保つ。別個のセマフォを新設すると2件同時実行が起こり得て、
+    /// <see cref="MaxConcurrentAiChecks"/> の収支（GC ハードリミット384MiB に対する余裕）が崩れる。
+    /// </para>
+    /// スロットは finally で必ず解放する。順番待ち超過は <see cref="AiCallSlotOutcome.QueueTimedOut"/>、
+    /// 呼出タイムアウトは <see cref="AiCallSlotOutcome.CallTimedOut"/> を返す（いずれも throw しない）。
+    /// タイムアウト以外に <paramref name="call"/> が投げた例外は解放後に呼出元へ伝播する。
+    /// </summary>
+    public async Task<AiCallSlotResult> RunUnderAiCallSlotAsync(Func<CancellationToken, Task<string>> call)
+    {
+        var queueTimeout = AiCallQueueTimeoutOverride ?? AiCallQueueTimeout;
+        if (!await AiCallSemaphore.WaitAsync(queueTimeout))
+        {
+            return new AiCallSlotResult(AiCallSlotOutcome.QueueTimedOut, null);
+        }
+
+        var callTimeout = AiCallTimeoutOverride ?? AiCallTimeout;
+        try
+        {
+            using var timeoutCts = new CancellationTokenSource(callTimeout);
+            try
+            {
+                var responseText = await call(timeoutCts.Token);
+                return new AiCallSlotResult(AiCallSlotOutcome.Completed, responseText);
+            }
+            catch (OperationCanceledException) when (timeoutCts.IsCancellationRequested)
+            {
+                // 自前のタイムアウト発火: throw せず結果で表現する（記録・後処理はスロット解放後）。
+                // タイムアウト以外の OperationCanceledException（SDK 由来の想定外キャンセル）は
+                // ここで握らず呼出元へ伝播させる（呼出元が failed 記録に落とす）。
+                return new AiCallSlotResult(AiCallSlotOutcome.CallTimedOut, null);
+            }
+        }
+        finally
+        {
+            AiCallSemaphore.Release();
+        }
+    }
+
+    /// <summary>
     /// AI チェックを実行し、結果（completed / failed）を記録する（バックグラウンドタスク上で動く）。
     /// AI 失敗・応答解析失敗・AI 呼出タイムアウト・順番待ち超過はいずれも throw せず failed 記録に変換する
     /// （呼出元はバックグラウンドタスクであり、例外を返す先が存在しないため）。
@@ -993,59 +1055,36 @@ public sealed class SubsidiaryCheckService
             var systemPrompt = SubsidiaryCheckPromptBuilder.BuildSystemPrompt();
             var userPrompt = SubsidiaryCheckPromptBuilder.BuildUserPrompt(product, productLabel);
 
-            // AI 呼出のみを同時実行制限・タイムアウトで保護する（DB 操作はセマフォの外で行う）。
-            // 待機は有界（AiCallQueueTimeout）。待機超過は AI を呼ばずに failed 記録に落とすことで、
-            // 画像バッファを保持したまま滞留する時間を抑える（メモリ保護・CRITICAL）。
-            // 滞留「件数」の抑制は受付上限（MaxConcurrentAiChecks）が担う。
-            var queueTimeout = AiCallQueueTimeoutOverride ?? AiCallQueueTimeout;
-            if (!await AiCallSemaphore.WaitAsync(queueTimeout))
+            // AI 呼出のみを同時実行制限・タイムアウトで保護する（DB 操作はスロットの外で行う）。
+            // 待機は有界（AiCallQueueTimeout）。待機超過・呼出タイムアウトはいずれも AI を呼ばずに/
+            // 打ち切って failed 記録に落とすことで、画像バッファを保持したまま滞留する時間を抑える
+            // （メモリ保護・CRITICAL）。滞留「件数」の抑制は受付上限（MaxConcurrentAiChecks）が担う。
+            // スロット制御は手入力チェックと共有する（RunUnderAiCallSlotAsync＝同一セマフォ）。
+            var slot = await RunUnderAiCallSlotAsync(token => _aiClient.AnalyzeImagesAsync(
+                aiImages, systemPrompt, userPrompt, CheckMaxOutputTokens, token));
+
+            switch (slot.Outcome)
             {
-                _logger.LogWarning(
-                    "副資材チェックの AI 実行が順番待ちタイムアウトしました"
-                    + "（checkId: {CheckId}、上限: {Timeout}秒）",
-                    checkId, (int)queueTimeout.TotalSeconds);
-                await RecordFailureAsync(checkId, BuildFailureMessage(
-                    ErrorCodes.AiCallFailed,
-                    "AI 実行の順番待ちがタイムアウトしました。時間をおいて再実行してください。"));
-                return;
+                case AiCallSlotOutcome.QueueTimedOut:
+                    _logger.LogWarning(
+                        "副資材チェックの AI 実行が順番待ちタイムアウトしました"
+                        + "（checkId: {CheckId}、上限: {Timeout}秒）",
+                        checkId, (int)(AiCallQueueTimeoutOverride ?? AiCallQueueTimeout).TotalSeconds);
+                    await RecordFailureAsync(checkId, BuildFailureMessage(
+                        ErrorCodes.AiCallFailed,
+                        "AI 実行の順番待ちがタイムアウトしました。時間をおいて再実行してください。"));
+                    return;
+                case AiCallSlotOutcome.CallTimedOut:
+                    // タイムアウト: failed 記録で応答する（キャンセル扱いにしない）。
+                    _logger.LogWarning(
+                        "副資材チェックの AI 呼出がタイムアウトしました（checkId: {CheckId}、上限: {Timeout}秒）",
+                        checkId, (int)(AiCallTimeoutOverride ?? AiCallTimeout).TotalSeconds);
+                    await RecordFailureAsync(checkId, BuildFailureMessage(
+                        ErrorCodes.AiCallFailed, "AI 呼出がタイムアウトしました。再実行してください。"));
+                    return;
             }
 
-            string? responseText = null;
-            var callTimedOut = false;
-            var callTimeout = AiCallTimeoutOverride ?? AiCallTimeout;
-            try
-            {
-                using var timeoutCts = new CancellationTokenSource(callTimeout);
-                try
-                {
-                    responseText = await _aiClient.AnalyzeImagesAsync(
-                        aiImages, systemPrompt, userPrompt, CheckMaxOutputTokens, timeoutCts.Token);
-                }
-                catch (OperationCanceledException) when (timeoutCts.IsCancellationRequested)
-                {
-                    // 自前のタイムアウト発火: throw せず failed 記録へ進む（記録はセマフォ解放後）。
-                    // タイムアウト以外の OperationCanceledException（AI SDK 由来の想定外キャンセル）は
-                    // ここで握らず、下の汎用 catch で failed 記録にする。
-                    callTimedOut = true;
-                }
-            }
-            finally
-            {
-                AiCallSemaphore.Release();
-            }
-
-            if (callTimedOut)
-            {
-                // タイムアウト: failed 記録＋failed Detail の返却で応答する（キャンセル扱いにしない）。
-                _logger.LogWarning(
-                    "副資材チェックの AI 呼出がタイムアウトしました（checkId: {CheckId}、上限: {Timeout}秒）",
-                    checkId, (int)callTimeout.TotalSeconds);
-                await RecordFailureAsync(checkId, BuildFailureMessage(
-                    ErrorCodes.AiCallFailed, "AI 呼出がタイムアウトしました。再実行してください。"));
-                return;
-            }
-
-            var parsed = SubsidiaryCheckResponseParser.Parse(responseText!);
+            var parsed = SubsidiaryCheckResponseParser.Parse(slot.ResponseText!);
             if (!parsed.Success)
             {
                 _logger.LogWarning(

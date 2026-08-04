@@ -52,6 +52,11 @@ public static class ServiceCollectionExtensions
         services.AddScoped<SubsidiaryCheckRepository>();
         services.AddScoped<SubsidiaryCheckService>();
 
+        // 副資材の手入力チェック（手入力 × タグ画像の突合。AI 呼出スロット等は SubsidiaryCheckService と共有）
+        services.AddScoped<ManualCheckRepository>();
+        services.AddScoped<TagPatternRepository>();
+        services.AddScoped<ManualCheckService>();
+
         return services;
     }
 }

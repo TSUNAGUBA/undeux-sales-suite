@@ -2,11 +2,14 @@
 import {
   BookOpenText,
   CircleX,
+  ClipboardList,
   History,
   ImagePlus,
+  Keyboard,
   LoaderCircle,
   RefreshCw,
   Search,
+  Settings2,
   Sparkles,
   Trash2,
   X,
@@ -43,13 +46,18 @@ const router = useRouter()
 
 const TABS: ReadonlyArray<{ key: TabKey; label: string; icon: Component }> = [
   { key: 'history', label: 'チェック履歴', icon: History },
-  { key: 'new', label: '新規チェック', icon: ImagePlus },
+  { key: 'new', label: '新規チェック（画像）', icon: ImagePlus },
+  { key: 'manual', label: '手入力チェック', icon: Keyboard },
+  { key: 'manualHistory', label: '手入力履歴', icon: ClipboardList },
+  { key: 'patterns', label: 'タグパターン設定', icon: Settings2 },
   { key: 'rules', label: 'ルールブック', icon: BookOpenText },
 ]
-type TabKey = 'history' | 'new' | 'rules'
+type TabKey = 'history' | 'new' | 'manual' | 'manualHistory' | 'patterns' | 'rules'
+
+const KNOWN_TABS: ReadonlyArray<TabKey> = ['history', 'new', 'manual', 'manualHistory', 'patterns', 'rules']
 
 function parseTab(value: unknown): TabKey {
-  return value === 'new' || value === 'rules' ? value : 'history'
+  return KNOWN_TABS.includes(value as TabKey) ? (value as TabKey) : 'history'
 }
 
 /** URL がタブ状態の SoT（直リンク・戻る/進むに追従）。 */
@@ -448,6 +456,7 @@ onMounted(() => {
       <p class="text-sm text-slate-500">
         指示書（工程表）と実物タグの画像をアップロードすると、AIがレイアウト・順番・内容の3要素を
         規定・商品マスタの付属情報と突き合わせてチェックします。
+        「手入力チェック」では、表示項目を手入力してタグ画像の読取値と項目単位で突合できます。
       </p>
     </div>
 
@@ -790,6 +799,15 @@ onMounted(() => {
         </p>
       </div>
     </section>
+
+    <!-- ============ 手入力チェック（新規実行フォーム） ============ -->
+    <ManualCheckForm v-else-if="activeTab === 'manual'" @go-patterns="setTab('patterns')" />
+
+    <!-- ============ 手入力チェック履歴 ============ -->
+    <ManualCheckHistory v-else-if="activeTab === 'manualHistory'" />
+
+    <!-- ============ タグパターン設定 ============ -->
+    <TagPatternManager v-else-if="activeTab === 'patterns'" />
 
     <!-- ============ ルールブック ============ -->
     <section v-else aria-label="ルールブック" class="space-y-3">
